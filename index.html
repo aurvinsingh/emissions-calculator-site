@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maritime Emissions Calculator — CII · EU ETS · FuelEU · UK ETS · SCC</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="locked">
+<div id="lock" class="noprint">
+  <div class="lockbox">
+    <h2>🔒 Maritime Emissions Calculator</h2>
+    <p>Enter today's access code to open the tool.<br>Don't have it? Contact <b>Aurvin Singh</b> (ZeroNorth).</p>
+    <input id="lockpw" type="password" placeholder="access code" autocomplete="off">
+    <div class="err" id="lockerr"></div>
+    <button id="lockbtn">Unlock</button>
+  </div>
+</div>
+<header>
+  <h1>⚓ Maritime Emissions Calculator</h1>
+  <span class="sub">CII · EU ETS · FuelEU Maritime · UK ETS · SCC — live what-if</span>
+  <div class="right noprint">
+    <span style="color:#697987;font-size:12px;align-self:center;font-style:italic">Created by Aurvin Singh</span>
+    <button class="hbtn" onclick="document.getElementById('impovd').click()">⬆ Import OVD CSV / THETIS XML</button>
+    <input type="file" id="impovd" style="display:none" accept=".csv,.txt,.xml" onchange="importOVDFile(event)">
+    <button class="hbtn" onclick="exportScenario()">⬇ Export scenario</button>
+    <button class="hbtn" onclick="document.getElementById('imp').click()">⬆ Import scenario</button>
+    <input type="file" id="imp" style="display:none" accept=".json" onchange="importScenario(event)">
+    <button class="hbtn" onclick="resetScenario()">Reset</button>
+  </div>
+</header>
+<nav class="noprint">
+  <button id="tb-work" class="on" onclick="showTab('work')">⚡ Workspace (live)</button>
+  <button id="tb-vessel" onclick="showTab('vessel')">🚢 Vessel &amp; settings</button>
+  <button id="tb-constants" onclick="showTab('constants')">📚 Formulas, constants &amp; provenance</button>
+  <button id="tb-help" onclick="showTab('help')">❓ Help &amp; self-test</button>
+
+</nav>
+<main>
+<div id="tab-work"></div>
+<div id="tab-vessel" style="display:none"></div>
+<div id="tab-constants" style="display:none"></div>
+<div id="tab-help" style="display:none"></div>
+
+<div class="disc">Internal reference tool for ZeroNorth Emissions Analytics work — <b>not legal advice and not a verified compliance system</b>. All formulas and default factors are grounded in the regulatory knowledge base in <i>_RULEFINDER_BUILD</i> (baseline 2026-07-11); items marked <span class="flag">FILL-IN</span> come from outside the KB and must be verified before external use. If regulations may have changed, see <i>REGULATORY_CHANGE_MONITORING.md</i>.</div>
+</main>
+<script src="js/ports_data.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+
+</body>
+</html>
