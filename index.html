@@ -21,23 +21,22 @@
   <span class="sub">CII · EU ETS · FuelEU Maritime · UK ETS · SCC — live what-if</span>
   <div class="right noprint">
     <span style="color:#697987;font-size:12px;align-self:center;font-style:italic">Created by Aurvin Singh</span>
-    <button class="hbtn" onclick="document.getElementById('impovd').click()">⬆ Import OVD CSV / THETIS XML</button>
-    <input type="file" id="impovd" style="display:none" accept=".csv,.txt,.xml" onchange="importOVDFile(event)">
-    <button class="hbtn" onclick="exportScenario()">⬇ Export scenario</button>
-    <button class="hbtn" onclick="document.getElementById('imp').click()">⬆ Import scenario</button>
-    <input type="file" id="imp" style="display:none" accept=".json" onchange="importScenario(event)">
+    <button class="hbtn" onclick="document.getElementById('impovd').click()">⬆ Import data (OVD · MDA · THETIS)</button>
+    <input type="file" id="impovd" style="display:none" accept=".csv,.txt,.xml,.xlsx" onchange="importOVDFile(event)">
     <button class="hbtn" onclick="resetScenario()">Reset</button>
   </div>
 </header>
 <nav class="noprint">
   <button id="tb-work" class="on" onclick="showTab('work')">⚡ Workspace (live)</button>
-  <button id="tb-vessel" onclick="showTab('vessel')">🚢 Vessel &amp; settings</button>
-  <button id="tb-constants" onclick="showTab('constants')">📚 Formulas, constants &amp; provenance</button>
-  <button id="tb-help" onclick="showTab('help')">❓ Help &amp; self-test</button>
+  <button id="tb-calcs" onclick="showTab('calcs')">🧮 Calculations</button>
+  <button id="tb-vessel" onclick="showTab('vessel')">🚢 Settings</button>
+  <button id="tb-constants" onclick="showTab('constants')">📚 Formulas</button>
+  <button id="tb-help" onclick="showTab('help')">❓ Help</button>
 
 </nav>
 <main>
 <div id="tab-work"></div>
+<div id="tab-calcs" style="display:none"></div>
 <div id="tab-vessel" style="display:none"></div>
 <div id="tab-constants" style="display:none"></div>
 <div id="tab-help" style="display:none"></div>

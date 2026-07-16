@@ -33,7 +33,14 @@ const FUELS = [
   { id:"HFO",  name:"HFO (ISO 8217 RME–RMK)",  cls:"Fossil", lcv:0.0405, wtt:13.5, cf:3.114, ch4:0.00005, n2o:0.00018 },
   { id:"LFO",  name:"LFO (ISO 8217 RMA–RMD)",  cls:"Fossil", lcv:0.041,  wtt:13.2, cf:3.151, ch4:0.00005, n2o:0.00018 },
   { id:"MDO",  name:"MDO/MGO (ISO 8217 DMX–DMB)", cls:"Fossil", lcv:0.0427, wtt:14.4, cf:3.206, ch4:0.00005, n2o:0.00018 },
-  { id:"LNG",  name:"LNG (fossil)", cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true },
+  /* LNG split by fuel-consumer class (Annex II col.9 slip values) — engineClass fixes the
+     slip per fuel so the engine cycle is chosen directly in the fuel dropdown (2026-07-15).
+     id "LNG" stays on Medium speed Otto (highest slip 3.1%) = conservative default for
+     imports that only say "LNG". */
+  { id:"LNGDS",  name:"LNG (Low speed diesel cycle)",  cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Diesel (dual fuel slow speed)" },
+  { id:"LNGOS",  name:"LNG (Low speed Otto cycle)",    cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Otto (dual fuel slow speed)" },
+  { id:"LNG",    name:"LNG (Medium speed Otto cycle)", cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Otto (dual fuel medium speed)" },
+  { id:"LNGBSI", name:"LNG (LBSI)",                    cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LBSI" },
   { id:"LPGP", name:"LPG (Propane)", cls:"Fossil", lcv:0.046, wtt:7.8, cf:3.000, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
   { id:"LPGB", name:"LPG (Butane)",  cls:"Fossil", lcv:0.046, wtt:7.8, cf:3.030, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
   { id:"METH", name:"Methanol (fossil, natural gas)", cls:"Fossil", lcv:0.0199, wtt:31.3, cf:1.375, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
@@ -110,15 +117,48 @@ function ttwIntensity(fuel, engine){
 
 /* ---------- scope coverage ----------
    EU ETS (euets-art3ga) & FuelEU: EEA→EEA 100%, EEA↔other 50%, at berth EEA 100%.
-   UK ETS (ukets-sch2a-p7): UK→UK voyages + UK in-port activity only. */
+   UK ETS (ukets-sch2a-p7): UK→UK voyages + UK in-port activity only.
+   Port-of-call flag (2026-07-15): both regimes attach at-berth scope to a PORT OF CALL
+   (EU ETS Art 3(z) definition via euets-art3ga; FuelEU Art 2/3 "port of call"). A port
+   stay with poc:false (transit / anchorage-only, no cargo op or call) is OUT of EU ETS,
+   UK ETS and FuelEU scope. CII and SCC count all fuel regardless (imo-g1-s4).
+   poc undefined => true (default: a stay IS a call). */
 function euCoverage(row){
-  if(row.kind==="port") return row.zone==="EEA" ? 1 : 0;
+  if(row.kind==="port") return (row.zone==="EEA" && row.poc!==false) ? 1 : 0;
   const a=row.from==="EEA", b=row.to==="EEA";
   return (a&&b)?1:((a||b)?0.5:0);
 }
 function ukCoverage(row){
-  if(row.kind==="port") return row.zone==="UK" ? 1 : 0;
+  if(row.kind==="port") return (row.zone==="UK" && row.poc!==false) ? 1 : 0;
   return (row.from==="UK"&&row.to==="UK")?1:0;
+}
+
+/* ---------- machinery split (2026-07-16, Aurvin) ----------
+   Imported MDA/OVD fuel lines may carry a per-consumer split fr.split = {ME, AE, BLR, OTH}
+   in tonnes. For slip fuels, the ME share follows the Main-engine consumer class and the
+   AE share the Auxiliary-engine class (both set in Settings); boiler and Other
+   are slip-free (Annex II slip applies to engines only; agreed: Other treated like a
+   boiler). Unallocated remainder → Other; an over-allocated split is scaled down
+   pro-rata to the line total. Non-slip fuels are computed as one part (split retained
+   for display/OVD export only). */
+function machineParts(fr, f, t, state){
+  const legacy = f.engineClass || fr.engine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+  if(!f.slip || !fr.split) return [{ t, engine: legacy, m: null }];
+  const sp = fr.split;
+  const me=Math.max(0,Number(sp.ME)||0), ae=Math.max(0,Number(sp.AE)||0),
+        blr=Math.max(0,Number(sp.BLR)||0), oth0=Math.max(0,Number(sp.OTH)||0);
+  const s = me+ae+blr+oth0;
+  if(s<=0) return [{ t, engine: legacy, m: null }];
+  const k = s>t && s>0 ? t/s : 1;
+  const oth = oth0*k + Math.max(0, t - s);            // unallocated remainder → Other (no slip)
+  const meEng = state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+  const aeEng = state.lngEngineDefaultAux || meEng;
+  const out=[];
+  if(me>0)  out.push({ t: me*k,  engine: meEng, m:"ME" });
+  if(ae>0)  out.push({ t: ae*k,  engine: aeEng, m:"AE" });
+  if(blr>0) out.push({ t: blr*k, engine: "Boiler (no slip)", m:"BLR" });   // not in SLIP table → slip 0
+  if(oth>1e-12) out.push({ t: oth, engine: "Other (no slip)", m:"OTH" });
+  return out;
 }
 
 /* ---------- MAIN ---------- */
@@ -132,16 +172,29 @@ function computeAll(state){
     if(base.custom){ f.lcv=Number(fr.lcv)||0.04; f.cf=Number(fr.cf)||0; f.ch4=Number(fr.ch4)||0; f.n2o=Number(fr.n2o)||0; f.wtt=Number(fr.wtt)||0; }
     return f;
   };
+  /* Reporting-year filter (2026-07-16, Aurvin): multi-year imports keep all rows; only
+     rows dated inside the selected reporting year count — in ALL KPIs. Imports split
+     rows at the year boundary report-exactly, so a row belongs to exactly one year.
+     Rows without dates (manual entry) always count. */
+  const rowInYear = (row)=>{
+    if(row.yearPart) return Number(row.yearPart)===y;   // year-boundary split parts carry their year explicitly
+    const a = row.tStart? String(row.tStart).slice(0,4) : null;
+    const b = row.tEnd?   String(row.tEnd).slice(0,4)   : null;
+    if(!a && !b) return true;
+    return a===String(y) || b===String(y);
+  };
 
   /* ---- aggregate per row ---- */
-  let cii_g=0, totalDist=0, fuelCostAll=0;
+  let cii_g=0, totalDist=0, fuelCostAll=0, nOutOfYear=0;
   let ets_t_co2=0, ets_t_co2e=0, uk_co2=0, uk_ch4=0, uk_n2o=0;
-  const feu = { terms:[], E_plain:0, E_rwd:0, num:0 }; // FuelEU accumulators (grams, MJ)
+  const feuPool = [];              // FuelEU allocation pool (essf-ws1-2-5): one entry per fuel × consumer
+  let E_scope = 0;                 // FuelEU energy scope, MJ (Σ row energy × coverage)
   const sccVoyages = [];
   const rowDetails = [];
   const sum = { hoursSea:0, hoursPort:0, cargo:0, tw:0, co2Sea:0, co2Berth:0, fuelByType:{}, fuelTotal:0, tMin:null, tMax:null };
 
   for(const row of state.rows||[]){
+    if(!rowInYear(row)){ nOutOfYear++; continue; }
     const covEU = euCoverage(row), covUK = ukCoverage(row);
     const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
@@ -154,41 +207,47 @@ function computeAll(state){
     for(const fr of row.fuels||[]){
       const f = resolveFuel(fr); if(!f) continue;
       const t = Number(fr.tonnes)||0; if(t<=0) continue;
-      const engine = fr.engine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
-      const s = slipPct(f, engine)/100;
       const price = Number(fr.price)||0; fuelCostAll += t*price;
       sum.fuelByType[f.id] = (sum.fuelByType[f.id]||0)+t; sum.fuelTotal += t;
       det.fuels.push({ id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleUK: t*covUK });
-      /* CII: all fuel, CO2 only (imo-g1-s4). Optional Circ.905 override via fr.ciiCf. */
+      /* CII: all fuel, CO2 only (imo-g1-s4) — slip/consumer independent. Optional Circ.905 override via fr.ciiCf. */
       const cfCII = (fr.ciiCf!==undefined && fr.ciiCf!=="" && fr.ciiCf!=null) ? Number(fr.ciiCf) : f.cf;
       cii_g += t*1e6*cfCII;
       det.co2 += t*cfCII;
-      /* EU ETS */
-      if(covEU>0){
-        const mt = t*covEU;
-        const zero = state.bioZeroRatedETS && (f.bio||f.rfnbo);
-        const efCO2 = zero?0:f.cf, efCH4 = zero?0:f.ch4, efN2O = zero?0:f.n2o;
-        const mNC = mt*s;
-        const co2e = (mt-mNC)*efCO2 + GWP_EUETS.ch4*((mt-mNC)*efCH4 + (zero?0:mNC)) + GWP_EUETS.n2o*(mt-mNC)*efN2O;
-        ets_t_co2 += mt*efCO2; ets_t_co2e += co2e;
-        det.etsCO2 += mt*efCO2; det.etsCO2e += co2e;
-      }
-      /* UK ETS (ukets-sch2a-p35) */
-      if(covUK>0){
-        const m = t*covUK, mNC = m*s;
-        uk_co2 += (m-mNC)*f.cf; uk_ch4 += (m-mNC)*f.ch4 + mNC; uk_n2o += (m-mNC)*f.n2o;
-        det.ukCO2e += (m-mNC)*f.cf + GWP_UKETS.ch4*((m-mNC)*f.ch4 + mNC) + GWP_UKETS.n2o*(m-mNC)*f.n2o;
-      }
-      /* FuelEU (fueleu-annexi) */
-      if(covEU>0){
-        const Mg = t*1e6*covEU;
-        const E  = Mg*f.lcv;
-        const wtt = wttOf(f, fr.E, fr.wtt);
-        const ttw = ttwIntensity(f, engine);
-        const rwd = (f.rfnbo && y>=2025 && y<=2033) ? 2 : 1;
-        feu.terms.push({ id:f.id, name:f.name, E, wtt, ttw, rwd, tonnes:t*covEU, price, bio:f.bio||false, rfnbo:f.rfnbo||false });
-        feu.E_plain += E; feu.E_rwd += E*rwd; feu.num += E*(wtt+ttw);
-        det.E += E;
+      /* per-machine parts: slip (and hence ETS CO2e / UK CH4 / FuelEU TtW) differs per consumer */
+      for(const p of machineParts(fr, f, t, state)){
+        const s = slipPct(f, p.engine)/100;
+        /* EU ETS */
+        if(covEU>0){
+          const mt = p.t*covEU;
+          const zero = state.bioZeroRatedETS && (f.bio||f.rfnbo);
+          const efCO2 = zero?0:f.cf, efCH4 = zero?0:f.ch4, efN2O = zero?0:f.n2o;
+          const mNC = mt*s;
+          const co2e = (mt-mNC)*efCO2 + GWP_EUETS.ch4*((mt-mNC)*efCH4 + (zero?0:mNC)) + GWP_EUETS.n2o*(mt-mNC)*efN2O;
+          ets_t_co2 += mt*efCO2; ets_t_co2e += co2e;
+          det.etsCO2 += mt*efCO2; det.etsCO2e += co2e;
+        }
+        /* UK ETS (ukets-sch2a-p35) */
+        if(covUK>0){
+          const m = p.t*covUK, mNC = m*s;
+          uk_co2 += (m-mNC)*f.cf; uk_ch4 += (m-mNC)*f.ch4 + mNC; uk_n2o += (m-mNC)*f.n2o;
+          det.ukCO2e += (m-mNC)*f.cf + GWP_UKETS.ch4*((m-mNC)*f.ch4 + mNC) + GWP_UKETS.n2o*(m-mNC)*f.n2o;
+        }
+        /* FuelEU (fueleu-annexi + essf-ws1-2-5 allocation):
+           the row's FULL fuel is allocatable (it is MRV-monitored); only E × coverage
+           counts towards the energy scope. Pool entries are per fuel × consumer so LNG
+           in engines with different slip ranks separately (essf-ws1 extra-EEA ex. 2). */
+        if(covEU>0){
+          const E  = p.t*1e6*f.lcv;                    // MJ, full mass of this part
+          const wtt = wttOf(f, fr.E, fr.wtt);
+          const ttw = ttwIntensity(f, p.engine);
+          const rwd = (f.rfnbo && y>=2025 && y<=2033) ? 2 : 1;
+          feuPool.push({ id:f.id, name:f.name, engine:p.engine, m:p.m, E, Ecov:E*covEU,
+                         wtt, ttw, rwd, gPerMJ:wtt+ttw, eff:(wtt+ttw)/rwd,
+                         tonnes:p.t, price, bio:f.bio||false, rfnbo:f.rfnbo||false });
+          E_scope += E*covEU;
+          det.E += E*covEU;
+        }
       }
     }
     if(row.kind==="voyage") sum.co2Sea += det.co2; else sum.co2Berth += det.co2;
@@ -199,6 +258,39 @@ function computeAll(state){
     }
     rowDetails.push(det);
   }
+  if(nOutOfYear) warn.push(nOutOfYear+" row(s) dated outside the "+y+" reporting year are EXCLUDED from ALL KPIs (multi-year import) — switch the reporting year in Settings to compute the other year. Rows are split at the year boundary at import, so nothing is double-counted.");
+
+  /* ---- FuelEU fuel allocation (essf-ws1-2-5 / extra-EEA worked examples) ----
+     FuelEU prescribes no allocation method; MRV-reported fuels may be freely allocated
+     to fill the energy scope. Optimal = rank by effective WtW intensity (incl. slip;
+     RFNBO ranked on intensity ÷ RWD reward, agreed 2026-07-16) ascending and fill
+     cleanest-first — the marginal entry pro-rata. Proportional = each entry contributes
+     E × coverage (pre-2026-07-16 behaviour, kept as a comparison toggle). */
+  const feuMerged = {};
+  for(const e of feuPool){
+    const k = e.id+"|"+e.engine+"|"+e.wtt.toFixed(6)+"|"+e.ttw.toFixed(6)+"|"+e.rwd;
+    const g = feuMerged[k] || (feuMerged[k] = Object.assign({}, e, { E:0, Ecov:0, tonnes:0, _pw:0 }));
+    g.E += e.E; g.Ecov += e.Ecov; g.tonnes += e.tonnes; g._pw += e.tonnes*e.price;
+  }
+  const pool = Object.values(feuMerged).map(g=>{ g.price = g.tonnes>0? g._pw/g.tonnes : 0; delete g._pw; return g; });
+  pool.sort((a,b)=> a.eff-b.eff || a.gPerMJ-b.gPerMJ);
+  const allocMethod = state.fueleuAlloc==="proportional" ? "proportional" : "optimal";
+  const mkTerms = (optimal)=>{
+    let remaining = E_scope, num=0, E_rwd=0;
+    const terms=[];
+    for(const e of pool){
+      const take = optimal ? Math.min(e.E, Math.max(0, remaining)) : e.Ecov;
+      remaining -= take;
+      num += take*e.gPerMJ; E_rwd += take*e.rwd;
+      terms.push({ id:e.id, name:e.name, engine:e.engine, m:e.m, wtt:e.wtt, ttw:e.ttw, rwd:e.rwd,
+                   bio:e.bio, rfnbo:e.rfnbo, price:e.price,
+                   E:take, E_pool:e.E, tonnes: e.E>0? e.tonnes*take/e.E : 0, tonnesPool:e.tonnes });
+    }
+    return { num, E_rwd, terms };
+  };
+  const aOpt = mkTerms(true), aProp = mkTerms(false);
+  const sel = allocMethod==="optimal" ? aOpt : aProp, alt = allocMethod==="optimal" ? aProp : aOpt;
+  const feu = { terms: sel.terms, E_plain: E_scope, E_rwd: sel.E_rwd, num: sel.num };
 
   /* ---- CII ---- */
   const type = TYPE_BY_ID[(state.ship||{}).typeId] || SHIP_TYPES[0];
@@ -222,7 +314,7 @@ function computeAll(state){
   const etsBasis_t = y>=2026 ? ets_t_co2e : ets_t_co2;
   const euas = etsBasis_t*phase;
   const etsCost = euas*(Number(state.euaPrice)||0);
-  if(y>=2026) warn.push("EU ETS 2026+: CO2e includes CH4/N2O using GWP "+GWP_EUETS.ch4+"/"+GWP_EUETS.n2o+" ("+GWP_EUETS.label+", selected in Vessel & settings) — the amended EU MRV GWP values are not in the KB; either set is a FILL-IN proxy. VERIFY. FuelEU (25/298) and UK ETS (28/265) GWPs are prescribed by regulation and are NOT affected by this selection.");
+  if(y>=2026) warn.push("EU ETS 2026+: CO2e includes CH4/N2O using GWP "+GWP_EUETS.ch4+"/"+GWP_EUETS.n2o+" ("+GWP_EUETS.label+", selected in Settings) — the amended EU MRV GWP values are not in the KB; either set is a FILL-IN proxy. VERIFY. FuelEU (25/298) and UK ETS (28/265) GWPs are prescribed by regulation and are NOT affected by this selection.");
   if(state.bioZeroRatedETS) warn.push("EU ETS: biofuels/RFNBO zero-rated assumes RED II-compliant certification (MRR sustainability rules — simplification).");
 
   /* ---- UK ETS ---- */
@@ -239,9 +331,12 @@ function computeAll(state){
   /* essf-ws1-1-3-5 rounding rule: do NOT round intermediate results; only the final
      penalty is rounded (to the nearest integer). ESSF example tables show 5-dp
      display-rounded values, so results can differ from the printed tables by <0.001%. */
+  let ghgieAlt=null, cbAlt=null;
   if(E_total>0){
     ghgie = fwind * feu.num/(feu.E_rwd + opsMJ);      // OPS numerator term set to zero per Annex I
     cb = (T - ghgie)*E_total;                          // gCO2eq (Annex IV A)
+    ghgieAlt = fwind * alt.num/(alt.E_rwd + opsMJ);   // the non-selected allocation method, for comparison
+    cbAlt = (T - ghgieAlt)*E_total;
   }
   const n = Math.max(1, Number(state.deficitPeriods)||1);
   const mult = 1+(n-1)/10;                             // Art 23(2)
@@ -299,7 +394,7 @@ function computeAll(state){
   if(ghgie!=null && ghgie>T && state.breakevenFuelId){
     const bf = FUEL_BY_ID[state.breakevenFuelId];
     if(bf){
-      const engine = state.breakevenEngine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+      const engine = bf.engineClass || state.breakevenEngine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
       const bwtt = wttOf(bf, state.breakevenE, state.breakevenWtt);
       const bttw = ttwIntensity(bf, engine);
       const brwd = (bf.rfnbo && y>=2025 && y<=2033)?2:1;
@@ -331,7 +426,8 @@ function computeAll(state){
     cii:{ type:type.name, capUnit:type.capUnit, ciiRef, Z, ciiReq, attained:attainedActual, bounds, rating, totalDist, co2_t:cii_g/1e6, g2 },
     ets:{ covered_t_co2:ets_t_co2, covered_t_co2e:ets_t_co2e, basis_t:etsBasis_t, phase, euas, cost:etsCost, basisLabel: y>=2026?"CO2e (CO2+CH4+N2O)":"CO2 only (CH4/N2O from 2026)", gwp:GWP_EUETS },
     ukets:{ active:ukActive, tco2e:ukets_t, co2:uk_co2, ch4:uk_ch4, n2o:uk_n2o, cost:ukCost },
-    fueleu:{ target:T, targetPct:fueleuTargetPct(y), ghgie, E_total, E_fuel:feu.E_plain, opsMJ, cb, banked, poolCB, borrowUsed, borrowDebt, borrowLimit, cbFinal, penalty, penaltyBase, mult, surplusValue, fwind, terms:feu.terms },
+    fueleu:{ target:T, targetPct:fueleuTargetPct(y), ghgie, E_total, E_fuel:feu.E_plain, opsMJ, cb, banked, poolCB, borrowUsed, borrowDebt, borrowLimit, cbFinal, penalty, penaltyBase, mult, surplusValue, fwind, terms:feu.terms,
+             allocMethod, ghgieAlt, cbAlt, E_pool: pool.reduce((s,e)=>s+e.E,0) },
     scc:{ voyages:sccVoyages, weighted:sccWeighted, totTW:sccTotTW, totCO2:sccTotCO2, deltaMin:sccDeltaMin, deltaStr:sccDeltaStr },
     econ:{ fuelCostAll, etsCost, ukCost, fueleuPenalty:penalty, surplusValue, total: fuelCostAll+etsCost+ukCost+penalty-surplusValue, breakeven }
   };

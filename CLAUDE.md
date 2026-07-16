@@ -8,7 +8,7 @@ Static site, no build step, no framework, no external requests. Deploys to Verce
 |---|---|---|
 | `index.html` | Page skeleton: lock screen, header, nav, empty tab containers | Yes — design changes welcome |
 | `css/styles.css` | All styling | Yes — primary design surface |
-| `js/ui.js` | Tab rendering (HTML template strings), event handlers, import/export (OVD CSV, THETIS XML, scenario JSON), localStorage state, access gate | **Only the HTML template strings.** Never touch state, calculation calls, parsers, import/export, or the gate logic |
+| `js/ui.js` | Tab rendering (HTML template strings), event handlers, import (OVD CSV, MDA xlsx/csv, THETIS XML — one auto-detecting button), localStorage state, access gate | **Only the HTML template strings.** Never touch state, calculation calls, parsers, import, or the gate logic |
 | `js/engine.js` | Calculation engine: CII, EU ETS, FuelEU Maritime, UK ETS, SCC; fuel factors and constants | **Never edit** |
 | `js/ports_data.js` | Generated port LOCODE data (from DNV xlsx) | **Never edit, never read into context** (363 KB — reading it wastes tokens) |
 
@@ -23,5 +23,5 @@ Static site, no build step, no framework, no external requests. Deploys to Verce
 ## After every change, verify
 
 1. `node --check js/ui.js` (and any other edited JS)
-2. Open `index.html` in a browser, unlock, and confirm: all 4 tabs render, Import OVD CSV / THETIS XML works, Export/Import scenario works, Reset works, no console errors.
+2. Open `index.html` in a browser, unlock, and confirm: all 4 tabs render, ⬆ Import data works for OVD CSV, MDA xlsx, and THETIS XML, Reset works, no console errors.
 3. Run the built-in self-test on the Help tab.
