@@ -1411,6 +1411,180 @@ function downloadReportsXlsx(){
   downloadXlsx("mda_reports_OVD_format.xlsx","Reports",rows);
 }
 
+/* ---- Voyage & berth breakdown: 16-column CSS-grid layout (handoff SPEC.md, 2026-07-17) ----
+   Maps the engine's rowDetails + the aligned in-year source rows onto the leg/fuel model:
+   ports [{label,juris}], per-fuel rows (rowspan via grid-row spans), leg-level results.
+   Jurisdiction badge is shown on BERTH rows only, never on voyages (SPEC §2). */
+const JURIS_PAL = {
+  'EU':     { bg:'#eef2fa', fg:'#3652a3' },
+  'UK':     { bg:'#f4f1fa', fg:'#6d4fa3' },
+  'EU OMR': { bg:'#e7f4f4', fg:'#0e7490' },
+  'UK OMR': { bg:'#faf0f4', fg:'#a34f6d' },
+};
+const BR_GRID = "minmax(150px,2.6fr) minmax(64px,0.7fr) minmax(90px,0.9fr) minmax(54px,0.7fr) minmax(58px,0.6fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr)";
+/* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
+function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
+/* jurisdiction of a berth port: OMR wins, else EU/UK zone, else null (no badge) */
+function jurisOfPort(port, zone){
+  if(port && port.c){
+    const omr = portOMR(port.c); if(omr) return omr;
+    const z = zoneOfLocode(port.c);
+    return z==="EEA"?"EU":z==="UK"?"UK":null;
+  }
+  if(zone) return zone==="EEA"?"EU":zone==="UK"?"UK":null;
+  return null;
+}
+/* strict percentage — max 2 dp, integers show no decimals (SPEC §4) */
+function brPct(frac){ const r=Math.round(frac*10000)/100; return (r%1===0?r.toFixed(0):r.toFixed(2))+"%"; }
+/* muted em-dash for empty / no-obligation cells (SPEC §5) */
+const brDash = '<span style="color:#94a3b8">—</span>';
+function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp||2); }
+
+/* build the {label,juris} ports for a leg from its aligned source row */
+function legPorts(det, row){
+  if(det.kind==="voyage"){
+    const a = row && row.fromPort ? portDisp(row.fromPort) : (row ? zoneName(row.from) : "");
+    const b = row && row.toPort   ? portDisp(row.toPort)   : (row ? zoneName(row.to)   : "");
+    if(!a && !b && det.label){ const parts=det.label.split("→"); return [{label:(parts[0]||"").trim(),juris:null},{label:(parts[1]||"").trim(),juris:null}]; }
+    return [{label:a, juris:null},{label:b, juris:null}];      // voyages: never badged (SPEC §2)
+  }
+  const p = row && row.port;
+  const label = p ? portDisp(p) : (row ? zoneName(row.zone) : (det.label||"").replace(/^At berth\s*/,""));
+  return [{ label, juris: jurisOfPort(p, row?row.zone:null) }];
+}
+
+/* replicate the engine's reporting-year filter so source rows align 1:1 with rowDetails */
+function inYearRows(){
+  const y = Number(S.year)||2026;
+  return (S.rows||[]).filter(row=>{
+    if(row.yearPart) return Number(row.yearPart)===y;
+    const a = row.tStart? String(row.tStart).slice(0,4) : null;
+    const b = row.tEnd?   String(row.tEnd).slice(0,4)   : null;
+    if(!a && !b) return true;
+    return a===String(y) || b===String(y);
+  });
+}
+
+/* full inner grid: header rows + one grid per leg + totals + footnote */
+function breakdownGrid(R, tips){
+  const cellPad = "10px 12px";
+  const src = inYearRows();
+  const header = `
+    <div style="display:grid;grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
+      <div style="grid-column:1;grid-row:1 / span 2;display:flex;align-items:flex-end;padding:10px 12px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
+      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:10px 12px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
+      <div style="grid-column:3 / span 3;grid-row:1;padding:8px 12px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics</div>
+      <div style="grid-column:6 / span 6;grid-row:1;padding:8px 12px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:12 / span 3;grid-row:1;padding:8px 12px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS</div>
+      <div style="grid-column:15 / span 2;grid-row:1;padding:8px 12px;background:#f4f1fa;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS</div>
+      <div style="grid-column:3;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;white-space:nowrap">Fuel type</div>
+      <div style="grid-column:4;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Fuel consumed (tonnes)">Cons. t</div>
+      <div style="grid-column:5;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap;border-right:1px solid #e2e8f0">LCV ${tips.lcv}</div>
+      <div style="grid-column:6;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:7;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">Elig. t</div>
+      <div style="grid-column:8;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Energy (10⁶ MJ)</div>
+      <div style="grid-column:9;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Elig. energy (10⁶ MJ)</div>
+      <div style="grid-column:10;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">CB</div>
+      <div style="grid-column:11;grid-row:2;padding:8px 12px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Penalty (€)</div>
+      <div style="grid-column:12;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:13;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (t) ${tips.cf}</div>
+      <div style="grid-column:14;grid-row:2;padding:8px 12px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e) ${tips.eua}</div>
+      <div style="grid-column:15;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:16;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e) ${tips.uka}</div>
+    </div>`;
+
+  let zi=0;
+  const body = R.rowDetails.map((d,i)=>{
+    const row = src[i];
+    const isBerth = d.kind!=="voyage";
+    const span = Math.max(1, d.fuels.length);
+    const bg = (zi++ % 2 === 1) ? "#fafcfd" : "#ffffff";
+    const ports = legPorts(d, row);
+    const portHtml = ports.map((p,pi)=>{
+      const j = (isBerth && p.juris) ? JURIS_PAL[p.juris] : null;
+      const badge = j ? `<span style="display:inline-block;margin-left:5px;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:700;letter-spacing:0.03em;vertical-align:1px;background:${j.bg};color:${j.fg}">${p.juris}</span>` : "";
+      const arrow = pi < ports.length-1 ? `<span style="color:#94a3b8;margin:0 6px">→</span>` : "";
+      return esc(p.label)+badge+arrow;
+    }).join("");
+    const cargo = isBerth && (!row || row.poc!==false);
+    const cargoIcon = cargo ? `<span title="Port of call (cargo activity)" style="cursor:help;font-size:13px;line-height:1.35;flex:none">📦</span>` : "";
+    const legTag = isBerth ? "@BERTH" : "VOYAGE";
+    const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
+    const dist = d.kind==="voyage" ? brNum(d.dist) : brDash;
+    const covEU = d.covEU, covUK = d.covUK;
+
+    const fuelCells = d.fuels.map((fu,fi)=>{
+      const fb = FUEL_BY_ID[fu.id]||{};
+      const bb = fi===d.fuels.length-1 ? "transparent" : "#eef2f5";
+      const rr = fi+1;
+      const energy = (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0;   // 10⁶ MJ = t × LCV(MJ/g)
+      return `
+        <div style="grid-column:3;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};font-weight:600;color:#334155;white-space:nowrap">${esc(cleanFuelName(fb.id?fb:{id:fu.id,name:fu.name}))}</div>
+        <div style="grid-column:4;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${fmtF(fu.tonnes,2)}</div>
+        <div style="grid-column:5;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;color:#64748b;border-right:1px solid #e2e8f0">${fb.lcv!=null?fmtF(fb.lcv,4):brDash}</div>
+        <div style="grid-column:7;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(fu.eligibleEU)}</div>
+        <div style="grid-column:8;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(energy)}</div>`;
+    }).join("");
+
+    const cbColor = covEU>0 ? ((d.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8";
+    return `
+      <div style="display:grid;grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+        <div style="grid-column:1;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+            <span style="flex:1 1 auto;min-width:0;font-weight:600;color:#0f172a;line-height:1.5;overflow-wrap:anywhere">${isBerth?"⚓":"⛴"} ${portHtml}</span>
+            ${cargoIcon}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;column-gap:8px;font-size:0.85em;color:#64748b;margin-top:4px;line-height:1.5"><span style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></span><span style="white-space:nowrap">${toS}</span><span style="margin-left:auto;align-self:flex-end;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</span></div>
+        </div>
+        <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
+        ${fuelCells}
+        <div style="grid-column:6;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
+        <div style="grid-column:9;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${covEU>0?fmtF(d.E/1e6,2):brDash}</div>
+        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${cbColor}">${(covEU>0&&d.feuCB!=null)?fmtF(d.feuCB/1e6,2):brDash}</div>
+        <div style="grid-column:11;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a3412">${d.feuPenalty?fmtF(d.feuPenalty,2):brDash}</div>
+        <div style="grid-column:12;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
+        <div style="grid-column:13;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${brNum(d.co2)}</div>
+        <div style="grid-column:14;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#3652a3">${covEU>0?fmtF(d.euas,2):brDash}</div>
+        <div style="grid-column:15;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covUK)}</div>
+        <div style="grid-column:16;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#6d4fa3">${covUK>0?fmtF(d.ukCO2e,2):brDash}</div>
+      </div>`;
+  }).join("");
+
+  const empty = !R.rowDetails.length ? `<div style="padding:22px;text-align:center;color:#64748b">No activity rows for ${R.year}.</div>` : "";
+
+  // Totals
+  const sum = k => R.rowDetails.reduce((a,d)=>a+(Number(d[k])||0),0);
+  const sumF = k => R.rowDetails.reduce((a,d)=>a+d.fuels.reduce((b,fu)=>b+(Number(fu[k])||0),0),0);
+  const sumEnergy = R.rowDetails.reduce((a,d)=>a+d.fuels.reduce((b,fu)=>{const fb=FUEL_BY_ID[fu.id]||{};return b+((fb.lcv&&fu.eligibleEU)?fu.eligibleEU*fb.lcv:0);},0),0);
+  const totals = R.rowDetails.length ? `
+    <div style="display:grid;grid-template-columns:${BR_GRID};background:#f8fafc;border-top:1px solid #cbd5e1">
+      <div style="grid-column:1;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a">Totals — ${R.year}</div>
+      <div style="grid-column:2;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("dist"),2)}</div>
+      <div style="grid-column:4;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("tonnes"),2)}</div>
+      <div style="grid-column:5;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      <div style="grid-column:6;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:7;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("eligibleEU"),2)}</div>
+      <div style="grid-column:8;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumEnergy,2)}</div>
+      <div style="grid-column:9;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("E")/1e6,2)}</div>
+      <div style="grid-column:10;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#b91c1c">${fmtF(sum("feuCB")/1e6,2)}</div>
+      <div style="grid-column:11;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#9a3412">${fmtF(sum("feuPenalty"),2)}</div>
+      <div style="grid-column:12;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:13;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("co2"),2)}</div>
+      <div style="grid-column:14;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#3652a3">${fmtF(sum("euas"),2)}</div>
+      <div style="grid-column:15;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:16;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#6d4fa3">${fmtF(sum("ukCO2e"),2)}</div>
+    </div>` : "";
+
+  return `<div style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${header}${body}${empty}${totals}</div>
+    <div style="padding:10px 2px 0;font-size:11.5px;color:#64748b;display:flex;gap:18px;flex-wrap:wrap">
+      <span>All figures rounded to 2 decimal places (LCV: 4).</span>
+      <span>— indicates no obligation (out of scope or OMR derogation until 2030).</span>
+      <span>CB = FuelEU compliance balance; negative values are deficits.</span>
+      <span>📦 = port of call (cargo activity).</span>
+      <span>OMR = outermost region.</span>
+    </div>`;
+}
+
 function renderCalcs(){
   const el=document.getElementById("tab-calcs"); if(!el) return;
   const R=computeAll(S);
@@ -1420,23 +1594,7 @@ function renderCalcs(){
   const iUKA=info("<b>UKA</b> = tCO₂e for UK-scope activity (UK→UK voyages + UK in-port, ukets-sch2a-p7) with GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35, prescribed). Obligation applies from scheme year 2026.");
   const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. Scope like EU ETS coverage. The annual balance/penalty is shared out by each row's in-scope energy — <b>indicative only</b>, FuelEU is period-based in law. Allocation method: "+(f.allocMethod==="optimal"?"optimal (cleanest-first, essf-ws1-2-5)":"proportional (comparison)")+".");
   const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MDO/MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Formulas tab. Eligible energy = eligible mass × 10⁶ × LCV.");
-  const brRows=R.rowDetails.map(d=>{
-    const fuelLines=d.fuels.map(fu=>{
-      const fb=FUEL_BY_ID[fu.id]||{};
-      return `<div class="note">${esc(fu.name||fu.id)} — ${fmt(fu.tonnes)} t · LCV ${fb.lcv??"—"} · eligible EU ${fmt(fu.eligibleEU)} t${fb.lcv?" · "+fmt(fu.eligibleEU*1e6*fb.lcv/1e6)+" ×10⁶ MJ":""}</div>`;
-    }).join("");
-    return `<tr>
-      <td>${d.kind==="voyage"?"⛵":"⚓"} ${esc(d.label||"—")}${fuelLines}</td>
-      <td class="note">${esc(fmtRange(d.tStart,d.tEnd))||"—"}${d.hours?`<div>${fmt(d.hours)} h</div>`:""}${d.dist?`<div>${fmt(d.dist)} nm</div>`:""}</td>
-      <td class="num">${d.covEU*100}%</td><td class="num">${d.covUK*100}%</td><td class="num">${d.covEU*100}%</td>
-      <td class="num">${fmt(d.co2)}</td>
-      <td class="num">${fmt(d.euas)}</td>
-      <td class="num">${fmt(d.ukCO2e)}</td>
-      <td class="num">${fmt(d.E/1e6)}</td>
-      <td class="num" style="color:${(d.feuCB??0)>=0?"var(--green)":"var(--red)"}">${d.feuCB!=null?fmt(d.feuCB/1e6):"—"}</td>
-      <td class="num">${d.feuPenalty?fmt(d.feuPenalty,0):"—"}</td>
-    </tr>`;
-  }).join("");
+  const brInner=breakdownGrid(R,{lcv:iLCV,cf:iCf,eua:iEUA,uka:iUKA,feu:iFEU});
   const reps=S.mdaReports||[];
   const repRows=reps.map(r=>`<tr>
       <td class="note">${esc((r.t||"").replace("T"," "))}</td>
@@ -1453,14 +1611,8 @@ function renderCalcs(){
   <div class="card">
     <h2>Voyage &amp; berth breakdown — ${R.year}
       <button class="pill hbtn noprint" style="float:right" onclick="downloadBreakdownXlsx()">⬇ Excel</button></h2>
-    <table class="vbtable">
-      <tr><th>Activity &amp; fuels ${iLCV}</th><th>Timeframe</th>
-          <th class="num">EU ETS %</th><th class="num">UK ETS %</th><th class="num">FuelEU %</th>
-          <th class="num">CO₂ t ${iCf}</th><th class="num">EUA ${iEUA}</th><th class="num">UKA tCO₂e ${iUKA}</th>
-          <th class="num">Eligible energy ×10⁶ MJ</th><th class="num">FuelEU CB tCO₂eq* ${iFEU}</th><th class="num">Penalty €*</th></tr>
-      ${brRows||'<tr><td colspan="11" class="note">No activity rows for '+R.year+'.</td></tr>'}
-    </table>
-    <p class="note"><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).</p>
+    ${brInner}
+    <p class="note" style="margin-top:10px"><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).</p>
   </div>
 
   <div class="card">
@@ -2183,6 +2335,33 @@ function runSelfTests(){
       }catch(err){ if(el2) el2.textContent += "\nFAIL  xlsx round-trip threw: "+err.message; }
     })();
   }catch(e){ fail++; out.push("FAIL  Session-3 (Calculations/xlsx) tests threw: "+e.message); }
+  /* ---- UK ETS currency (checked 2026-07-16 vs SI 2026/392, in force 1 Jul 2026) ---- */
+  try{
+    const ukState = y => ({year:y, ship:{typeId:"bulk",capacity:45000}, rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"MDO",tonnes:10}]}]});
+    const r26=computeAll(ukState(2026)), r27=computeAll(ukState(2027));
+    ckT("UK ETS: UK→UK domestic voyage 100% in scope, GWP 28/265", r26.ukets.tco2e>32 && r26.ukets.active);
+    ckT("UK ETS: UK port of call (at berth) 100% in scope",
+        computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:[{kind:"port",zone:"UK",poc:true,fuels:[{fuelId:"MDO",tonnes:10}]}]}).ukets.tco2e>32);
+    ckT("UK ETS: 2026 half-year (1 Jul–31 Dec) warning shown", r26.warnings.some(w=>/first maritime scheme year is the half-year 1 Jul/.test(w)));
+    ckT("UK ETS: NI↔GB / GT / offshore simplifications flagged", r26.warnings.some(w=>/NI↔GB voyages get a 50%/.test(w)));
+    ckT("UK ETS: no half-year warning for full-year 2027", !r27.warnings.some(w=>/half-year 1 Jul/.test(w)) && r27.warnings.some(w=>/NI↔GB/.test(w)));
+    ckT("UK ETS: not active before 2026", computeAll(ukState(2025)).ukets.active===false);
+    /* 2026 half-year gate (SI 2026/392 in force 1 Jul 2026) — DATED rows */
+    const ukDated=(a,b,y2)=>({year:y2,ship:{typeId:"bulk",capacity:45000},rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,tStart:a,tEnd:b,fuels:[{fuelId:"MDO",tonnes:10}]}]});
+    const full26=r26.ukets.tco2e;   // undated 2026 baseline = full scope
+    ckT("UK ETS gate: voyage wholly BEFORE 1 Jul 2026 → 0 in UK scope",
+        computeAll(ukDated("2026-03-01T00:00","2026-03-05T00:00",2026)).ukets.tco2e===0);
+    ckT("UK ETS gate: voyage wholly ON/AFTER 1 Jul 2026 → full scope",
+        Math.abs(computeAll(ukDated("2026-08-01T00:00","2026-08-05T00:00",2026)).ukets.tco2e-full26)<1e-6);
+    ckT("UK ETS gate: voyage straddling 1 Jul (29 Jun 00:00→3 Jul 00:00, 4 days; 2 after cut) → 50% time-pro-rated",
+        Math.abs(computeAll(ukDated("2026-06-29T00:00","2026-07-03T00:00",2026)).ukets.tco2e-full26*0.5)<full26*1e-3);
+    ckT("UK ETS gate: same dated voyage counts FULL in 2027 (no half-year gate)",
+        Math.abs(computeAll(ukDated("2027-03-01T00:00","2027-03-05T00:00",2027)).ukets.tco2e-full26)<1e-6);
+    ckT("UK ETS gate: pre-1-Jul row still counts for CII (all activity) even when 0 for UK ETS",
+        computeAll(ukDated("2026-03-01T00:00","2026-03-05T00:00",2026)).cii.co2_t>30);
+    ckT("UK ETS gate: straddling-row warning notes time-pro-ration",
+        computeAll(ukDated("2026-06-29T00:00","2026-07-03T00:00",2026)).warnings.some(w=>/time-pro-rated/.test(w)));
+  }catch(e){ fail++; out.push("FAIL  UK ETS currency tests threw: "+e.message); }
   const g=(pass+" passed, "+fail+" failed");
   const el=document.getElementById("testout"); el.style.display=""; el.textContent=out.join("\n")+"\n\n"+g;
 }

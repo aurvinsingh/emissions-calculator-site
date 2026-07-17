@@ -132,6 +132,26 @@ function ukCoverage(row){
   if(row.kind==="port") return (row.zone==="UK" && row.poc!==false) ? 1 : 0;
   return (row.from==="UK"&&row.to==="UK")?1:0;
 }
+/* UK ETS maritime scheme window (SI 2026/392, in force 1 July 2026): the FIRST scheme year
+   2026 is the HALF-YEAR 1 Jul–31 Dec 2026 only — activity before 1 Jul 2026 is out of UK ETS
+   scope even though it sits in the 2026 reporting year. From 2027 the full calendar year is in
+   scope. Returns the fraction of a row's period that falls inside the scheme window; a period
+   straddling 1 Jul 2026 is pro-rated by time (same assumption as the calendar-year split at
+   import). Undated rows count in full (the user chose year 2026 = the H2 scheme; a warning
+   reminds them to include only 1 Jul–31 Dec activity). Checked 2026-07-16. */
+function ukSchemeFraction(row, y){
+  if(y<2026) return 0;
+  if(y>2026) return 1;
+  const a=row.tStart, b=row.tEnd;
+  if(!a && !b) return 1;                                   // undated → user responsibility (warned)
+  const cut=Date.parse("2026-07-01T00:00:00Z");
+  const S=Date.parse(((a||b))+":00Z"), E=Date.parse(((b||a))+":00Z");
+  if(!isFinite(S)||!isFinite(E)) return 1;
+  if(E<=cut) return 0;                                     // wholly before 1 Jul 2026
+  if(S>=cut) return 1;                                     // wholly on/after 1 Jul 2026
+  if(!(E>S)) return 1;                                     // instantaneous point on/after cut
+  return (E-cut)/(E-S);                                    // straddles 1 Jul → time-pro-rated
+}
 
 /* ---------- machinery split (2026-07-16, Aurvin) ----------
    Imported MDA/OVD fuel lines may carry a per-consumer split fr.split = {ME, AE, BLR, OTH}
@@ -185,7 +205,7 @@ function computeAll(state){
   };
 
   /* ---- aggregate per row ---- */
-  let cii_g=0, totalDist=0, fuelCostAll=0, nOutOfYear=0;
+  let cii_g=0, totalDist=0, fuelCostAll=0, nOutOfYear=0, nUkPartial=0;
   let ets_t_co2=0, ets_t_co2e=0, uk_co2=0, uk_ch4=0, uk_n2o=0;
   const feuPool = [];              // FuelEU allocation pool (essf-ws1-2-5): one entry per fuel × consumer
   let E_scope = 0;                 // FuelEU energy scope, MJ (Σ row energy × coverage)
@@ -195,7 +215,10 @@ function computeAll(state){
 
   for(const row of state.rows||[]){
     if(!rowInYear(row)){ nOutOfYear++; continue; }
-    const covEU = euCoverage(row), covUK = ukCoverage(row);
+    const covEU = euCoverage(row);
+    const ukFrac = ukSchemeFraction(row, y);
+    const covUK = ukCoverage(row) * ukFrac;               // 2026 = half-year 1 Jul–31 Dec only
+    if(y===2026 && ukCoverage(row)>0 && ukFrac<1) nUkPartial++;
     const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
                   fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0 };
@@ -321,6 +344,14 @@ function computeAll(state){
   const ukets_t = uk_co2 + GWP_UKETS.ch4*uk_ch4 + GWP_UKETS.n2o*uk_n2o;
   const ukCost = ukets_t*(Number(state.ukaPrice)||0);
   const ukActive = y>=2026;
+  /* UK ETS maritime scope in force 1 July 2026 (SI 2026/392, Sch 2A). Scope modelled:
+     UK↔UK domestic voyages 100% + UK ports of call (at berth/anchorage) 100%, incl. for
+     vessels arriving from abroad (ukets-sch2a-p7); GWP 28/265 (Table C1). Reg checked
+     2026-07-16. Known simplifications flagged below. */
+  if(ukActive && ukets_t>0){
+    if(y===2026) warn.push("UK ETS: the first maritime scheme year is the half-year 1 Jul–31 Dec 2026 (first surrender combined with 2027 by 30 Apr 2028). Only dated activity on/after 1 Jul 2026 is counted in UK ETS scope"+(nUkPartial? " ("+nUkPartial+" row(s) straddling 1 Jul were time-pro-rated)":"")+"; undated rows are counted in full — enter dates (or import) so the 1 Jul cutoff applies automatically.");
+    warn.push("UK ETS scope simplifications: NI↔GB voyages get a 50% surrender deduction (modelled here at 100% — verify if relevant); ship assumed ≥5,000 GT; offshore ships (in scope from 1 Jan 2027) not distinguished. No free allocation applies (operator buys all allowances) — reflected here.");
+  }
 
   /* ---- FuelEU ---- */
   const fwind = fwindFactor(Number(state.windRatio)||0);
