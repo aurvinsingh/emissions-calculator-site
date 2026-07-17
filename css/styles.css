@@ -135,6 +135,13 @@ nav{overflow-x:auto;scrollbar-width:thin}
   .ws{grid-template-columns:1fr}
 }
 
+/* ---- report-trace activity icons: instant hover tooltip with the activity name (2026-07-17) ---- */
+.actic{position:relative;display:inline-flex;cursor:default}
+.actic::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;font-size:10.5px;font-weight:600;letter-spacing:.02em;line-height:1;padding:5px 8px;border-radius:5px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:40}
+.actic::before{content:"";position:absolute;bottom:calc(100% + 2px);left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#0f172a;opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:40}
+.actic:hover::after,.actic:focus-visible::after{opacity:1}
+.actic:hover::before,.actic:focus-visible::before{opacity:1}
+
 /* port/berth rows tinted vs voyage rows (2026-07-16) */
 .rowcard.portcard{background:#faf8fd;border-color:#e1d7ee}
 /* fuel table-grid header (labels removed from each line) */

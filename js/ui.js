@@ -535,7 +535,10 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     if(rt==="FUEL_OIL_BUNKER"){                                 // stock movement, not consumption; transparent to all derivation logic
       nBunker++;
       recs.push({ skip:true, rt, dt, tEnd:iso(dt), fuels:{}, rob,
-                  bunker:String(G(r,"BUNKER_AMOUNT")).trim(), lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon });
+                  bunker:String(G(r,"BUNKER_AMOUNT")).trim(), lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon,
+                  /* display-only context for the trace table (2026-07-17) — no derivation impact */
+                  voy:String(G(r,"VOYAGE_NUMBER")).trim(), cur:String(G(r,"CURRENT_PORT_UNLO_CODE")).trim(),
+                  portN:String(G(r,"CURRENT_PORT")).trim(), ctry:String(G(r,"CURRENT_COUNTRY")).trim(), regn:String(G(r,"CURRENT_REGION")).trim() });
       continue;
     }
     const org=String(G(r,"ORIGIN_PORT_UNLO_CODE")).trim(), cur=String(G(r,"CURRENT_PORT_UNLO_CODE")).trim(), dst=String(G(r,"DESTINATION_PORT_UNLO_CODE")).trim();
@@ -565,6 +568,10 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
                 lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon, org, cur, dst,
                 portN:String(G(r,"CURRENT_PORT")).trim(), ctry:String(G(r,"CURRENT_COUNTRY")).trim(), regn:String(G(r,"CURRENT_REGION")).trim(),
                 oc, aa:String(G(r,"ASSOCIATED_ACTIVITY")).trim().toUpperCase(),
+                /* display-only retention for the trace table (2026-07-17): voyage no + ingested eligibility */
+                voy:String(G(r,"VOYAGE_NUMBER")).trim(),
+                euPct:(v=>isNaN(v)?null:v)(parseFloat(G(r,"EU_ETS_%"))),
+                ukPct:(v=>isNaN(v)?null:v)(parseFloat(G(r,"UK_ETS_%"))),
                 opl:truthy(G(r,"OUTSIDE_PORT_LIMIT")),
                 pocFile:String(G(r,"POC")).trim().toUpperCase(),
                 tEnd: endRaw!==""? (iso(mdaDate(endRaw))||iso(dt)) : iso(dt),
@@ -718,6 +725,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
      Not used by any calculation; saved with the workspace state at import. */
   const reports = recs.map(c=>({ rt:c.rt, role:c.role||"", t:c.dt? iso(c.dt):c.tEnd, ts:c.tStart||null, te:c.tEnd||null,
     oc:c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, dist:c.dist||0,
+    voy:c.voy||"", euPct:c.euPct??null, ukPct:c.ukPct??null,
     lat:c.lat??null, lon:c.lon??null, org:c.org||"", cur:c.cur||"", dst:c.dst||"",
     portN:c.portN||"", ctry:c.ctry||"", regn:c.regn||"",
     fuels:c.fuels||{}, mach:c.mach||null, rob:c.rob||{}, bunker:c.bunker||undefined }));
@@ -1411,6 +1419,177 @@ function downloadReportsXlsx(){
   downloadXlsx("mda_reports_OVD_format.xlsx","Reports",rows);
 }
 
+/* ---- Report-level trace table (design handoff design_handoff_report_trace_table, 2026-07-17) ----
+   Fuel group reordered to Fuel | Total | ME | AE | Boiler | Others | ROB (Bunker); "Others" is
+   computed (Total − ME − AE − Boiler, clamped ≥ 0); bunkered tonnage shows as a green +n badge
+   left of the ROB value on bunkering reports only; activities render as an icon row (multiple
+   per event supported); Voyage No sits after Port; Dist nm sits left of Eligibility %. */
+const TR_MONO = "ui-monospace,SFMono-Regular,Menlo,monospace";
+const TR_ICONS = {
+  anchor:'M12 22V8 M5 12H2a10 10 0 0 0 20 0h-3 M15 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+  route:'M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15 M9 19a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0 M20 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0',
+  berth:'M4 2v20 M4 8h4 M4 15h4 M11 17h10l-1.6 4H12.2z M13 13h6v4',
+  clock:'M12 7v5l3.5 2 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
+  fuel:'M3 22h12 M4 9h10 M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18 M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 4 0v-7.2a2 2 0 0 0-.6-1.4L18 5',
+  box:'M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12'
+};
+const TR_CONDS = {
+  AT_ANCHOR:       { label:'Anchor',        icon:TR_ICONS.anchor, color:'#5b7fa6' },
+  MANOEUVRING:     { label:'Manoeuvring',   icon:TR_ICONS.route,  color:'#6366f1' },
+  AT_BERTH:        { label:'Berth',         icon:TR_ICONS.berth,  color:'#0d9488' },
+  DRIFTING:        { label:'Drifting',      icon:TR_ICONS.anchor, color:'#64748b' },
+  CANAL_TRANSIT:   { label:'Canal transit', icon:TR_ICONS.route,  color:'#64748b' },
+  'NORMAL SAILING':{ label:'Sailing',       icon:TR_ICONS.route,  color:'#64748b' }
+};
+const TR_ACTS = {
+  AWAITING_ORDERS:      { label:'Awaiting Orders',         icon:TR_ICONS.clock, color:'#d97706' },
+  BUNKERING:            { label:'Bunkering',               icon:TR_ICONS.fuel,  color:'#16a34a' },
+  CARGO_LOADING:        { label:'Cargo Loading',           icon:TR_ICONS.box,   color:'#4f46e5' },
+  CARGO_DISCHARGING:    { label:'Cargo Discharging',       icon:TR_ICONS.box,   color:'#4f46e5' },
+  CARGO_LOADING_STS:    { label:'Cargo Loading (STS)',     icon:TR_ICONS.box,   color:'#4f46e5' },
+  CARGO_DISCHARGING_STS:{ label:'Cargo Discharging (STS)', icon:TR_ICONS.box,   color:'#4f46e5' }
+};
+const TR_FUEL_ORDER = ["HFO","LFO","MGO","MDO","LNG","LPGP","LPGB","M","E"];
+/* activity list per event: multi-valued ASSOCIATED_ACTIVITY splits to a list; a BUNKER stock
+   event carrying a bunkered quantity is by definition a bunkering activity */
+function trActs(r){
+  const list = String(r.aa||"").toUpperCase().split(/[,;/]+/).map(s=>s.trim()).filter(Boolean);
+  if(r.rt==="FUEL_OIL_BUNKER" && r.bunker && list.indexOf("BUNKERING")<0) list.push("BUNKERING");
+  return list;
+}
+/* bunkered map fuel → tonnes; non-empty only when the event's activities include BUNKERING */
+function trBunkered(r, acts){
+  if(acts.indexOf("BUNKERING")<0 || !r.bunker) return {};
+  const out={};
+  try{
+    const o=JSON.parse(r.bunker);
+    for(const k in o){ const t=parseFloat(o[k])||0; if(t<=0) continue;
+      const c=mdaFuel(k)||String(k).toUpperCase().replace(/[^A-Z]/g,"")||"UNKNOWN"; out[c]=(out[c]||0)+t; }
+  }catch(e){ /* non-JSON legacy bunker strings: no badge, value still in the Excel download */ }
+  return out;
+}
+/* per-fuel lines: Total | ME | AE | Boiler | Others (= max(0, Total − ME − AE − Boiler)) | ROB (Bunker) */
+function trFuelLines(r){
+  const acts=trActs(r), bunk=trBunkered(r,acts);
+  const names=[...new Set([...Object.keys(r.fuels||{}),...Object.keys(r.rob||{}),...Object.keys(bunk)])]
+    .sort((a,b)=>((TR_FUEL_ORDER.indexOf(a)+1||99)-(TR_FUEL_ORDER.indexOf(b)+1||99))||(a<b?-1:1));
+  return names.map((n,i)=>{
+    const total=(r.fuels||{})[n], m=r.mach, hasSplit=!!m && total!=null;
+    const me=hasSplit?((m.ME||{})[n]||0):null, ae=hasSplit?((m.AE||{})[n]||0):null, blr=hasSplit?((m.BLR||{})[n]||0):null;
+    return { name:n,
+      total: total!=null? total.toFixed(2):"—",
+      me: hasSplit? me.toFixed(2):"—", ae: hasSplit? ae.toFixed(2):"—", blr: hasSplit? blr.toFixed(2):"—",
+      oth: hasSplit? Math.max(0,total-me-ae-blr).toFixed(2):"—",
+      rob: (r.rob||{})[n]!=null? r.rob[n].toFixed(1):"—",
+      hasBunk: bunk[n]!=null, bunk: bunk[n]!=null? "+"+bunk[n].toFixed(1):"",
+      bg: i%2===1? "#f1f5f9":"transparent" };
+  });
+}
+function trPctSpan(p){
+  const has = p!=null && !isNaN(p);
+  const c = (!has || p===0)? "#cbd5e1" : "#334155";
+  const t = has? ((p%1===0? p.toFixed(0): p.toFixed(1))+"%") : "—";
+  return `<span style="font-size:11px;font-weight:600;font-family:${TR_MONO};font-variant-numeric:tabular-nums;color:${c}">${t}</span>`;
+}
+function reportTraceTable(reps){
+  const pad="6px 12px", padV="6px";                         // compact density
+  const thBase="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;vertical-align:bottom";
+  const thSub="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;background:#f8fafc;padding:5px 12px;border-bottom:1px solid #e2e8f0";
+  const fl=(f,style,val)=>`<div style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
+  const machStyle=`font-size:12px;color:#64748b;font-family:${TR_MONO};font-variant-numeric:tabular-nums`;
+  const dash='<span style="color:#cbd5e1">—</span>';
+  const rows=reps.map(r=>{
+    const c=TR_CONDS[r.oc]||(r.oc?{label:r.oc.charAt(0)+r.oc.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.route,color:"#64748b"}:null);
+    const acts=trActs(r).map(k=>TR_ACTS[k]||{label:k.charAt(0)+k.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.clock,color:"#64748b"});
+    const fuels=trFuelLines(r);
+    const port=r.portN||r.cur||"";
+    const portSub=[r.ctry,r.regn].filter(Boolean).join(" · ");
+    const z=r.cur? zoneOfLocode(r.cur):null;
+    const zone=z==="EEA"?"EU":z==="UK"?"UK":null;
+    const elig=[["EU ETS",r.euPct],["FuelEU",null],["UK ETS",r.ukPct]];
+    const condHtml = c? `<div style="display:flex;align-items:center;gap:6px">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${c.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="${c.icon}"></path></svg>
+          <span style="font-size:12px;color:#334155;font-weight:500">${esc(c.label)}</span>
+          ${r.opl?'<span style="font-size:9.5px;font-weight:700;letter-spacing:0.05em;color:#b91c1c;background:#fee2e2;padding:1.5px 6px;border-radius:4px" title="OUTSIDE_PORT_LIMIT = TRUE">OPL</span>':""}
+        </div>` : dash;
+    const actHtml = acts.length? `<div style="display:flex;align-items:center;gap:5px">${acts.map(a=>
+        `<span class="actic" data-tip="${esc(a.label)}" aria-label="${esc(a.label)}" tabindex="0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${a.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${a.icon}"></path></svg></span>`).join("")}</div>` : dash;
+    const portHtml = port? `<div style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap">${esc(port)}</span>
+          ${(portSub||zone)?`<div style="display:flex;align-items:center;gap:6px">
+            ${portSub?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap">${esc(portSub)}</span>`:""}
+            ${zone?`<span style="font-size:9px;font-weight:700;letter-spacing:0.05em;color:#1d4ed8;background:#dbeafe;padding:1px 5px;border-radius:4px">${zone}</span>`:""}
+          </div>`:""}
+        </div>` : dash;
+    const eligHtml = `<div style="display:flex;flex-direction:column;gap:0">${elig.map(([nm,p])=>
+        `<div style="display:flex;align-items:baseline;gap:8px;height:15px;line-height:15px">
+          <span style="font-size:9.5px;font-weight:600;letter-spacing:0.03em;color:#94a3b8;width:42px;text-transform:uppercase">${nm}</span>${trPctSpan(p)}
+        </div>`).join("")}</div>`;
+    const fuelTds = fuels.length? `
+      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_MONO}`,esc(f.name))).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_MONO};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.me)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.ae)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.blr)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.oth)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>
+        `<div style="height:17px;padding:0 12px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_MONO};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:6px">${
+          f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 5px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
+        }<span>${f.rob}</span></div>`).join("")}</td>`
+      : `<td style="padding:${pad};border-left:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
+    return `<tr style="border-bottom:1px solid #f1f5f9;background:#ffffff">
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap">
+        <div style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
+          <span style="font-size:12px;font-weight:700;color:#334155">${esc(reportTypeLabel(r))}</span>
+          <span style="font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc((r.t||"").replace("T"," "))}</span>
+        </div>
+      </td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${condHtml}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${actHtml}</td>
+      <td style="padding:${pad};vertical-align:top">${portHtml}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,2):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${eligHtml}</td>
+      ${fuelTds}
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qty?fmt(r.qty):"—"}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+      <thead>
+        <tr>
+          <th rowspan="2" style="text-align:left;${thBase}">Event</th>
+          <th rowspan="2" style="text-align:left;${thBase};width:1%">Condition</th>
+          <th rowspan="2" style="text-align:left;${thBase};width:1%">Activity</th>
+          <th rowspan="2" style="text-align:left;${thBase};width:1%">Port</th>
+          <th rowspan="2" style="text-align:left;${thBase};width:1%;white-space:nowrap">Voyage No</th>
+          <th rowspan="2" style="text-align:right;${thBase}">Dist nm</th>
+          <th rowspan="2" style="text-align:left;${thBase}">Eligibility %</th>
+          <th colspan="7" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(tonnes)</span></th>
+          <th rowspan="2" style="text-align:right;${thBase}">Cargo t</th>
+        </tr>
+        <tr>
+          <th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>
+          <th style="text-align:right;${thSub};font-weight:700;color:#475569">Total</th>
+          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">ME</th>
+          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">AE</th>
+          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Boiler</th>
+          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Others</th>
+          <th style="text-align:right;${thSub};font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB (Bunker)</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>
+    <div style="padding:10px 2px 0;font-size:11px;color:#94a3b8;display:flex;gap:16px;flex-wrap:wrap">
+      <span>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)</span>
+      <span><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)</span>
+      <span>Eligibility % = share of the report exposed to EU ETS / FuelEU / UK ETS (as ingested; — = not in the source file)</span>
+      <span>All consumption, ROB and bunker values as ingested</span>
+    </div>`;
+}
+
 /* ---- Voyage & berth breakdown: 16-column CSS-grid layout (handoff SPEC.md, 2026-07-17) ----
    Maps the engine's rowDetails + the aligned in-year source rows onto the leg/fuel model:
    ports [{label,juris}], per-fuel rows (rowspan via grid-row spans), leg-level results.
@@ -1596,17 +1775,6 @@ function renderCalcs(){
   const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MDO/MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Formulas tab. Eligible energy = eligible mass × 10⁶ × LCV.");
   const brInner=breakdownGrid(R,{lcv:iLCV,cf:iCf,eua:iEUA,uka:iUKA,feu:iFEU});
   const reps=S.mdaReports||[];
-  const repRows=reps.map(r=>`<tr>
-      <td class="note">${esc((r.t||"").replace("T"," "))}</td>
-      <td><b>${esc(reportTypeLabel(r))}</b>${r.role?'':''}</td>
-      <td class="note">${esc(r.oc||"—")}</td>
-      <td class="note">${esc(r.aa||"—")}${r.opl?' <span class="flag" title="OUTSIDE_PORT_LIMIT = TRUE">OPL</span>':""}</td>
-      <td class="num">${r.qty?fmt(r.qty):"—"}</td>
-      <td>${esc(r.portN||r.cur||"—")}${(r.ctry||r.regn)?`<div class="note">${esc([r.ctry,r.regn].filter(Boolean).join(" · "))}</div>`:""}</td>
-      <td class="note">${fmtDict(r.fuels)||"—"}${r.mach?`<div class="note" style="color:#8a97a1">ME ${fmtDict(r.mach.ME)||"0"} · AE ${fmtDict(r.mach.AE)||"0"} · BLR ${fmtDict(r.mach.BLR)||"0"} · OTH ${fmtDict(r.mach.OTH)||"0"}</div>`:""}${r.bunker?`<div class="note">bunkered: ${esc(r.bunker)}</div>`:""}</td>
-      <td class="note">${fmtDict(r.rob)||"—"}</td>
-      <td class="num">${r.dist?fmt(r.dist):"—"}</td>
-    </tr>`).join("");
   el.innerHTML=`
   <div class="card">
     <h2>Voyage &amp; berth breakdown — ${R.year}
@@ -1644,10 +1812,7 @@ function renderCalcs(){
       <button class="pill hbtn noprint" style="float:right" onclick="downloadReportsXlsx()">⬇ OVD-format Excel</button></h2>
     ${reps.length?`
     <p class="note">${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.</p>
-    <table class="vbtable">
-      <tr><th>Report end (GMT)</th><th>Type</th><th>Operating condition</th><th>Associated activity</th><th class="num">Cargo t</th><th>Port</th><th>Consumption t (ME·AE·BLR·OTH)</th><th>ROB t</th><th class="num">Dist nm</th></tr>
-      ${repRows}
-    </table>`
+    ${reportTraceTable(reps)}`
     :`<p class="note">No report-level data in this workspace. Import an MDA event-log export (.xlsx or .csv) — the raw reports are retained at import (since 2026-07-16). Manually entered rows and DNV-OVD/THETIS imports appear only in the voyage &amp; berth breakdown above.</p>`}
   </div>`;
 }

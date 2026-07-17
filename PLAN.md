@@ -61,3 +61,15 @@ Repeat the Phase 1 checklist exactly, plus: compare against your "before" refere
 - Renamed id/class during design → an import button or tab dies. Mitigation: the claude.ai rule in Phase 2.3 and CLAUDE.md rule 2.
 - Design session "helpfully" rewrites a JS function → regression. Mitigation: CLAUDE.md rule 1 + git commit per step.
 - Vercel adds nothing that breaks file uploads or XML parsing — all parsing is client-side FileReader/DOMParser. [CERTAIN]
+
+## Change log — 2026-07-17: Report-level trace table redesign (design_handoff_report_trace_table)
+
+Applied in `js/ui.js` only (no CSS / index.html / engine changes):
+
+- New `reportTraceTable()` renderer (+ `TR_*` constants, `trActs`, `trBunkered`, `trFuelLines`, `trPctSpan`) replaces the old `.vbtable` report trace on the Calculations tab. Pixel styles match the handoff reference (`Report Trace Table.dc.html`).
+- Fuel group: `Fuel | Total | ME | AE | Boiler | Others | ROB (Bunker)`; Others = max(0, Total − ME − AE − Boiler), computed at render; green `+n` badge left of ROB shown only when the event's activities include BUNKERING (a FUEL_OIL_BUNKER event with a bunkered qty counts as bunkering).
+- Activity cell = horizontal icon row with tooltips (multi-activity ready); Condition cell = icon + label + OPL chip; Port cell = name + country·region + EU/UK zone chip (via existing `zoneOfLocode`); new Voyage No column after Port; Dist nm moved left of Eligibility %; footer legend updated.
+- Eligibility % lines (EU ETS / FuelEU / UK ETS) show ingested `EU_ETS_%` / `UK_ETS_%` values; FuelEU has no source column → em-dash.
+- **Deliberate, additive exception to CLAUDE.md rule "don't touch import":** the MDA import's *display-only retention* now also keeps `voy` (VOYAGE_NUMBER), `euPct`/`ukPct` (EU_ETS_%/UK_ETS_%), and port context on FUEL_OIL_BUNKER rows. No derivation, calculation, or state key changed. Workspaces saved before this change simply render em-dashes for the new fields until re-import.
+- Verified: `node --check`, all 148 built-in self-tests pass (headless jsdom), full-file smoke test with the Blumenthal MDA xlsx (237 reports, 3 bunker badges, 274 fuel lines Others-math checked, badge conditionality confirmed).
+- Follow-up (same day): activity icons now show an instant styled hover tooltip with the activity name (`.actic` in css/styles.css, replaces the native `title`; keyboard-focusable with aria-label). `standalone/emissions_calculator.html` regenerated via `build_standalone.py` and verified (all checks + 148 self-tests green).
