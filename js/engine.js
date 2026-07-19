@@ -30,9 +30,9 @@ function euetsGwp(state){ return GWP_SETS[(state&&state.arSet)==="AR4" ? "AR4" :
 const SLIP = { "LNG Otto (dual fuel medium speed)": 3.1, "LNG Otto (dual fuel slow speed)": 1.7, "LNG Diesel (dual fuel slow speed)": 0.2, "LBSI": 2.6, src: "fueleu-annexii / ukets-sch2a-p36", verified: true };
 
 const FUELS = [
-  { id:"HFO",  name:"HFO (ISO 8217 RME–RMK)",  cls:"Fossil", lcv:0.0405, wtt:13.5, cf:3.114, ch4:0.00005, n2o:0.00018 },
-  { id:"LFO",  name:"LFO (ISO 8217 RMA–RMD)",  cls:"Fossil", lcv:0.041,  wtt:13.2, cf:3.151, ch4:0.00005, n2o:0.00018 },
-  { id:"MDO",  name:"MDO/MGO (ISO 8217 DMX–DMB)", cls:"Fossil", lcv:0.0427, wtt:14.4, cf:3.206, ch4:0.00005, n2o:0.00018 },
+  { id:"HFO",  name:"HFO",  cls:"Fossil", lcv:0.0405, wtt:13.5, cf:3.114, ch4:0.00005, n2o:0.00018 },
+  { id:"LFO",  name:"LFO",  cls:"Fossil", lcv:0.041,  wtt:13.2, cf:3.151, ch4:0.00005, n2o:0.00018 },
+  { id:"MDO",  name:"MGO", cls:"Fossil", lcv:0.0427, wtt:14.4, cf:3.206, ch4:0.00005, n2o:0.00018 },
   /* LNG split by fuel-consumer class (Annex II col.9 slip values) — engineClass fixes the
      slip per fuel so the engine cycle is chosen directly in the fuel dropdown (2026-07-15).
      id "LNG" stays on Medium speed Otto (highest slip 3.1%) = conservative default for

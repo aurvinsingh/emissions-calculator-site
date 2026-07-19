@@ -1,6 +1,6 @@
 /* ================= UI ================= */
 const ENGINES = ["LNG Otto (dual fuel medium speed)","LNG Otto (dual fuel slow speed)","LNG Diesel (dual fuel slow speed)","LBSI"];
-const ZONES = [["EEA","EU/EEA"],["UK","United Kingdom"],["OTHER","Non-EU / non-UK"]];
+const ZONES = [["EEA","EU/EEA"],["UK","UK"],["OTHER","Non-EU/UK"]];
 
 /* Calculator starts EMPTY (2026-07-15, Aurvin) — no sample rows; Reset also returns to empty. */
 const DEFAULT_STATE = {
@@ -45,14 +45,19 @@ function save(){ try{ localStorage.setItem("emcalc_state", JSON.stringify(S)); }
 function resetScenario(){ if(confirm("Clear all entries and start fresh? (Settings reset too.)")){ S = JSON.parse(JSON.stringify(DEFAULT_STATE)); save(); renderAll(); } }
 /* Scenario JSON export/import removed 2026-07-15 (Aurvin) — work auto-saves in localStorage; Reset restores the sample. */
 
-const TAB_IDS = ["work","calcs","vessel","constants","help"];   // suite build appends "rules","ask"
+const TAB_IDS = ["work","trace","calcs","vessel","constants","help"];   // suite build appends "rules","ask"
 function showTab(t){
   for(const x of TAB_IDS){
     document.getElementById("tab-"+x).style.display = x===t?"":"none";
     document.getElementById("tb-"+x).classList.toggle("on", x===t);
   }
+  /* fixed app-shell (pinned header/nav, independently scrolling tab content) applies to
+     Calculations/Reports/Settings only — Workspace, Formulas and Help keep plain whole-page
+     scroll (2026-07-19: Formulas/Help shell disabled at Aurvin's request pending a later look) */
+  document.body.classList.toggle("shell", t!=="work" && t!=="constants" && t!=="help");
   if(t==="work") renderWorkspace();
   if(t==="calcs") renderCalcs();
+  if(t==="trace") renderTrace();
   if(t==="vessel") renderVessel();
   if(t==="constants") renderConstants();
   if(t==="help") renderHelp();
@@ -65,7 +70,9 @@ function toggleInfo(btn){
   p.classList.toggle("open");
 }
 document.addEventListener("click", e=>{ if(!e.target.closest(".ibwrap")) document.querySelectorAll(".ibpop.open").forEach(x=>x.classList.remove("open")); });
-const info = (html)=>`<span class="ibwrap"><button class="ib" type="button" onclick="event.stopPropagation();toggleInfo(this)" title="More information">i</button><span class="ibpop">${html}</span></span>`;
+/* align="right": popover expands leftward from the icon instead of rightward — use for icons
+   pinned to a right-edge corner, where the default rightward expansion would run off-screen */
+const info = (html,align)=>`<span class="ibwrap${align==="right"?" ib-right":""}"><button class="ib" type="button" onclick="event.stopPropagation();toggleInfo(this)" title="More information">i</button><span class="ibpop">${html}</span></span>`;
 function renderAll(){ renderWorkspace(); renderVessel(); }
 const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function upd(path, val){
@@ -85,8 +92,9 @@ function updTime(ri, key, val){
   }
   save(); renderWorkspace();
 }
+const MON3=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function fmtTs(ts){ if(!ts) return ""; const d=new Date(ts); if(isNaN(d)) return ts;
-  return d.toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}); }
+  return String(d.getDate()).padStart(2,"0")+" "+MON3[d.getMonth()]+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
 function fmtRange(a,b){ if(!a&&!b) return ""; return (a?fmtTs(a):"…")+" – "+(b?fmtTs(b):"…"); }
 
 /* ---------- port picker widgets ---------- */
@@ -101,8 +109,8 @@ function composeLabel(row){
     }
     return row.label || (zoneName(row.from)+" → "+zoneName(row.to));
   }
-  if(row.port) return "At berth "+portDisp(row.port);
-  return row.label || ("At berth — "+zoneName(row.zone));
+  if(row.port) return portDisp(row.port);
+  return row.label || zoneName(row.zone);
 }
 function rowOMR(row){
   return [row.fromPort,row.toPort,row.port].filter(Boolean)
@@ -568,10 +576,8 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
                 lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon, org, cur, dst,
                 portN:String(G(r,"CURRENT_PORT")).trim(), ctry:String(G(r,"CURRENT_COUNTRY")).trim(), regn:String(G(r,"CURRENT_REGION")).trim(),
                 oc, aa:String(G(r,"ASSOCIATED_ACTIVITY")).trim().toUpperCase(),
-                /* display-only retention for the trace table (2026-07-17): voyage no + ingested eligibility */
+                /* display-only retention for the trace table (2026-07-17): voyage no */
                 voy:String(G(r,"VOYAGE_NUMBER")).trim(),
-                euPct:(v=>isNaN(v)?null:v)(parseFloat(G(r,"EU_ETS_%"))),
-                ukPct:(v=>isNaN(v)?null:v)(parseFloat(G(r,"UK_ETS_%"))),
                 opl:truthy(G(r,"OUTSIDE_PORT_LIMIT")),
                 pocFile:String(G(r,"POC")).trim().toUpperCase(),
                 tEnd: endRaw!==""? (iso(mdaDate(endRaw))||iso(dt)) : iso(dt),
@@ -725,7 +731,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
      Not used by any calculation; saved with the workspace state at import. */
   const reports = recs.map(c=>({ rt:c.rt, role:c.role||"", t:c.dt? iso(c.dt):c.tEnd, ts:c.tStart||null, te:c.tEnd||null,
     oc:c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, dist:c.dist||0,
-    voy:c.voy||"", euPct:c.euPct??null, ukPct:c.ukPct??null,
+    voy:c.voy||"",
     lat:c.lat??null, lon:c.lon??null, org:c.org||"", cur:c.cur||"", dst:c.dst||"",
     portN:c.portN||"", ctry:c.ctry||"", regn:c.regn||"",
     fuels:c.fuels||{}, mach:c.mach||null, rob:c.rob||{}, bunker:c.bunker||undefined }));
@@ -736,7 +742,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     if(nDerived) notes.push(nDerived+" port stay(s): regulatory ARRIVAL/DEPARTURE derived from the report chain (EOSP/SOSP are sea-passage markers, not the arrival/departure) — consumption before arrival / after departure is attributed to the voyage. The file's POC column was ignored; Port of Call was derived from cargo operations and port limits.");
     if(nTransit) notes.push(nTransit+" stay(s) had no berth / anchorage / drifting / bunkering period — pure transit, merged into the adjacent voyage (no port-stay row).");
     if(nOPL) notes.push(nOPL+" stay(s) with cargo operations OUTSIDE port limits (e.g. STS) — classified as transit, not a port of call.");
-    if(nQty) notes.push(nQty+" stay(s) classified as Port of Call by the cargo-quantity fallback (CARGO_QTY changed by >5% of DWT or 0↔loaded with no recorded cargo operation"+(usedDefaultDwt?"; DWT unknown — default "+MDA_DEFAULT_DWT.toLocaleString()+" t used":"")+") — marked ❗ on the row.");
+    if(nQty) notes.push(nQty+" stay(s) classified as Port of Call by the cargo-quantity fallback (CARGO_QTY changed by >5% of DWT or 0↔loaded with no recorded cargo operation"+(usedDefaultDwt?"; DWT unknown — default "+MDA_DEFAULT_DWT.toLocaleString()+" mt used":"")+") — marked ❗ on the row.");
     if(nMismatch) notes.push(nMismatch+" stay(s) where the file's POC column disagrees with the derived classification — the derived result is used; marked ⚠ on the row.");
     if(nIncomplete) notes.push(nIncomplete+" stay(s) truncated by the file boundary — derived from the available side only and flagged incomplete. Upload ±1 month around year ends where possible.");
   } else {
@@ -980,14 +986,25 @@ function applyImport(res, label, extraNotes, reports){
       if(res.annual){
         try{
           const R2=computeAll(S);
-          notes.push("Cross-check — the file's own annualEmission block reports MRV CO₂ "+fmt(res.annual.mrvCO2)+" t"+(res.annual.etsCO2?" and ETS CO₂ "+fmt(res.annual.etsCO2)+" t":"")+"; the calculator computes total CO₂ "+fmt(R2.summary.co2Total)+" t from the imported activity using KB default factors. Small differences are expected where the file used its own factors. The file's totals are shown for comparison only, never imported.");
+          notes.push("Cross-check — the file's own annualEmission block reports MRV CO₂ "+fmt(res.annual.mrvCO2)+" mt"+(res.annual.etsCO2?" and ETS CO₂ "+fmt(res.annual.etsCO2)+" mt":"")+"; the calculator computes total CO₂ "+fmt(R2.summary.co2Total)+" mt from the imported activity using KB default factors. Small differences are expected where the file used its own factors. The file's totals are shown for comparison only, never imported.");
         }catch(e){}
       }
       if(notes.length) alert("Import notes:\n\n- "+notes.join("\n- "));
 }
 
 /* ---------- shared input widgets ---------- */
-function fuelOptions(sel){ return FUELS.map(f=>`<option value="${f.id}" ${f.id===sel?"selected":""}>${esc(f.name)}</option>`).join(""); }
+/* short display labels for the fuel picker + breakdown Excel export only (2026-07-19, Aurvin) —
+   drops the regulation/pathway suffix (RED II, RFNBO, fossil/natural-gas) and collapses the four
+   LNG engine-cycle entries to their CH4 slip %; engine.js FUELS[].name (used for calculations,
+   the Formulas tab and everywhere else) is untouched. */
+const FUEL_SHORT = {
+  LNGDS:"LNG (0.2%)", LNGOS:"LNG (1.7%)", LNG:"LNG (3.1%)", LNGBSI:"LNG (2.6%)",
+  METH:"Methanol", NH3:"Ammonia", H2:"Hydrogen",
+  BDSL:"Bio-diesel", HVO:"HVO", BLNG:"Bio-LNG", BMET:"Bio-methanol", ETOH:"Ethanol",
+  EDSL:"e-diesel", EMET:"e-methanol", ELNG:"e-LNG", ENH3:"e-ammonia", EH2:"e-hydrogen"
+};
+const fuelShortName = (f)=> FUEL_SHORT[f.id] || f.name;
+function fuelOptions(sel){ return FUELS.map(f=>`<option value="${f.id}" ${f.id===sel?"selected":""}>${esc(fuelShortName(f))}</option>`).join(""); }
 function engineOptions(sel){ return ENGINES.map(e=>`<option ${e===sel?"selected":""}>${e}</option>`).join(""); }
 function zoneOptions(sel){ return ZONES.map(z=>`<option value="${z[0]}" ${z[0]===sel?"selected":""}>${z[1]}</option>`).join(""); }
 
@@ -1026,7 +1043,7 @@ function fuelLineHtml(ri, fi, fr){
     <div><label>Cf CH₄ g/g</label><input type="number" step="any" value="${fr.ch4??""}" oninput="upd('rows.${ri}.fuels.${fi}.ch4',num(this.value))"></div>
     <div><label>Cf N₂O g/g</label><input type="number" step="any" value="${fr.n2o??""}" oninput="upd('rows.${ri}.fuels.${fi}.n2o',num(this.value))"></div>`;
   const sp = fr.split||{};
-  const spCell = (g,lbl)=>`<div><label>${lbl} t</label><input type="number" step="any" min="0" id="sp_${g}_${ri}_${fi}" value="${sp[g]??""}" placeholder="0" oninput="updSplit(${ri},${fi},'${g}',this.value)"></div>`;
+  const spCell = (g,lbl)=>`<div><label>${lbl} mt</label><input type="number" step="any" min="0" id="sp_${g}_${ri}_${fi}" value="${sp[g]??""}" placeholder="0" oninput="updSplit(${ri},${fi},'${g}',this.value)"></div>`;
   const spRow = S.showSplit? `<div class="fuelline" style="background:#f6f9fa;border-radius:6px">
     <div style="align-self:end;max-width:96px;padding-bottom:8px"><span class="note" style="cursor:help" title="Machinery split — ME and AE take their LNG slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. Editing a machine updates the line total; editing the total sends the difference to Other.">⚙ split</span></div>
     ${spCell("ME","Main engine")}${spCell("AE","Aux engine")}${spCell("BLR","Boiler")}${spCell("OTH","Other")}
@@ -1055,14 +1072,22 @@ const DERIVE_RULE_TXT = {
   AT_ANCHOR:"first → last AT_ANCHOR report (no cargo ops / berth / bunkering)",
   DRIFTING: "first → last DRIFTING report (no cargo ops / berth / bunkering / anchorage)"
 };
-function derivedTimesHtml(row){
+/* icon-only version (2026-07-19): the actual arrival/departure values are already shown
+   once, in the compact timeframe line below the port fields — no need to repeat them here
+   too, so this just explains (on hover) that they're derived/read-only and how */
+function derivedTimesInfo(row){
   if(!row.arrGmt && !row.depGmt && !row.incomplete) return "";
   const t = s => s? esc(String(s).replace("T"," "))+" GMT" : "—";
-  const tip = "Derived from the MDA report data — ARRIVAL-EOSP / DEPARTURE-SOSP are sea-passage markers, not the regulatory arrival/departure. Rule used: "
+  const tip = "Arrival: <b>"+t(row.arrGmt)+"</b> &nbsp;·&nbsp; Departure: <b>"+t(row.depGmt)+"</b> — derived from the MDA report data (read-only here; ARRIVAL-EOSP / DEPARTURE-SOSP are sea-passage markers, not the regulatory arrival/departure). Rule used: "
     + (DERIVE_RULE_TXT[row.deriveRule]||row.deriveRule||"n/a")
     + ". Consumption before the derived arrival / after the derived departure is attributed to the adjacent voyage."
     + (row.incomplete? "<br><br><b>Incomplete stay:</b> the file starts or ends inside this port stay — only the available side could be derived. Upload ±1 month around the boundary for a complete picture.":"");
-  return `<div class="note" style="margin:2px 0 4px">⚓ Arrival: <b>${t(row.arrGmt)}</b> &nbsp;·&nbsp; Departure: <b>${t(row.depGmt)}</b> <span style="color:#888">(derived, read-only)</span>${row.incomplete?' <span style="color:#c9a300;font-weight:600">· incomplete stay (file boundary)</span>':""} ${info(tip)}</div>`;
+  return info(tip,"right");
+}
+/* visible flag for incomplete stays (file boundary) — kept as a badge, same slot as the
+   OMR/year-split chips, now that the old always-on text line is gone */
+function derivedIncompleteChip(row){
+  return row.incomplete? `<span class="zbadge zb-OMR" title="File boundary — only one side of this stay could be derived. Upload ±1 month around the boundary for a complete picture.">⏳ incomplete stay</span>` : "";
 }
 function pocWarnIcons(row){
   let s="";
@@ -1085,7 +1110,8 @@ function rowHtml(row, ri){
   const yearChip = outYear
     ? `<span class="zbadge zb-OMR" title="Dated ${esc(ya||yb)} — outside the ${ry} reporting year selected in Settings. Excluded from ALL KPIs; switch the reporting year to include it.">🗓 ${esc(ya||yb)} — excluded from ${ry}</span>`
     : (row.splitYear? `<span class="zbadge" style="background:#eef3f8;color:#38607a" title="One year-part of an activity that crossed 31 Dec — it carries exactly the consumption that occurred in ${esc(String(row.yearPart))} (straddling report periods pro-rated by time).">🗓 split at year boundary</span>` : "");
-  const title = `<b style="font-size:13px${cTip?";cursor:help":""}"${cTip?` title="${esc(cTip)}"`:""}>${esc(composeLabel(row))}</b>${omrChip}${yearChip}`;
+  const incompleteChip = derivedIncompleteChip(row);
+  const title = `<b style="font-size:13px${cTip?";cursor:help":""}"${cTip?` title="${esc(cTip)}"`:""}>${esc(composeLabel(row))}</b>${omrChip}${yearChip}${incompleteChip}`;
   const head = row.kind==="voyage"
     ? `<div class="rhead"><span class="tag">VOYAGE</span>${title}<div style="margin-left:auto"><button class="del" onclick="S.rows.splice(${ri},1);save();renderWorkspace()">Remove</button></div></div>
        <div class="inline">
@@ -1096,11 +1122,10 @@ function rowHtml(row, ri){
        </div>
        <div class="inline">
          <div style="max-width:180px"><label>Distance nm</label><input type="number" step="any" min="0" value="${row.dist??""}" oninput="upd('rows.${ri}.dist',num(this.value))"></div>
-         <div style="max-width:180px"><label>Cargo t (SCC)</label><input type="number" step="any" min="0" value="${row.cargo??""}" oninput="upd('rows.${ri}.cargo',num(this.value))"></div>
+         <div style="max-width:180px"><label>Cargo mt (SCC)</label><input type="number" step="any" min="0" value="${row.cargo??""}" oninput="upd('rows.${ri}.cargo',num(this.value))"></div>
          <div style="flex:2"></div>
        </div>`
-    : `<div class="rhead"><span class="tag" style="background:#f3ecfb;color:#6a3fa0">PORT / AT BERTH</span>${title}${row.poc===false?'<span class="zbadge zb-OMR" title="Not a port of call — this stay is excluded from EU ETS, UK ETS and FuelEU scope. CII/SCC still count the fuel.">⚓ transit — out of ETS/FuelEU scope</span>':""}<div style="margin-left:auto"><button class="del" onclick="S.rows.splice(${ri},1);save();renderWorkspace()">Remove</button></div></div>
-       ${derivedTimesHtml(row)}
+    : `<div class="rhead"><span class="tag" style="background:#f3ecfb;color:#6a3fa0">AT BERTH</span>${title}${row.poc===false?'<span class="zbadge zb-OMR" title="Not a port of call — this stay is excluded from EU ETS, UK ETS and FuelEU scope. CII/SCC still count the fuel.">⚓ transit — out of ETS/FuelEU scope</span>':""}<div style="margin-left:auto;display:flex;align-items:center;gap:8px">${derivedTimesInfo(row)}<button class="del" onclick="S.rows.splice(${ri},1);save();renderWorkspace()">Remove</button></div></div>
        <div class="inline">
          ${portInputHtml(ri,'port',row.port,'Port')}
          <div style="max-width:150px"><label>Zone</label><select onchange="setZone(${ri},'zone',this.value)">${zoneOptions(row.zone)}</select></div>
@@ -1109,14 +1134,16 @@ function rowHtml(row, ri){
          <div style="flex:1"></div>
        </div>`;
   const tf = fmtRange(row.tStart,row.tEnd);
+  /* the two datetime-local inputs already show the exact from/to — no need to also repeat it as
+     a summary span (that's only shown in the collapsed/non-editable view below). lang="en-GB" on
+     the inputs forces the native picker to 24-hour time instead of AM/PM (Chromium browsers). */
   const dateBlock = S.showDates
-    ? `<div class="inline" style="max-width:640px">
-      <div><label>From date/time (UTC) — optional</label><input type="datetime-local" value="${esc(row.tStart||"")}" onchange="updTime(${ri},'tStart',this.value)"></div>
-      <div><label>To date/time (UTC) — optional</label><input type="datetime-local" value="${esc(row.tEnd||"")}" onchange="updTime(${ri},'tEnd',this.value)"></div>
+    ? `<div class="inline" style="max-width:550px">
+      <div><label>From date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tStart||"")}" onchange="updTime(${ri},'tStart',this.value)"></div>
+      <div><label>To date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tEnd||"")}" onchange="updTime(${ri},'tEnd',this.value)"></div>
       <div style="max-width:90px"><label>Hours</label><input type="number" step="any" min="0" value="${row.hours??""}" oninput="upd('rows.${ri}.hours',num(this.value))"></div>
-      <div style="align-self:end;padding-bottom:7px"><span class="note">${tf?("🕓 "+esc(tf)):"no timeframe set"}</span></div>
     </div>`
-    : (tf?`<div class="note" style="margin-top:4px">🕓 ${esc(tf)}${row.hours?" · "+fmt(row.hours)+" h":""}</div>`:"");
+    : (tf?`<div style="margin-top:4px;font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc(tf)}</div>`:"");
   return `<div class="rowcard${row.kind==="port"?" portcard":""}"${outYear?' style="opacity:.55"':''}>
     ${head}
     ${dateBlock}
@@ -1138,7 +1165,7 @@ function renderWorkspace(){
       <h4 class="sec" style="margin-top:0">Voyages &amp; port stays — edit anything, results update live → ${info("<b>Scope per row:</b> EU ETS &amp; FuelEU — EEA↔EEA and at berth EEA 100%, EEA↔other 50% (euets-art3ga); UK ETS — UK→UK voyages and UK in-port only (ukets-sch2a-p7); at-berth scope applies only when the stay is a <b>port of call</b> (POC toggle on each port row); CII &amp; SCC count all activity (imo-g1-s4).<br><br>Import a DNV OVD Log Abstract CSV, an MDA event-log export (.xlsx/.csv) or a THETIS-MRV GHG Emissions XML from the header bar to fill this list automatically.")}</h4>
       <div class="noprint" style="display:flex;gap:22px;flex-wrap:wrap">
         <div class="chk"><input type="checkbox" ${S.showDates?"checked":""} onchange="S.showDates=this.checked;save();renderWorkspace()"> 🕓 Optional date entry ${info("Shows From/To date-time fields on each row — mainly useful for seeing which report period an OVD-imported row covers.")}</div>
-        <div class="chk"><input type="checkbox" ${S.showSplit?"checked":""} onchange="S.showSplit=this.checked;save();renderWorkspace()"> ⚙ Machinery split (ME · AE · Boiler · Other) ${info("Shows the per-machine consumption split on every fuel line, filled automatically from the MDA MAIN/AUXILIARY/BOILER consumption columns (per fuel type, the unassigned remainder is <b>Other</b>).<br><br><b>Editable:</b> changing a machine figure updates the line total; changing the total sends the difference to Other (if the new total is below ME+AE+Boiler, those scale down pro-rata).<br><br>For LNG-family fuels the ME and AE shares take their CH₄-slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. The split also feeds the OVD-format download on the Calculations tab.")}</div>
+        <div class="chk"><input type="checkbox" ${S.showSplit?"checked":""} onchange="S.showSplit=this.checked;save();renderWorkspace()"> ⚙ Machinery split (ME · AE · Boiler · Other) ${info("Shows the per-machine consumption split on every fuel line, filled automatically from the MDA MAIN/AUXILIARY/BOILER consumption columns (per fuel type, the unassigned remainder is <b>Other</b>).<br><br><b>Editable:</b> changing a machine figure updates the line total; changing the total sends the difference to Other (if the new total is below ME+AE+Boiler, those scale down pro-rata).<br><br>For LNG-family fuels the ME and AE shares take their CH₄-slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. The split also feeds the OVD-format download (⬇ OVD-format Excel, header) and the Reports tab.")}</div>
       </div>
       ${S.rows.length? S.rows.map((r,ri)=>rowHtml(r,ri)).join("") : `<div class="card" style="text-align:center;padding:26px"><b>No activity yet.</b><div class="note" style="margin-top:6px">Add a voyage or port stay below — or click <b>⬆ Import data (OVD · MDA · THETIS)</b> in the header to load a reporting file. Set up the vessel first under <b>Settings</b>.</div></div>`}
       <button class="add" onclick="S.rows.push({kind:'voyage',label:'',from:'EEA',to:'EEA',dist:0,cargo:0,fuels:[{fuelId:'HFO',tonnes:0,price:0}]});save();renderWorkspace()">+ Add voyage</button>
@@ -1193,14 +1220,14 @@ function renderLive(){
     <div class="kv"><span>Distance travelled</span><b>${fmt(sm.dist)} nm</b></div>
     <div class="kv"><span>Distance through ice</span><b>${fmt(sm.distIce)} nm</b></div>
     <div class="kv"><span>Time at sea${sm.hoursPort?" / at berth":""}</span><b>${fmt(sm.hoursSea)} h${sm.hoursPort?" / "+fmt(sm.hoursPort)+" h":""}</b></div>
-    <div class="kv"><span>Cargo quantity (Σ voyages)</span><b>${fmt(sm.cargo)} t</b></div>
+    <div class="kv"><span>Cargo quantity (Σ voyages)</span><b>${fmt(sm.cargo)} mt</b></div>
     <div class="kv"><span>Transport work</span><b>${fmt(sm.tw/1e6)} ×10⁶ t·nm</b></div>
     <h3>Fuel consumption (annual)</h3>
-    ${Object.entries(sm.fuelByType).map(([id,t])=>`<div class="kv"><span>${esc((FUEL_BY_ID[id]||{}).name||id)}</span><b>${fmt(t)} t</b></div>`).join("")||'<p class="note">No fuel entered yet.</p>'}
-    <div class="kv"><span><b>Total fuel consumption</b></span><b>${fmt(sm.fuelTotal)} t</b></div>
+    ${Object.entries(sm.fuelByType).map(([id,t])=>`<div class="kv"><span>${esc((FUEL_BY_ID[id]||{}).name||id)}</span><b>${fmt(t)} mt</b></div>`).join("")||'<p class="note">No fuel entered yet.</p>'}
+    <div class="kv"><span><b>Total fuel consumption</b></span><b>${fmt(sm.fuelTotal)} mt</b></div>
     <h3>Emissions &amp; intensity metrics</h3>
-    <div class="kv"><span>CO₂ at berth / sea passage</span><b>${fmt(sm.co2Berth)} / ${fmt(sm.co2Sea)} t</b></div>
-    <div class="kv"><span><b>Total CO₂ emissions</b></span><b>${fmt(sm.co2Total)} t</b></div>
+    <div class="kv"><span>CO₂ at berth / sea passage</span><b>${fmt(sm.co2Berth)} / ${fmt(sm.co2Sea)} mt</b></div>
+    <div class="kv"><span><b>Total CO₂ emissions</b></span><b>${fmt(sm.co2Total)} mt</b></div>
     <div class="kv"><span>CO₂ per distance</span><b>${fmtF(sm.co2PerDist,2)} t/nm</b></div>
     <div class="kv"><span>CO₂ per transport work</span><b>${fmtF(sm.co2PerTW,2)} g/t·nm</b></div>
     <div class="kv"><span>Fuel per distance</span><b>${fmtF(sm.fuelPerDist,2)} t/nm</b></div>
@@ -1209,8 +1236,9 @@ function renderLive(){
   </div>
 
   <div class="card noprint" style="padding:10px 16px">
-    <span class="note">📊 The detailed <b>voyage &amp; berth breakdown</b> (per-row ETS %, EUA/UKA, eligible energy, CB, penalty), the FuelEU allocation working and the report-level trace moved to the <b>🧮 Calculations</b> tab — with Excel downloads.</span>
+    <span class="note">📊 The detailed <b>voyage &amp; berth breakdown</b> (per-row ETS %, EUA/UKA, eligible energy, CB, penalty) and the FuelEU allocation working are on the <b>🧮 Calculations</b> tab; the MDA-level <b>report-level trace</b> is on the <b>📋 Reports</b> tab — both downloadable as Excel.</span>
     <button class="pill hbtn" style="margin-left:8px" onclick="showTab('calcs')">Open Calculations →</button>
+    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('trace')">Open Reports →</button>
   </div>
 
   <div class="card">
@@ -1223,13 +1251,13 @@ function renderLive(){
       </div>
     </div>
     ${ciiBarHtml(c)}
-    <div class="kv"><span>Total CO₂ / distance</span><b>${fmt(c.co2_t)} t / ${fmt(c.totalDist)} nm</b></div>
+    <div class="kv"><span>Total CO₂ / distance</span><b>${fmt(c.co2_t)} mt / ${fmt(c.totalDist)} nm</b></div>
   </div>
 
   <div class="card">
     <h2>EU ETS — ${R.year} ${info("<b>Regulatory sources:</b> euets-art3ga · art3gb")}</h2>
     <div class="big">${fmt(e.euas)} <span class="unit">EUAs to surrender</span></div>
-    <div class="kv"><span>Covered ${e.basisLabel==="CO2e (CO2+CH4+N2O)"?"CO₂e (CO₂ + CH₄ + N₂O)":"("+esc(e.basisLabel)+")"}</span><b>${fmt(e.basis_t)} t</b></div>
+    <div class="kv"><span>Covered ${e.basisLabel==="CO2e (CO2+CH4+N2O)"?"CO₂e (CO₂ + CH₄ + N₂O)":"("+esc(e.basisLabel)+")"}</span><b>${fmt(e.basis_t)} mt</b></div>
     ${R.year>=2026?`<div class="kv"><span>CH₄/N₂O GWP set (selected)</span><b>${e.gwp.label} <span class="flag" title="${esc(e.gwp.src)}">FILL-IN</span></b></div>`:""}
     <div class="kv"><span>Phase-in</span><b>${e.phase*100}%</b></div>
     <div class="kv"><span>EUA cost @ €${fmt(S.euaPrice)}</span><b>€ ${fmt(e.cost,0)}</b></div>
@@ -1239,7 +1267,7 @@ function renderLive(){
     <h2>UK ETS — ${R.year} ${info("<b>Regulatory sources:</b> ukets-sch2a-p35/p36")}</h2>
     ${u.active? `
     <div class="big">${fmt(u.tco2e)} <span class="unit">tCO₂e (ME<sub>ETS</sub>)</span></div>
-    <div class="kv"><span>CO₂ / CH₄ / N₂O (t)</span><b>${fmt(u.co2)} / ${fmtF(u.ch4,3)} / ${fmtF(u.n2o,3)}</b></div>
+    <div class="kv"><span>CO₂ / CH₄ / N₂O (mt)</span><b>${fmt(u.co2)} / ${fmtF(u.ch4,3)} / ${fmtF(u.n2o,3)}</b></div>
     <div class="kv"><span>UKA cost @ £${fmt(S.ukaPrice)}</span><b>£ ${fmt(u.cost,0)}</b></div>`
     : `<p class="note">Applies from scheme year 2026. Computed: ${fmt(u.tco2e)} t CO₂e — no obligation for ${R.year}.</p>`}
   </div>
@@ -1253,16 +1281,16 @@ function renderLive(){
       </select></b></div>
     <div class="kv"><span>GHGIE<sub>actual</sub>${f.fwind<1?` (f<sub>wind</sub>=${f.fwind})`:""}</span><b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b></div>
     <div class="kv"><span>Target (91.16 − ${f.targetPct}%)</span><b>${fmtF(f.target,5)}</b></div>
-    ${f.ghgieAlt!=null && Math.abs((f.ghgieAlt??0)-(f.ghgie??0))>1e-9?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method would give</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} t</b></div>`:""}
+    ${f.ghgieAlt!=null && Math.abs((f.ghgieAlt??0)-(f.ghgie??0))>1e-9?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method would give</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
     <div class="kv"><span>Energy in scope (fuel + OPS)</span><b>${fmt(f.E_total/1e6)} ×10⁶ MJ</b></div>
     ${f.E_pool>f.E_total-f.opsMJ+1e-6?`<div class="kv"><span>Allocatable fuel energy (MRV pool)</span><b>${fmt(f.E_pool/1e6)} ×10⁶ MJ</b></div>`:""}
-    ${f.terms&&f.terms.length?`<table class="scctable" style="margin-top:6px"><tr><th>Fuel × consumer</th><th class="num">Pool (t)</th><th class="num">Allocated (t)</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>
+    ${f.terms&&f.terms.length?`<table class="scctable" style="margin-top:6px"><tr><th>Fuel × consumer</th><th class="num">Pool (mt)</th><th class="num">Allocated (mt)</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>
       ${f.terms.map(t=>`<tr${t.E<=0?' style="color:#999"':''}><td>${esc(t.name)}${t.m?` <span class="note">· ${t.m==="BLR"?"Boiler":t.m==="OTH"?"Other":esc(t.m)}${(t.m==="ME"||t.m==="AE")?" — "+esc(t.engine):""}</span>`:""}${t.rfnbo?' <span class="note">×2 RWD</span>':""}</td><td class="num">${fmt(t.tonnesPool)}</td><td class="num">${fmt(t.tonnes)}</td><td class="num">${fmtF(t.E/1e6,2)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td></tr>`).join("")}</table>
     <p class="note">Allocated mix per essf-ws1 ch.2 worked examples — grey rows are in the MRV pool but not allocated to the scope (they carry the highest intensity). WtW = WtT + TtW incl. CH₄ slip for the row's consumer class.</p>`:""}
     <div class="kv"><span>Compliance balance</span><b style="color:${f.cb>=0?"var(--green)":"var(--red)"}">${fmt(f.cb/1e6)} tCO₂eq</b></div>
-    ${f.banked? `<div class="kv"><span>+ banked (Art 20)</span><b>${fmt(f.banked/1e6)} t</b></div>`:""}
-    ${f.poolCB? `<div class="kv"><span>+ pool partner (Art 21)</span><b>${fmt(f.poolCB/1e6)} t</b></div>`:""}
-    ${f.borrowUsed? `<div class="kv"><span>+ borrowed (→ debt ${fmt(f.borrowDebt/1e6)} t next period)</span><b>${fmt(f.borrowUsed/1e6)} t</b></div>`:""}
+    ${f.banked? `<div class="kv"><span>+ banked (Art 20)</span><b>${fmt(f.banked/1e6)} mt</b></div>`:""}
+    ${f.poolCB? `<div class="kv"><span>+ pool partner (Art 21)</span><b>${fmt(f.poolCB/1e6)} mt</b></div>`:""}
+    ${f.borrowUsed? `<div class="kv"><span>+ borrowed (→ debt ${fmt(f.borrowDebt/1e6)} mt next period)</span><b>${fmt(f.borrowUsed/1e6)} mt</b></div>`:""}
     <div class="kv"><span><b>Balance after flexibility</b></span><b style="color:${f.cbFinal>=0?"var(--green)":"var(--red)"}">${fmt(f.cbFinal/1e6)} tCO₂eq</b></div>
     <div class="big" style="color:${f.penalty>0?"var(--red)":"var(--green)"}">${f.penalty>0?`€ ${fmt(f.penalty,0)} penalty`:(f.surplusValue>0?`€ ${fmt(f.surplusValue,0)} surplus value*`:"Compliant")}</div>
     ${f.mult>1?`<div class="note">Includes ×${f.mult.toFixed(1)} consecutive-deficit multiplier (Art 23(2)).</div>`:""}
@@ -1272,7 +1300,7 @@ function renderLive(){
   <div class="card">
     <h2>SCC commercial KPIs ${info("<b>Regulatory sources:</b> scc-2-5 Eq. 4–5")}</h2>
     ${sc.voyages.length? `
-    <table class="scctable"><tr><th>Voyage</th><th class="num">CO₂ (t)</th><th class="num">Transport work (×10⁶ t·nm)</th><th class="num">Intensity (gCO₂/t·nm)</th>${S.sccReqMin?`<th class="num">Δ Min %</th>`:""}${S.sccReqStriving?`<th class="num">Δ Str %</th>`:""}</tr>
+    <table class="scctable"><tr><th>Voyage</th><th class="num">CO₂ (mt)</th><th class="num">Transport work (×10⁶ t·nm)</th><th class="num">Intensity (gCO₂/t·nm)</th>${S.sccReqMin?`<th class="num">Δ Min %</th>`:""}${S.sccReqStriving?`<th class="num">Δ Str %</th>`:""}</tr>
     ${sc.voyages.map(v=>`<tr><td>${esc(v.label)}</td><td class="num">${fmt(v.co2)}</td><td class="num">${fmtF(v.tw/1e6,2)}</td><td class="num">${fmtF(v.intensity,2)}</td>${S.sccReqMin?`<td class="num">${fmtF((v.intensity-S.sccReqMin)/S.sccReqMin*100,2)}</td>`:""}${S.sccReqStriving?`<td class="num">${fmtF((v.intensity-S.sccReqStriving)/S.sccReqStriving*100,2)}</td>`:""}</tr>`).join("")}
     </table>
     <div class="kv"><span>Weighted annual intensity</span><b>${fmtF(sc.weighted,2)} gCO₂/t·nm</b></div>
@@ -1292,7 +1320,7 @@ function renderLive(){
     ${ec.breakeven? (ec.breakeven.impossible
       ? `<p class="note">Even 100% ${esc(ec.breakeven.fuel)} misses the ${R.year} target (intensity at 100% = ${fmtF(ec.breakeven.intensityAt,2)} g/MJ). Pick a lower-intensity substitute (Settings tab).</p>`
       : `<div class="kv"><span>Replace with ${esc(ec.breakeven.fuel)}</span><b>${fmtF(ec.breakeven.share*100,2)}% of in-scope energy</b></div>
-         <div class="kv"><span>Substitute quantity</span><b>${fmt(ec.breakeven.tonnes)} t (displacing ~${fmt(ec.breakeven.dispTonnes)} t)</b></div>
+         <div class="kv"><span>Substitute quantity</span><b>${fmt(ec.breakeven.tonnes)} mt (displacing ~${fmt(ec.breakeven.dispTonnes)} mt)</b></div>
          <div class="kv"><span>Extra fuel cost / penalty avoided</span><b>€ ${fmt(ec.breakeven.extraFuelCost,0)} / € ${fmt(ec.breakeven.penaltyAvoided,0)}</b></div>
          <div class="kv"><span><b>Net P&amp;L impact</b></span><b style="color:${(ec.breakeven.extraFuelCost-ec.breakeven.penaltyAvoided)<=0?"var(--green)":"var(--red)"}">€ ${fmt(ec.breakeven.extraFuelCost-ec.breakeven.penaltyAvoided,0)}</b></div>`)
       : `<p class="note">${f.ghgie!=null && f.ghgie<=f.target ? "Already at or below target — no blending needed." : "Pick a substitute fuel on the Settings tab."}</p>`}
@@ -1309,9 +1337,10 @@ function renderLive(){
 
 /* ============ CALCULATIONS TAB (2026-07-16, Aurvin) ============
    Detailed calculation tables: the voyage & berth breakdown (moved out of the live
-   panel), FuelEU allocation and EU ETS working, and a report-level trace table with
-   OVD-format Excel download. All Excel files are generated fully offline by the
-   minimal writer below (stored-ZIP OOXML — no libraries, works in the standalone). */
+   panel) plus FuelEU allocation and EU ETS working. The report-level trace table
+   moved to its own Reports tab on 2026-07-19 (see renderTrace() below). All Excel
+   files are generated fully offline by the minimal writer below (stored-ZIP OOXML
+   — no libraries, works in the standalone). */
 function crc32(u8){
   let T=crc32.T;
   if(!T){ T=crc32.T=new Int32Array(256);
@@ -1374,20 +1403,28 @@ function reportTypeLabel(rep){
   if(rep.rt==="IN_PORT") return rep.role||"IN_PORT";
   return rep.rt;
 }
+/* on-screen-only relabel for the trace table event column (exports/self-tests keep the
+   IN_PORT/AT_SEA/OVD-format wording from reportTypeLabel above) */
+function reportTypeDisplay(rep){
+  const t=reportTypeLabel(rep);
+  if(t==="IN_PORT") return "PORT";
+  if(t==="AT_SEA") return "SEA";
+  return t;
+}
 const fmtDict=(d)=> d? Object.entries(d).filter(([,v])=>v>1e-9).map(([k,v])=>k+" "+(Math.round(v*100)/100)).join(" · ") : "";
 /* ---- Excel: voyage & berth breakdown (one line per row × fuel; row totals on first line) ---- */
 function downloadBreakdownXlsx(){
   const R=computeAll(S);
-  const rows=[["Activity","Kind","From (UTC)","To (UTC)","Hours","Distance nm","Cargo t",
-               "EU ETS %","UK ETS %","FuelEU %","Fuel","Tonnes","LCV MJ/g","Eligible EU t","Eligible energy MJ",
-               "CO2 t (row)","EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)"]];
+  const rows=[["Activity","Kind","From (UTC)","To (UTC)","Hours","Distance nm","Cargo mt",
+               "EU ETS %","UK ETS %","FuelEU %","Fuel","Tonnes","LCV MJ/g","Eligible EU mt","Eligible energy MJ",
+               "CO2 mt (row)","EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)"]];
   for(const d of R.rowDetails){
     const fs=d.fuels.length?d.fuels:[{id:"",name:"",tonnes:"",eligibleEU:""}];
     fs.forEach((fu,i)=>{
       const f=FUEL_BY_ID[fu.id]||{};
       rows.push([d.label||"—", d.kind, d.tStart||"", d.tEnd||"", i? "":(d.hours||""), i? "":(d.dist||""), i? "":(d.cargo||""),
                  i? "":d.covEU*100, i? "":d.covUK*100, i? "":d.covEU*100,
-                 fu.name||fu.id, fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
+                 f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
                  (f.lcv&&fu.eligibleEU!=="")? fu.eligibleEU*1e6*f.lcv : "",
                  i? "":d.co2, i? "":d.euas, i? "":d.ukCO2e, i? "":(d.feuCB!=null? d.feuCB/1e6 : ""), i? "":(d.feuPenalty||0)]);
     });
@@ -1431,13 +1468,14 @@ const TR_ICONS = {
   berth:'M4 2v20 M4 8h4 M4 15h4 M11 17h10l-1.6 4H12.2z M13 13h6v4',
   clock:'M12 7v5l3.5 2 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
   fuel:'M3 22h12 M4 9h10 M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18 M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 4 0v-7.2a2 2 0 0 0-.6-1.4L18 5',
-  box:'M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12'
+  box:'M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12',
+  waves:'M2 9Q4 7 6 9Q8 11 10 9Q12 7 14 9Q16 11 18 9Q20 7 22 9 M2 16Q4 14 6 16Q8 18 10 16Q12 14 14 16Q16 18 18 16Q20 14 22 16'
 };
 const TR_CONDS = {
   AT_ANCHOR:       { label:'Anchor',        icon:TR_ICONS.anchor, color:'#5b7fa6' },
   MANOEUVRING:     { label:'Manoeuvring',   icon:TR_ICONS.route,  color:'#6366f1' },
   AT_BERTH:        { label:'Berth',         icon:TR_ICONS.berth,  color:'#0d9488' },
-  DRIFTING:        { label:'Drifting',      icon:TR_ICONS.anchor, color:'#64748b' },
+  DRIFTING:        { label:'Drifting',      icon:TR_ICONS.waves,  color:'#64748b' },
   CANAL_TRANSIT:   { label:'Canal transit', icon:TR_ICONS.route,  color:'#64748b' },
   'NORMAL SAILING':{ label:'Sailing',       icon:TR_ICONS.route,  color:'#64748b' }
 };
@@ -1449,6 +1487,17 @@ const TR_ACTS = {
   CARGO_LOADING_STS:    { label:'Cargo Loading (STS)',     icon:TR_ICONS.box,   color:'#4f46e5' },
   CARGO_DISCHARGING_STS:{ label:'Cargo Discharging (STS)', icon:TR_ICONS.box,   color:'#4f46e5' }
 };
+/* shared voyage (in-transit) / berth (at-location) markers — used in both the voyage & berth
+   breakdown grid and the report-level trace table, so the two stay visually consistent */
+const ICON_VOYAGE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4V18 M7 13l5 5 5-5"></path></svg>';
+const ICON_BERTH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="12" r="7"></circle></svg>';
+/* Reports-tab event-column circle, filled and coloured by role: red = ARRIVAL, green = DEPARTURE,
+   blue = plain in-port stay (role unset) — distinct from ICON_BERTH's fixed grey used elsewhere */
+const ROLE_ICON_COLOR = { ARRIVAL:"#b3261e", DEPARTURE:"#22c55e" };
+function berthIcon(r){
+  const c = ROLE_ICON_COLOR[r.role] || "#2563eb";
+  return `<svg width="14" height="14" viewBox="0 0 24 24" style="flex-shrink:0"><circle cx="12" cy="12" r="7" fill="${c}"></circle></svg>`;
+}
 const TR_FUEL_ORDER = ["HFO","LFO","MGO","MDO","LNG","LPGP","LPGB","M","E"];
 /* activity list per event: multi-valued ASSOCIATED_ACTIVITY splits to a list; a BUNKER stock
    event carrying a bunkered quantity is by definition a bunkering activity */
@@ -1485,11 +1534,36 @@ function trFuelLines(r){
       bg: i%2===1? "#f1f5f9":"transparent" };
   });
 }
-function trPctSpan(p){
+/* eligibility badge — dark teal 100%, medium teal partial, pale 0%/out-of-scope-or-not-in-source */
+function trPctBadge(p){
   const has = p!=null && !isNaN(p);
-  const c = (!has || p===0)? "#cbd5e1" : "#334155";
-  const t = has? ((p%1===0? p.toFixed(0): p.toFixed(1))+"%") : "—";
-  return `<span style="font-size:11px;font-weight:600;font-family:${TR_MONO};font-variant-numeric:tabular-nums;color:${c}">${t}</span>`;
+  const v = has? p : 0;
+  const bg = !has||v<=0 ? "#e4eef0" : v>=100 ? "#1f3b45" : "#5b8791";
+  const fg = !has||v<=0 ? "#7c8fa0" : "#ffffff";
+  const t = has? ((v%1===0? v.toFixed(0): v.toFixed(1))+"%") : "–";
+  return `<span style="display:inline-block;min-width:40px;text-align:center;padding:3px 6px;border-radius:0;font-size:11px;font-weight:700;font-family:${TR_MONO};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
+}
+/* match a raw MDA report to the authoritative aggregated S.rows entry covering its timestamp
+   (S.rows and S.mdaReports come from two independent parses of the same import — no shared id —
+   so this is a best-effort time-window match; tStart inclusive, tEnd exclusive to avoid double-
+   matching the instant where one leg ends and the next begins). No match => null (shown as "–"),
+   rather than falling back to the file's own (less reliable) POC flag. */
+function trMatchRow(r){
+  const t = r.t;
+  if(!t) return null;
+  for(const row of S.rows||[]){
+    if(row.tStart && row.tEnd && t>=row.tStart && t<row.tEnd) return row;
+  }
+  return null;
+}
+/* EU ETS / UK ETS / FuelEU eligibility for one report, reusing the engine's own coverage rule
+   (euCoverage/ukCoverage, js/engine.js) via the matched row — FuelEU's in-scope-energy fraction
+   is identical to EU ETS's by regulation (fueleu-art2 mirrors euets-art3ga), so it reuses covEU. */
+function trCoverage(r){
+  const row = trMatchRow(r);
+  if(!row) return { eu:null, uk:null, feu:null };
+  const eu = euCoverage(row)*100, uk = ukCoverage(row)*100;
+  return { eu, uk, feu:eu };
 }
 function reportTraceTable(reps){
   const pad="6px 12px", padV="6px";                         // compact density
@@ -1502,11 +1576,10 @@ function reportTraceTable(reps){
     const c=TR_CONDS[r.oc]||(r.oc?{label:r.oc.charAt(0)+r.oc.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.route,color:"#64748b"}:null);
     const acts=trActs(r).map(k=>TR_ACTS[k]||{label:k.charAt(0)+k.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.clock,color:"#64748b"});
     const fuels=trFuelLines(r);
+    const cov=trCoverage(r);
     const port=r.portN||r.cur||"";
-    const portSub=[r.ctry,r.regn].filter(Boolean).join(" · ");
     const z=r.cur? zoneOfLocode(r.cur):null;
     const zone=z==="EEA"?"EU":z==="UK"?"UK":null;
-    const elig=[["EU ETS",r.euPct],["FuelEU",null],["UK ETS",r.ukPct]];
     const condHtml = c? `<div style="display:flex;align-items:center;gap:6px">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${c.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="${c.icon}"></path></svg>
           <span style="font-size:12px;color:#334155;font-weight:500">${esc(c.label)}</span>
@@ -1514,17 +1587,17 @@ function reportTraceTable(reps){
         </div>` : dash;
     const actHtml = acts.length? `<div style="display:flex;align-items:center;gap:5px">${acts.map(a=>
         `<span class="actic" data-tip="${esc(a.label)}" aria-label="${esc(a.label)}" tabindex="0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${a.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${a.icon}"></path></svg></span>`).join("")}</div>` : dash;
+    const portNameHtml = `<span style="max-width:18ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom" title="${esc(port)}">${esc(port)}</span>`;
+    const ctryHtml = r.ctry? `<span style="max-width:18ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom" title="${esc(r.ctry)}">${esc(r.ctry)}</span>` : "";
+    const regnHtml = r.regn? `<span style="white-space:nowrap">${esc(r.regn)}</span>` : "";
+    const portSubHtml = [ctryHtml,regnHtml].filter(Boolean).join(' <span style="color:#cbd5e1">·</span> ');
     const portHtml = port? `<div style="display:flex;flex-direction:column;gap:2px">
-          <span style="font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap">${esc(port)}</span>
-          ${(portSub||zone)?`<div style="display:flex;align-items:center;gap:6px">
-            ${portSub?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap">${esc(portSub)}</span>`:""}
+          <span style="font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap">${portNameHtml}${(r.portN&&r.cur)?`<span style="font-size:10px;font-weight:400;color:#94a3b8"> – ${esc(r.cur)}</span>`:""}</span>
+          ${(portSubHtml||zone)?`<div style="display:flex;align-items:center;gap:6px">
+            ${portSubHtml?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap">${portSubHtml}</span>`:""}
             ${zone?`<span style="font-size:9px;font-weight:700;letter-spacing:0.05em;color:#1d4ed8;background:#dbeafe;padding:1px 5px;border-radius:4px">${zone}</span>`:""}
           </div>`:""}
         </div>` : dash;
-    const eligHtml = `<div style="display:flex;flex-direction:column;gap:0">${elig.map(([nm,p])=>
-        `<div style="display:flex;align-items:baseline;gap:8px;height:15px;line-height:15px">
-          <span style="font-size:9.5px;font-weight:600;letter-spacing:0.03em;color:#94a3b8;width:42px;text-transform:uppercase">${nm}</span>${trPctSpan(p)}
-        </div>`).join("")}</div>`;
     const fuelTds = fuels.length? `
       <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_MONO}`,esc(f.name))).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_MONO};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
@@ -1540,8 +1613,8 @@ function reportTraceTable(reps){
     return `<tr style="border-bottom:1px solid #f1f5f9;background:#ffffff">
       <td style="padding:${pad};vertical-align:top;white-space:nowrap">
         <div style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
-          <span style="font-size:12px;font-weight:700;color:#334155">${esc(reportTypeLabel(r))}</span>
-          <span style="font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc((r.t||"").replace("T"," "))}</span>
+          <span style="font-size:12px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px">${r.rt==="IN_PORT"?berthIcon(r):""}${esc(reportTypeDisplay(r))}</span>
+          <span style="font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc(fmtTs(r.t))}</span>
         </div>
       </td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap">${condHtml}</td>
@@ -1549,27 +1622,32 @@ function reportTraceTable(reps){
       <td style="padding:${pad};vertical-align:top">${portHtml}</td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
       <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,2):"—"}</td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${eligHtml}</td>
+      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.eu)}</td>
+      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.feu)}</td>
+      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.uk)}</td>
       ${fuelTds}
       <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qty?fmt(r.qty):"—"}</td>
     </tr>`;
   }).join("");
   return `
-    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">
+    <div class="tablescroll" style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">
     <table style="width:100%;border-collapse:collapse;font-size:12.5px">
-      <thead>
+      <thead style="position:sticky;top:0;z-index:10">
         <tr>
-          <th rowspan="2" style="text-align:left;${thBase}">Event</th>
+          <th rowspan="2" style="text-align:left;${thBase}">Event<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8">UTC</span></th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Condition</th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Activity</th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Port</th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%;white-space:nowrap">Voyage No</th>
           <th rowspan="2" style="text-align:right;${thBase}">Dist nm</th>
-          <th rowspan="2" style="text-align:left;${thBase}">Eligibility %</th>
+          <th colspan="3" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Eligibility ${info("Share of this report's energy in scope for each regulation — computed the same way as your CII / EU ETS / UK ETS / FuelEU totals (matched to the corresponding voyage/port entry). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#1f3b45;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#5b8791;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope<br><br>\"–\" = no confident match to a calculated voyage/port entry (e.g. bunkering/stock reports, or reports right at a year boundary) — shown blank rather than guessed")}</th>
           <th colspan="7" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(tonnes)</span></th>
-          <th rowspan="2" style="text-align:right;${thBase}">Cargo t</th>
+          <th rowspan="2" style="text-align:right;${thBase}">Cargo mt</th>
         </tr>
         <tr>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">EU ETS</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">FEU</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">UK ETS</th>
           <th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>
           <th style="text-align:right;${thSub};font-weight:700;color:#475569">Total</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">ME</th>
@@ -1581,12 +1659,6 @@ function reportTraceTable(reps){
       </thead>
       <tbody>${rows}</tbody>
     </table>
-    </div>
-    <div style="padding:10px 2px 0;font-size:11px;color:#94a3b8;display:flex;gap:16px;flex-wrap:wrap">
-      <span>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)</span>
-      <span><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)</span>
-      <span>Eligibility % = share of the report exposed to EU ETS / FuelEU / UK ETS (as ingested; — = not in the source file)</span>
-      <span>All consumption, ROB and bunker values as ingested</span>
     </div>`;
 }
 
@@ -1600,7 +1672,9 @@ const JURIS_PAL = {
   'EU OMR': { bg:'#e7f4f4', fg:'#0e7490' },
   'UK OMR': { bg:'#faf0f4', fg:'#a34f6d' },
 };
-const BR_GRID = "minmax(150px,2.6fr) minmax(64px,0.7fr) minmax(90px,0.9fr) minmax(54px,0.7fr) minmax(58px,0.6fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr)";
+/* 15 columns (2026-07-19: LCV column dropped — its tooltip moved to the "Fuel metrics" group
+   header instead; everything from column 5 on shifted down by one vs. the old 16-column grid) */
+const BR_GRID = "minmax(150px,2.6fr) minmax(64px,0.7fr) minmax(90px,0.9fr) minmax(54px,0.7fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr)";
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
 /* jurisdiction of a berth port: OMR wins, else EU/UK zone, else null (no badge) */
@@ -1646,30 +1720,30 @@ function inYearRows(){
 
 /* full inner grid: header rows + one grid per leg + totals + footnote */
 function breakdownGrid(R, tips){
-  const cellPad = "10px 12px";
+  const cellPad = "7px 10px";
+  const GUTTER_W = 36;                    // activity-column icon gutter width
   const src = inYearRows();
   const header = `
-    <div style="display:grid;grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
-      <div style="grid-column:1;grid-row:1 / span 2;display:flex;align-items:flex-end;padding:10px 12px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
-      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:10px 12px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
-      <div style="grid-column:3 / span 3;grid-row:1;padding:8px 12px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics</div>
-      <div style="grid-column:6 / span 6;grid-row:1;padding:8px 12px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:12 / span 3;grid-row:1;padding:8px 12px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS</div>
-      <div style="grid-column:15 / span 2;grid-row:1;padding:8px 12px;background:#f4f1fa;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS</div>
-      <div style="grid-column:3;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;white-space:nowrap">Fuel type</div>
-      <div style="grid-column:4;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Fuel consumed (tonnes)">Cons. t</div>
-      <div style="grid-column:5;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap;border-right:1px solid #e2e8f0">LCV ${tips.lcv}</div>
-      <div style="grid-column:6;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:7;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">Elig. t</div>
-      <div style="grid-column:8;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Energy (10⁶ MJ)</div>
-      <div style="grid-column:9;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Elig. energy (10⁶ MJ)</div>
-      <div style="grid-column:10;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">CB</div>
-      <div style="grid-column:11;grid-row:2;padding:8px 12px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Penalty (€)</div>
-      <div style="grid-column:12;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:13;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (t) ${tips.cf}</div>
-      <div style="grid-column:14;grid-row:2;padding:8px 12px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e) ${tips.eua}</div>
-      <div style="grid-column:15;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:16;grid-row:2;padding:8px 12px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e) ${tips.uka}</div>
+    <div style="display:grid;grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1;position:sticky;top:0;z-index:10">
+      <div style="grid-column:1;grid-row:1 / span 2;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
+      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
+      <div style="grid-column:3 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:5 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS</div>
+      <div style="grid-column:14 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS</div>
+      <div style="grid-column:3;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;white-space:nowrap">Fuel type</div>
+      <div style="grid-column:4;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0" title="Fuel consumed (tonnes)">Cons. mt</div>
+      <div style="grid-column:5;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:6;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">Elig. mt</div>
+      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Energy (10⁶ MJ)</div>
+      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Elig. energy (10⁶ MJ)</div>
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">CB</div>
+      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Penalty (€)</div>
+      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (mt) ${tips.cf}</div>
+      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e) ${tips.eua}</div>
+      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
+      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e) ${tips.uka}</div>
     </div>`;
 
   let zi=0;
@@ -1699,35 +1773,43 @@ function breakdownGrid(R, tips){
       const energy = (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0;   // 10⁶ MJ = t × LCV(MJ/g)
       return `
         <div style="grid-column:3;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};font-weight:600;color:#334155;white-space:nowrap">${esc(cleanFuelName(fb.id?fb:{id:fu.id,name:fu.name}))}</div>
-        <div style="grid-column:4;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${fmtF(fu.tonnes,2)}</div>
-        <div style="grid-column:5;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;color:#64748b;border-right:1px solid #e2e8f0">${fb.lcv!=null?fmtF(fb.lcv,4):brDash}</div>
-        <div style="grid-column:7;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(fu.eligibleEU)}</div>
-        <div style="grid-column:8;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(energy)}</div>`;
+        <div style="grid-column:4;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;border-right:1px solid #e2e8f0">${fmtF(fu.tonnes,2)}</div>
+        <div style="grid-column:6;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(fu.eligibleEU)}</div>
+        <div style="grid-column:7;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums">${brNum(energy)}</div>`;
     }).join("");
 
     const cbColor = covEU>0 ? ((d.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8";
     return `
       <div style="display:grid;grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
-        <div style="grid-column:1;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-            <span style="flex:1 1 auto;min-width:0;font-weight:600;color:#0f172a;line-height:1.5;overflow-wrap:anywhere">${isBerth?"⚓":"⛴"} ${portHtml}</span>
-            ${cargoIcon}
+        <div style="grid-column:1;grid-row:1 / span ${span};display:flex;border-right:1px solid #e2e8f0">
+          <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
+            <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${isBerth?ICON_BERTH:ICON_VOYAGE}</div>
           </div>
-          <div style="display:flex;flex-wrap:wrap;column-gap:8px;font-size:0.85em;color:#64748b;margin-top:4px;line-height:1.5"><span style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></span><span style="white-space:nowrap">${toS}</span><span style="margin-left:auto;align-self:flex-end;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</span></div>
+          <div style="flex:1 1 auto;min-width:0;padding:10px 12px 10px 0">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+              <span style="flex:1 1 auto;min-width:0;font-weight:600;color:#0f172a;line-height:1.5;overflow-wrap:anywhere">${portHtml}</span>
+              ${cargoIcon}
+            </div>
+            <div style="display:flex;flex-wrap:wrap;column-gap:8px;font-size:0.85em;color:#64748b;margin-top:4px;line-height:1.5"><span style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></span><span style="white-space:nowrap">${toS}</span><span style="margin-left:auto;align-self:flex-end;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</span></div>
+          </div>
         </div>
         <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
         ${fuelCells}
-        <div style="grid-column:6;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
-        <div style="grid-column:9;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${covEU>0?fmtF(d.E/1e6,2):brDash}</div>
-        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${cbColor}">${(covEU>0&&d.feuCB!=null)?fmtF(d.feuCB/1e6,2):brDash}</div>
-        <div style="grid-column:11;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a3412">${d.feuPenalty?fmtF(d.feuPenalty,2):brDash}</div>
-        <div style="grid-column:12;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
-        <div style="grid-column:13;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${brNum(d.co2)}</div>
-        <div style="grid-column:14;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#3652a3">${covEU>0?fmtF(d.euas,2):brDash}</div>
-        <div style="grid-column:15;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covUK)}</div>
-        <div style="grid-column:16;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#6d4fa3">${covUK>0?fmtF(d.ukCO2e,2):brDash}</div>
+        <div style="grid-column:5;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
+        <div style="grid-column:8;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${covEU>0?fmtF(d.E/1e6,2):brDash}</div>
+        <div style="grid-column:9;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:${cbColor}">${(covEU>0&&d.feuCB!=null)?fmtF(d.feuCB/1e6,2):brDash}</div>
+        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a3412">${d.feuPenalty?fmtF(d.feuPenalty,2):brDash}</div>
+        <div style="grid-column:11;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covEU)}</div>
+        <div style="grid-column:12;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums">${brNum(d.co2)}</div>
+        <div style="grid-column:13;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#3652a3">${covEU>0?fmtF(d.euas,2):brDash}</div>
+        <div style="grid-column:14;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${brPct(covUK)}</div>
+        <div style="grid-column:15;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#6d4fa3">${covUK>0?fmtF(d.ukCO2e,2):brDash}</div>
       </div>`;
   }).join("");
+  const bodyWrapped = R.rowDetails.length ? `<div style="position:relative">
+      <div style="position:absolute;top:0;bottom:0;left:${GUTTER_W/2}px;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
+      ${body}
+    </div>` : body;
 
   const empty = !R.rowDetails.length ? `<div style="padding:22px;text-align:center;color:#64748b">No activity rows for ${R.year}.</div>` : "";
 
@@ -1739,79 +1821,83 @@ function breakdownGrid(R, tips){
     <div style="display:grid;grid-template-columns:${BR_GRID};background:#f8fafc;border-top:1px solid #cbd5e1">
       <div style="grid-column:1;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a">Totals — ${R.year}</div>
       <div style="grid-column:2;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("dist"),2)}</div>
-      <div style="grid-column:4;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("tonnes"),2)}</div>
-      <div style="grid-column:5;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
-      <div style="grid-column:6;padding:${cellPad};text-align:right">${brDash}</div>
-      <div style="grid-column:7;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("eligibleEU"),2)}</div>
-      <div style="grid-column:8;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumEnergy,2)}</div>
-      <div style="grid-column:9;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("E")/1e6,2)}</div>
-      <div style="grid-column:10;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#b91c1c">${fmtF(sum("feuCB")/1e6,2)}</div>
-      <div style="grid-column:11;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#9a3412">${fmtF(sum("feuPenalty"),2)}</div>
-      <div style="grid-column:12;padding:${cellPad};text-align:right">${brDash}</div>
-      <div style="grid-column:13;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("co2"),2)}</div>
-      <div style="grid-column:14;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#3652a3">${fmtF(sum("euas"),2)}</div>
-      <div style="grid-column:15;padding:${cellPad};text-align:right">${brDash}</div>
-      <div style="grid-column:16;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#6d4fa3">${fmtF(sum("ukCO2e"),2)}</div>
+      <div style="grid-column:4;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("tonnes"),2)}</div>
+      <div style="grid-column:5;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:6;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumF("eligibleEU"),2)}</div>
+      <div style="grid-column:7;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sumEnergy,2)}</div>
+      <div style="grid-column:8;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("E")/1e6,2)}</div>
+      <div style="grid-column:9;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#b91c1c">${fmtF(sum("feuCB")/1e6,2)}</div>
+      <div style="grid-column:10;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#9a3412">${fmtF(sum("feuPenalty"),2)}</div>
+      <div style="grid-column:11;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:12;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmtF(sum("co2"),2)}</div>
+      <div style="grid-column:13;padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#3652a3">${fmtF(sum("euas"),2)}</div>
+      <div style="grid-column:14;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:15;padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;color:#6d4fa3">${fmtF(sum("ukCO2e"),2)}</div>
     </div>` : "";
 
-  return `<div style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${header}${body}${empty}${totals}</div>
-    <div style="padding:10px 2px 0;font-size:11.5px;color:#64748b;display:flex;gap:18px;flex-wrap:wrap">
-      <span>All figures rounded to 2 decimal places (LCV: 4).</span>
-      <span>— indicates no obligation (out of scope or OMR derogation until 2030).</span>
-      <span>CB = FuelEU compliance balance; negative values are deficits.</span>
-      <span>📦 = port of call (cargo activity).</span>
-      <span>OMR = outermost region.</span>
-    </div>`;
+  return `<div class="tablescroll" style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${header}${bodyWrapped}${empty}${totals}</div>`;
 }
 
+/* the breakdown table shrinks (flex layout) whenever "Intermediate workings" is expanded below it —
+   clicking anywhere on the shrunk table is a shortcut back, since the <summary> toggle itself is
+   easy to lose track of once the table above it has shrunk (2026-07-19, Aurvin) */
+function closeWorkingsIfOpen(){ const d=document.getElementById("workingsDetails"); if(d&&d.open) d.open=false; }
 function renderCalcs(){
   const el=document.getElementById("tab-calcs"); if(!el) return;
   const R=computeAll(S);
   const f=R.fueleu, e=R.ets, u=R.ukets;
-  const iCf=info("<b>CO₂ conversion factors (Cf, tCO₂/t fuel)</b> per FuelEU Annex II / MEPC.308(73): HFO 3.114 · LFO 3.151 · MDO/MGO 3.206 · LNG 2.750 · LPG(P) 3.000 · LPG(B) 3.030 · methanol 1.375. CII uses Cf only (CO₂); optional per-line Circ.905 override applies to CII.");
+  const iCf=info("<b>CO₂ conversion factors (Cf, tCO₂/t fuel)</b> per FuelEU Annex II / MEPC.308(73): HFO 3.114 · LFO 3.151 · MGO 3.206 · LNG 2.750 · LPG(P) 3.000 · LPG(B) 3.030 · methanol 1.375. CII uses Cf only (CO₂); optional per-line Circ.905 override applies to CII.");
   const iEUA=info("<b>EUA</b> = covered emissions × phase-in ("+(e.phase*100)+"% for "+R.year+", euets-art3gb). Basis "+esc(e.basisLabel)+(R.year>=2026?" with CH₄/N₂O at GWP "+e.gwp.ch4+"/"+e.gwp.n2o+" ("+esc(e.gwp.label)+", selectable in Settings — FILL-IN)":"")+". Coverage: EEA↔EEA & at-berth-EEA 100%, EEA↔other 50% (euets-art3ga); at-berth scope only for port-of-call stays.");
   const iUKA=info("<b>UKA</b> = tCO₂e for UK-scope activity (UK→UK voyages + UK in-port, ukets-sch2a-p7) with GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35, prescribed). Obligation applies from scheme year 2026.");
   const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. Scope like EU ETS coverage. The annual balance/penalty is shared out by each row's in-scope energy — <b>indicative only</b>, FuelEU is period-based in law. Allocation method: "+(f.allocMethod==="optimal"?"optimal (cleanest-first, essf-ws1-2-5)":"proportional (comparison)")+".");
-  const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MDO/MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Formulas tab. Eligible energy = eligible mass × 10⁶ × LCV.");
+  const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Formulas tab. Eligible energy = eligible mass × 10⁶ × LCV.");
   const brInner=breakdownGrid(R,{lcv:iLCV,cf:iCf,eua:iEUA,uka:iUKA,feu:iFEU});
-  const reps=S.mdaReports||[];
+  const iBreakdown=info(`All figures rounded to 2 decimal places (LCV: 4).<br><br>— indicates no obligation (out of scope or OMR derogation until 2030).<br><br>CB = FuelEU compliance balance; negative values are deficits.<br><br>📦 = port of call (cargo activity).<br><br>OMR = outermost region.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).`,"right");
+  const iPool=info(`Pool = all MRV-monitored fuel (incl. the uncovered half of 50% voyages), per fuel × consumer class. Optimal fills the scope cleanest-first by effective intensity (WtW ÷ RWD); grey rows stay unallocated. GHGIE = Σ allocated·WtW ÷ (Σ allocated·RWD + OPS)${f.fwind<1?" × f<sub>wind</sub> "+f.fwind:""}.`);
   el.innerHTML=`
-  <div class="card">
+  <div class="card panelA" onclick="closeWorkingsIfOpen()">
     <h2>Voyage &amp; berth breakdown — ${R.year}
-      <button class="pill hbtn noprint" style="float:right" onclick="downloadBreakdownXlsx()">⬇ Excel</button></h2>
+      <button class="pill hbtn noprint" style="float:right" onclick="downloadBreakdownXlsx()">⬇ Excel</button>
+      <span style="float:right;margin-right:8px">${iBreakdown}</span></h2>
     ${brInner}
-    <p class="note" style="margin-top:10px"><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).</p>
   </div>
 
-  <div class="card">
-    <h2>FuelEU allocation working — ${R.year}</h2>
-    <div class="kv"><span>Method</span><b>${f.allocMethod==="optimal"?"Optimal — cleanest-first (essf-ws1-2-5)":"Proportional (comparison)"} — switch on the Workspace FuelEU card</b></div>
-    <div class="kv"><span>Energy scope (fuel + OPS) / MRV pool</span><b>${fmt(f.E_total/1e6)} / ${fmt(f.E_pool/1e6)} ×10⁶ MJ</b></div>
-    <div class="kv"><span>GHGIE attained vs target</span><b>${fmtF(f.ghgie,5)} vs ${fmtF(f.target,5)} gCO₂eq/MJ</b></div>
-    ${f.ghgieAlt!=null?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method (comparison)</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} t</b></div>`:""}
-    ${f.terms&&f.terms.length?`<table class="scctable"><tr><th>Fuel × consumer</th><th class="num">Pool t</th><th class="num">Pool ×10⁶ MJ</th><th class="num">Allocated t</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtT g/MJ</th><th class="num">TtW g/MJ (incl. slip)</th><th class="num">WtW g/MJ</th><th class="num">RWD</th></tr>
-      ${f.terms.map(t=>`<tr${t.E<=0?' style="color:#999"':''}><td>${esc(t.name)}${t.m?` <span class="note">· ${t.m==="BLR"?"Boiler":t.m==="OTH"?"Other":esc(t.m)}${(t.m==="ME"||t.m==="AE")?" — "+esc(t.engine):""}</span>`:""}</td>
-        <td class="num">${fmt(t.tonnesPool)}</td><td class="num">${fmtF(t.E_pool/1e6,3)}</td><td class="num">${fmt(t.tonnes)}</td><td class="num">${fmtF(t.E/1e6,3)}</td>
-        <td class="num">${fmtF(t.wtt,2)}</td><td class="num">${fmtF(t.ttw,2)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td><td class="num">${t.rwd}</td></tr>`).join("")}</table>
-    <p class="note">Pool = all MRV-monitored fuel (incl. the uncovered half of 50% voyages), per fuel × consumer class. Optimal fills the scope cleanest-first by effective intensity (WtW ÷ RWD); grey rows stay unallocated. GHGIE = Σ allocated·WtW ÷ (Σ allocated·RWD + OPS)${f.fwind<1?" × f<sub>wind</sub> "+f.fwind:""}.</p>`:'<p class="note">No FuelEU-scope activity yet.</p>'}
-  </div>
-
-  <div class="card">
-    <h2>EU ETS working — ${R.year}</h2>
-    <div class="kv"><span>Covered CO₂ / CO₂e</span><b>${fmt(e.covered_t_co2)} / ${fmt(e.covered_t_co2e)} t</b></div>
-    <div class="kv"><span>Basis (${esc(e.basisLabel)})</span><b>${fmt(e.basis_t)} t</b></div>
-    <div class="kv"><span>Phase-in (euets-art3gb)</span><b>${e.phase*100}%</b></div>
-    ${R.year>=2026?`<div class="kv"><span>CH₄/N₂O GWP set</span><b>${esc(e.gwp.label)} <span class="flag" title="${esc(e.gwp.src)}">FILL-IN</span></b></div>`:""}
-    <div class="kv"><span><b>EUAs to surrender</b> = basis × phase-in</span><b>${fmt(e.euas)}</b></div>
-    <div class="kv"><span>Cost @ €${fmt(S.euaPrice)}</span><b>€ ${fmt(e.cost,0)}</b></div>
-    <p class="note">Per-fuel: covered mass = tonnes × coverage; CO₂e adds CH₄ &amp; N₂O (incl. LNG slip as CH₄) from 2026. Zero-rating of certified bio/RFNBO ${S.bioZeroRatedETS?"ON":"OFF"} (Settings).</p>
-  </div>
-
-  <div class="card">
-    <h2>Report-level trace (MDA granularity)
-      <button class="pill hbtn noprint" style="float:right" onclick="downloadReportsXlsx()">⬇ OVD-format Excel</button></h2>
+  <details class="card workings" id="workingsDetails">
+    <summary>FuelEU allocation &amp; EU ETS working — ${R.year}</summary>
+    <div class="workingsgrid">
+      <div>
+        <div class="wlabel">FuelEU allocation ${iPool}</div>
+        <div class="kv"><span>Method</span><b>${f.allocMethod==="optimal"?"Optimal — cleanest-first (essf-ws1-2-5)":"Proportional (comparison)"} — switch on the Workspace FuelEU card</b></div>
+        <div class="kv"><span>Energy scope (fuel + OPS) / MRV pool</span><b>${fmt(f.E_total/1e6)} / ${fmt(f.E_pool/1e6)} ×10⁶ MJ</b></div>
+        <div class="kv"><span>GHGIE attained vs target</span><b>${fmtF(f.ghgie,5)} vs ${fmtF(f.target,5)} gCO₂eq/MJ</b></div>
+        ${f.ghgieAlt!=null?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method (comparison)</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
+        ${f.terms&&f.terms.length?`<table class="scctable"><tr><th>Fuel × consumer</th><th class="num">Pool mt</th><th class="num">Pool ×10⁶ MJ</th><th class="num">Allocated mt</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtT g/MJ</th><th class="num">TtW g/MJ (incl. slip)</th><th class="num">WtW g/MJ</th><th class="num">RWD</th></tr>
+          ${f.terms.map(t=>`<tr${t.E<=0?' style="color:#999"':''}><td>${esc(t.name)}${t.m?` <span class="note">· ${t.m==="BLR"?"Boiler":t.m==="OTH"?"Other":esc(t.m)}${(t.m==="ME"||t.m==="AE")?" — "+esc(t.engine):""}</span>`:""}</td>
+            <td class="num">${fmt(t.tonnesPool)}</td><td class="num">${fmtF(t.E_pool/1e6,3)}</td><td class="num">${fmt(t.tonnes)}</td><td class="num">${fmtF(t.E/1e6,3)}</td>
+            <td class="num">${fmtF(t.wtt,2)}</td><td class="num">${fmtF(t.ttw,2)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td><td class="num">${t.rwd}</td></tr>`).join("")}</table>`:'<p class="note">No FuelEU-scope activity yet.</p>'}
+      </div>
+      <div>
+        <div class="wlabel">EU ETS</div>
+        <div class="kv"><span>Covered CO₂ / CO₂e</span><b>${fmt(e.covered_t_co2)} / ${fmt(e.covered_t_co2e)} mt</b></div>
+        <div class="kv"><span>Basis (${esc(e.basisLabel)})</span><b>${fmt(e.basis_t)} mt</b></div>
+        <div class="kv"><span>Phase-in (euets-art3gb)</span><b>${e.phase*100}%</b></div>
+        ${R.year>=2026?`<div class="kv"><span>CH₄/N₂O GWP set</span><b>${esc(e.gwp.label)} <span class="flag" title="${esc(e.gwp.src)}">FILL-IN</span></b></div>`:""}
+        <div class="kv"><span><b>EUAs to surrender</b> = basis × phase-in</span><b>${fmt(e.euas)}</b></div>
+        <div class="kv"><span>Cost @ €${fmt(S.euaPrice)}</span><b>€ ${fmt(e.cost,0)}</b></div>
+        <p class="note">Per-fuel: covered mass = tonnes × coverage; CO₂e adds CH₄ &amp; N₂O (incl. LNG slip as CH₄) from 2026. Zero-rating of certified bio/RFNBO ${S.bioZeroRatedETS?"ON":"OFF"} (Settings).</p>
+      </div>
+    </div>
+  </details>`;
+}
+/* ---------- REPORT TRACE TAB (MDA granularity) ---------- */
+function renderTrace(){
+  const el=document.getElementById("tab-trace"); if(!el) return;
+  const reps=S.mdaReports||[];
+  const traceInfo=info(`${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.<br><br>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)<br><br><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)<br><br>Eligibility % = share of the report's energy in scope for EU ETS / FuelEU / UK ETS, computed the same way as your totals elsewhere in the app (— = no confident match to a calculated voyage/port entry)<br><br>All consumption, ROB and bunker values as ingested`,"right");
+  el.innerHTML=`
+  <div class="card panelB">
     ${reps.length?`
-    <p class="note">${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.</p>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:6px">${traceInfo}</div>
     ${reportTraceTable(reps)}`
     :`<p class="note">No report-level data in this workspace. Import an MDA event-log export (.xlsx or .csv) — the raw reports are retained at import (since 2026-07-16). Manually entered rows and DNV-OVD/THETIS imports appear only in the voyage &amp; berth breakdown above.</p>`}
   </div>`;
@@ -1891,68 +1977,248 @@ function renderVessel(){
 }
 
 /* ---------- FORMULAS / CONSTANTS / PROVENANCE TAB ---------- */
+/* Formulas tab: switch between per-regulation sub-tabs (in-memory show/hide, no persistence). */
+function showFormulaSub(name){
+  document.querySelectorAll("#tab-constants .fsub").forEach(d=>d.classList.toggle("on", d.id==="fsub-"+name));
+  document.querySelectorAll("#tab-constants .fsubbar button").forEach(b=>b.classList.toggle("on", b.getAttribute("data-fsub")===name));
+}
 function renderConstants(){
   const el = document.getElementById("tab-constants");
   el.innerHTML = `
-  <div class="card">
-    <h2>Formulas implemented (with regulatory references)</h2>
+  <div class="fsubbar">
+    <button class="on" data-fsub="cii" onclick="showFormulaSub('cii')">IMO CII</button>
+    <button data-fsub="euets" onclick="showFormulaSub('euets')">EU ETS</button>
+    <button data-fsub="fueleu" onclick="showFormulaSub('fueleu')">FuelEU</button>
+    <button data-fsub="ukets" onclick="showFormulaSub('ukets')">UK ETS</button>
+    <button data-fsub="scc" onclick="showFormulaSub('scc')">SCC</button>
+    <button data-fsub="reference" onclick="showFormulaSub('reference')">Reference data</button>
+  </div>
+  <p class="note funits">Units used on this page: <b>t</b> = tonne (1,000 kg = 1,000,000 g) · <b>nm</b> = nautical mile · <b>DWT</b> = deadweight tonnage, <b>GT</b> = gross tonnage (two ways of measuring a ship's size) · <b>MJ</b> = megajoule of fuel energy · <b>g/t·nm</b> = grams of CO₂(-equivalent) per tonne-mile of transport work · <b>gCO₂eq/MJ</b> = grams of CO₂-equivalent per megajoule of fuel energy · one <b>EUA / UKA</b> = one emission allowance = 1 tonne of CO₂e. <b>Σ</b> ("sigma") always means "add up, for every fuel (or leg) …". <b>CO₂e / CO₂eq</b> = CO₂-equivalent: methane and nitrous oxide expressed as the amount of CO₂ that would warm the planet the same, using a <b>GWP</b> (global-warming-potential) multiplier.</p>
 
-    <h3>IMO CII</h3>
-    <div class="formula">attained CII = M / W                      M = Σⱼ FCⱼ × CFⱼ   [gCO₂]      W = Capacity × Dt   [Capacity·nm]</div>
-    <p class="note">MEPC.352(78) G1 §4, Eq. (1)–(3) — chunk <b>imo-g1-s4</b>. Capacity = DWT or GT per ship type; Dt = annual distance; CFⱼ per MEPC.308(73)/Annex II values.</p>
-    <div class="formula">CII_ref = a · Capacity⁻ᶜ</div>
-    <p class="note">MEPC.353(78) G2 §3.2 Eq. (1), a/c per Table 1 — chunk <b>imo-g2-s4</b>.</p>
-    <div class="formula">required CII = (1 − Z/100) · CII_ref</div>
-    <p class="note">MARPOL Annex VI reg 28.4 — chunk <b>imo-a6-reg28</b>. Numeric Z values <span class="flag">FILL-IN</span> (2023–26: 5/7/9/11% per MEPC.338(76); 2027–30: 13.625/16.25/18.875/21.5% per MEPC 83 — neither in KB).</p>
-    <div class="formula">superior = exp(d1)·required   lower = exp(d2)·required   upper = exp(d3)·required   inferior = exp(d4)·required
-rating: attained ≤ superior → A · ≤ lower → B · ≤ upper → C · ≤ inferior → D · else → E</div>
-    <p class="note">MEPC.354(78) G4 §4.6 Eq. (3), exp(d) per Table 1 — chunk <b>imo-g4-s4</b>. Worked example: required 10 → 8.6/9.4/10.6/11.8, attained 9 → "B".</p>
+  <!-- ============================= IMO CII ============================= -->
+  <div class="fsub on" id="fsub-cii">
+    <div class="card">
+      <h2>IMO Carbon Intensity Indicator (CII) — how efficiently a ship carried cargo over the year</h2>
+      <div class="fgrid">
+        <div class="fcol">
+          <div class="fcol-head">How it works — step by step</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Turn each fuel burned into CO₂</span>
+            <div class="formula">M = Σⱼ FCⱼ × CFⱼ        [grams CO₂]</div>
+            <p><b>M</b> is the total mass of CO₂ the ship emitted over the whole year. For every fuel <b>j</b> it burned, <b>FCⱼ</b> is the tonnes of that fuel and <b>CFⱼ</b> is that fuel's <i>carbon factor</i> — the tonnes of CO₂ released per tonne of fuel (about 3.1 for heavy fuel oil). <b>Σⱼ</b> says: do this for every fuel and add the results. CII counts <b>CO₂ only</b> — methane and nitrous oxide are not included here.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Measure the transport work done</span>
+            <div class="formula">W = Capacity × Dt        [capacity · nm]</div>
+            <p><b>W</b> is how much carrying-work the ship did. <b>Capacity</b> is the ship's size and <b>Dt</b> is the total distance it sailed in the year (nautical miles). Capacity is measured as <b>DWT</b> (deadweight — how much weight the ship can carry) for cargo ships like bulk carriers and tankers, and as <b>GT</b> (gross tonnage — enclosed volume) for passenger and ro-ro ships.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Divide to get the attained CII</span>
+            <div class="formula">attained CII = M ÷ W</div>
+            <p>This is the ship's actual carbon intensity: grams of CO₂ for each unit of size carried one nautical mile. <b>Lower is better</b> — it means less CO₂ for the same amount of transport.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Look up the reference line for this ship type</span>
+            <div class="formula">CII_ref = a × Capacity⁻ᶜ</div>
+            <p><b>CII_ref</b> is the 2019 industry-average intensity for a ship of this type and size — the baseline everyone is measured against. <b>a</b> and <b>c</b> are fixed numbers IMO publishes for each ship type (listed in the <i>Reference data</i> sub-tab). Bigger ships naturally have a lower reference value, which is why capacity is raised to a negative power.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Tighten the reference into this year's requirement</span>
+            <div class="formula">required CII = (1 − Z/100) × CII_ref</div>
+            <p><b>Z</b> is the reduction percentage IMO demands for the given year versus 2019 — it grows each year so the target gets stricter. <span class="flag">FILL-IN</span> the numeric Z values (2023–26: 5 / 7 / 9 / 11 %; 2027–30: 13.625 / 16.25 / 18.875 / 21.5 %) are not in the knowledge base — verify before external use.</p></div></div>
+          <div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Convert the requirement into an A–E rating</span>
+            <div class="formula">A ≤ exp(d1)·req · B ≤ exp(d2)·req · C ≤ exp(d3)·req · D ≤ exp(d4)·req · else E</div>
+            <p>Four multipliers <b>exp(d1..d4)</b> (again published per ship type) set the boundaries around the required value. If the attained CII from step 3 falls under the first boundary the ship is rated <b>A</b>, under the next <b>B</b>, and so on down to <b>E</b>. C means "meeting the requirement"; three years at D, or one year at E, forces a corrective action plan.</p></div></div>
+        </div>
+        <div class="fcol fex">
+          <div class="fcol-head">Worked example — bulk carrier, 60,000 DWT, year 2026</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Fuel → CO₂</span>
+            <p>The ship burned <b>5,000 t of HFO</b> (carbon factor 3.114). M = 5,000 × 3.114 = <b>15,570 t CO₂</b> = 15,570,000,000 g.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Transport work</span>
+            <p>It sailed <b>55,000 nm</b> at 60,000 DWT. W = 60,000 × 55,000 = <b>3,300,000,000 DWT·nm</b>.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Attained CII</span>
+            <p>attained = 15,570,000,000 ÷ 3,300,000,000 = <b>4.718 g CO₂ / DWT·nm</b>.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Reference line</span>
+            <p>For a bulk carrier a = 4,745 and c = 0.622. CII_ref = 4,745 × 60,000⁻⁰·⁶²² = <b>5.061</b>.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">This year's requirement</span>
+            <p>Z for 2026 is 11 %. required = (1 − 0.11) × 5.061 = <b>4.504</b>.</p></div></div>
+          <div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Rating</span>
+            <p>Boundaries: A ≤ 3.874 · B ≤ 4.234 · C ≤ 4.774 · D ≤ 5.315. The attained 4.718 is above the B limit but under the C limit → <b>rating C</b>, sitting close to the C/D boundary (4.774). A small efficiency slip would tip it into D.</p></div></div>
+          <div class="ftake"><b>Takeaway:</b> this ship attains 4.718 against a 2026 requirement of 4.504 — it is a <b>C</b>, just inside the band, with little headroom before the C/D line at 4.774.</div>
+        </div>
+      </div>
+      <p class="fsrc"><b>Where this comes from:</b> attained CII &amp; M/W — MEPC.352(78) G1 §4, Eq. (1)–(3), chunk <b>imo-g1-s4</b> (CFⱼ per MEPC.308(73)/Annex II; optional Circ.905 CF override, chunk <b>imo-circ905-annex</b>). Reference line a/c — MEPC.353(78) G2 §3.2, Table 1, chunk <b>imo-g2-s4</b>. Reduction factor Z — MARPOL Annex VI reg 28.4, chunk <b>imo-a6-reg28</b> (numeric Z values <span class="flag">FILL-IN</span>, not in KB: 2023–26 per MEPC.338(76); 2027–30 per MEPC 83). Rating boundaries exp(d1..d4) — MEPC.354(78) G4 §4.6, Table 1, chunk <b>imo-g4-s4</b>. Prior compact example: required 10 → 8.6/9.4/10.6/11.8, attained 9 → "B".</p>
+    </div>
+  </div>
 
-    <h3>EU ETS (maritime)</h3>
-    <div class="formula">covered emissions = Σ_legs coverage × Σ_fuels M × EF        coverage: EEA→EEA &amp; at berth EEA = 100% · EEA↔other = 50%
-EUAs = covered × phase-in                                    phase-in: 2024 = 40% · 2025 = 70% · 2026+ = 100%</div>
-    <p class="note">Scope: Directive 2003/87/EC Art 3ga — chunk <b>euets-art3ga</b>. Phase-in: Art 3gb — chunk <b>euets-art3gb</b>. EF values per Regulation (EU) 2015/757 (= Annex II Cf values) — chunks <b>mrv-annexi/ii</b>, <b>fueleu-annexii</b>. From 2026 CH₄+N₂O included: CO₂e computed with the ME<sub>ETS</sub> structure below using GWP ${euetsGwp(S).ch4}/${euetsGwp(S).n2o} (${euetsGwp(S).label}, user-selected — Settings) <span class="flag">FILL-IN — amended MRV GWPs not in KB</span>.</p>
+  <!-- ============================= EU ETS ============================= -->
+  <div class="fsub" id="fsub-euets">
+    <div class="card">
+      <h2>EU Emissions Trading System (maritime) — buying an allowance for each tonne of CO₂e</h2>
+      <div class="fgrid">
+        <div class="fcol">
+          <div class="fcol-head">How it works — step by step</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Decide which voyages count, and how much</span>
+            <div class="formula">EEA→EEA &amp; at berth in EEA = 100% · EEA↔non-EEA = 50% · fully outside = 0%</div>
+            <p>A voyage between two EEA ports (or fuel burned at berth in an EEA port) is fully in scope. A voyage into or out of the EEA counts at <b>50%</b> — because only half of an international voyage that touches Europe is treated as Europe's responsibility. EEA = the EU plus Norway and Iceland.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Work out the emissions of each leg</span>
+            <div class="formula">emissions = Σ_fuels M × EF</div>
+            <p>For each fuel, <b>M</b> is the tonnes burned on that leg and <b>EF</b> its emission factor. <b>From 2026 methane (CH₄) and nitrous oxide (N₂O) are included</b> alongside CO₂, combined into <b>CO₂e</b> using the same ME<sub>ETS</sub> structure shown in the UK ETS sub-tab, with GWP multipliers ${euetsGwp(S).ch4} / ${euetsGwp(S).n2o} (${euetsGwp(S).label}, chosen in Settings). <span class="flag">FILL-IN — amended MRV GWPs not in KB.</span></p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Apply the coverage percentage</span>
+            <div class="formula">covered = coverage% × leg emissions</div>
+            <p>Multiply each leg's emissions by its coverage from step 1. A 50% leg contributes only half its CO₂e to the total that must be surrendered.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Apply the phase-in</span>
+            <div class="formula">EUAs = covered × phase-in        40% (2024) · 70% (2025) · 100% (2026+)</div>
+            <p>The scheme came in gradually: shipping owed allowances on only 40% of covered emissions in 2024, 70% in 2025, and the full 100% from 2026 onward.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Surrender allowances and price them</span>
+            <div class="formula">cost = EUAs × EUA price</div>
+            <p>One <b>EUA</b> (EU Allowance) covers one tonne of CO₂e. The operator buys and surrenders that many allowances; the cost is simply the allowance count times the market EUA price you set in Settings.</p></div></div>
+        </div>
+        <div class="fcol fex">
+          <div class="fcol-head">Worked example — three activities, 2026, AR5 (28/265), EUA €80</div>
+          <div class="fstep"><div class="n">1–3</div><div class="body"><span class="sh">Legs, coverage and CO₂e</span>
+            <p><b>Intra-EEA leg</b> (Rotterdam→Hamburg), 100 t MGO, 100% covered → 320.6 t CO₂, and with CH₄+N₂O = <b>325.51 t CO₂e</b>.</p>
+            <p><b>EEA↔Singapore leg</b>, 400 t HFO, 50% covered → only 200 t counts → 622.8 t CO₂ = <b>632.62 t CO₂e</b>.</p>
+            <p><b>At berth in Rotterdam</b>, 20 t MGO, 100% covered → 64.12 t CO₂ = <b>65.10 t CO₂e</b>.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Phase-in</span>
+            <p>Total covered = 325.51 + 632.62 + 65.10 = <b>1,023.23 t CO₂e</b>. In 2026 the phase-in is 100%, so EUAs = <b>1,023.23</b>.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Cost</span>
+            <p>1,023.23 EUAs × €80 = <b>€81,858.56</b>.</p></div></div>
+          <div class="ftake"><b>Takeaway:</b> the Singapore leg burned the most fuel yet contributes the least, because 50% coverage halves it — scope, not just fuel, drives the bill. Total exposure: 1,023 allowances ≈ €81,859.</div>
+        </div>
+      </div>
+      <p class="fsrc"><b>Where this comes from:</b> scope 100%/50% — Directive 2003/87/EC Art 3ga, chunk <b>euets-art3ga</b>. Phase-in 40/70/100% — Art 3gb, chunk <b>euets-art3gb</b>. Emission factors per Regulation (EU) 2015/757 (= Annex II Cf values) — chunks <b>mrv-annexi/ii</b>, <b>fueleu-annexii</b>. From 2026 CH₄+N₂O as CO₂e with GWP ${euetsGwp(S).ch4}/${euetsGwp(S).n2o} (${euetsGwp(S).label}, user-selected in Settings) <span class="flag">FILL-IN — amended MRV GWPs not in KB</span>.</p>
+    </div>
+  </div>
 
-    <h3>UK ETS (maritime, from 2026)</h3>
-    <div class="formula">ME_ETS = CO₂_ETS + CH₄_ETS × GWP_CH4 + N₂O_ETS × GWP_N2O          GWP_CH4 = 28 · GWP_N2O = 265
-CO₂_ETS = Σᵢ (Mᵢ − Mᵢ,NC) × EF_CO2,i
-CH₄_ETS = Σᵢ (Mᵢ − Mᵢ,NC) × EF_CH4,i + CH4_S          CH4_S = Mᵢ,NC
-N₂O_ETS = Σᵢ (Mᵢ − Mᵢ,NC) × EF_N2O,i                  Mᵢ,NC = Σᵢ Σⱼ Mᵢ,ⱼ × Cⱼ/100  (slipped fuel)</div>
-    <p class="note">UK ETS Order Schedule 2A para 35 + Table C1 — chunk <b>ukets-sch2a-p35</b> (verbatim). EF and Cⱼ values per Table C2 — chunk <b>ukets-sch2a-p36</b>. Scope: UK→UK voyages + UK in-port, ships ≥5,000 GT — chunks <b>ukets-sch2a-p2/p7</b>.</p>
+  <!-- ============================= UK ETS ============================= -->
+  <div class="fsub" id="fsub-ukets">
+    <div class="card">
+      <h2>UK Emissions Trading System (maritime, from 2026) — UK-domestic CO₂e allowances</h2>
+      <div class="fgrid">
+        <div class="fcol">
+          <div class="fcol-head">How it works — step by step</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Decide what is in scope</span>
+            <div class="formula">UK→UK voyages + activity at berth in UK ports · ships ≥ 5,000 GT · from 2026</div>
+            <p>Unlike EU ETS, the UK scheme covers only <b>domestic</b> maritime activity: voyages between UK ports and fuel burned while in UK ports, for ships of at least 5,000 GT. The first scheme year is the half-year 1 Jul–31 Dec 2026.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Count three gases, with fixed multipliers</span>
+            <div class="formula">GWP_CH4 = 28 · GWP_N2O = 265        (AR5 basis, locked)</div>
+            <p>The UK scheme totals CO₂, methane and nitrous oxide as CO₂e using <b>AR5</b> global-warming potentials of 28 and 265. These are <b>locked</b> by the regulation. (FuelEU, by contrast, is locked to the older AR4 values 25 / 298 — so the very same methane is weighted a little differently under each regime.)</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Move slipped fuel from the CO₂ line to the CH₄ line</span>
+            <div class="formula">Mᵢ,NC = Σ Mᵢ,ⱼ × Cⱼ/100        (non-combusted / slipped fuel)</div>
+            <p><b>Mᵢ,NC</b> is fuel that passes through the engine <b>unburned</b> (methane slip, mainly on LNG engines — <b>Cⱼ</b> is the slip % of the engine type). Because it was not combusted it produces no CO₂; instead its full mass is counted as escaped <b>methane</b>. So slip takes a little off the CO₂ line and adds a lot to the CH₄ line.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Combine into one CO₂e figure</span>
+            <div class="formula">ME_ETS = CO₂ + CH₄ × 28 + N₂O × 265
+CO₂ = Σ (Mᵢ − Mᵢ,NC) × EF_CO2 · CH₄ = Σ (Mᵢ − Mᵢ,NC) × EF_CH4 + Mᵢ,NC · N₂O = Σ (Mᵢ − Mᵢ,NC) × EF_N2O</div>
+            <p>Each combusted-fuel line uses the fuel's emission factor <b>EF</b>; the slipped mass Mᵢ,NC is added straight onto the methane line. Multiply the three gas totals by their GWP and add.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Surrender allowances and price them</span>
+            <div class="formula">cost = ME_ETS × UKA price</div>
+            <p>One <b>UKA</b> (UK Allowance) covers one tonne of CO₂e. No free allocation applies to maritime, so the operator buys them all.</p></div></div>
+        </div>
+        <div class="fcol fex">
+          <div class="fcol-head">Worked example — UK coastal voyage, 100 t LNG + 10 t MGO at berth, UKA €50</div>
+          <div class="fstep"><div class="n">1–2</div><div class="body"><span class="sh">Scope and gases</span>
+            <p>Both the coastal voyage and the berth stay are UK-domestic → 100% in scope. The LNG is burned in a medium-speed Otto engine with <b>3.1% methane slip</b>.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Slip splits the LNG</span>
+            <p>Of the 100 t LNG, 3.1 t slips through unburned. So 96.9 t is combusted (CO₂ + a little N₂O) and <b>3.1 t is counted as methane</b>.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Three gas totals</span>
+            <p><b>CO₂</b> = 96.9 × 2.750 (LNG) + 10 × 3.206 (MGO) = 266.48 + 32.06 = <b>298.54 t</b>. <b>CH₄</b> = 3.1 (slip) + 0.0005 = <b>3.1005 t</b>. <b>N₂O</b> = <b>0.01246 t</b>.</p>
+            <p>ME_ETS = 298.54 + 28 × 3.1005 + 265 × 0.01246 = 298.54 + 86.81 + 3.30 = <b>388.65 t CO₂e</b>.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Cost</span>
+            <p>388.65 UKAs × €50 = <b>€19,432.53</b>.</p></div></div>
+          <div class="ftake"><b>Takeaway:</b> the 3.1 t of methane slip adds 86.8 t CO₂e — about <b>22%</b> of the whole UK ETS bill — even though it is a tiny fraction of the fuel mass. On LNG ships, slip is where the cost hides.</div>
+        </div>
+      </div>
+      <p class="fsrc"><b>Where this comes from:</b> ME_ETS structure &amp; GWP 28/265 — UK ETS Order Schedule 2A para 35 + Table C1, chunk <b>ukets-sch2a-p35</b> (verbatim). Emission factors and slip Cⱼ — Table C2, chunk <b>ukets-sch2a-p36</b>. Scope (UK→UK voyages + UK in-port, ships ≥5,000 GT) — chunks <b>ukets-sch2a-p2</b>, <b>ukets-sch2a-p7</b>.</p>
+    </div>
+  </div>
 
-    <h3>FuelEU Maritime</h3>
-    <div class="formula">GHG intensity [gCO₂eq/MJ] = f_wind × (WtT + TtW)                                       (Annex I Eq. 1)
-WtT  = [Σᵢ Mᵢ·CO2eq_WtT,i·LCVᵢ + Σₖ Eₖ·CO2eq_elec,k] / [Σᵢ Mᵢ·LCVᵢ·RWDᵢ + Σₖ Eₖ]      (elec numerator term = 0)
-TtW  = Σᵢⱼ Mᵢ,ⱼ·[(1−Cslipⱼ/100)·CO2eq_TtW,i,j + (Cslipⱼ/100)·CO2eq_TtWslip,i,j] / [same denominator]
-CO2eq_TtW,i,j    = Cf_CO2·GWP_CO2 + Cf_CH4·GWP_CH4 + Cf_N2O·GWP_N2O                    (Annex I Eq. 2)
-CO2eq_TtWslip,i,j: Csf_CO2 = 0 · Csf_N2O = 0 · Csf_CH4 = 1  →  slip term = GWP_CH4 per g slipped
-GWP: CO₂ 1 · CH₄ 25 · N₂O 298 (Directive 2018/2001 Annex V C(4))
-RWDᵢ = 2 for RFNBO 2025–2033, else 1 · f_wind = 0.99 / 0.97 / 0.95 by P_Wind/P_Prop</div>
-    <p class="note">Regulation (EU) 2023/1805 Annex I — chunk <b>fueleu-annexi</b> (verbatim). Default LCV/WtT/Cf/Cslip values: Annex II — chunk <b>fueleu-annexii</b>. Biofuel WtT = E − Cf_CO2/LCV (Annex II col. 4(a)); RFNBO WtT from certificate (col. 4(b)).</p>
-    <div class="formula">target = 91.16 × (1 − r)      r: 2% (2025) · 6% (2030) · 14.5% (2035) · 31% (2040) · 62% (2045) · 80% (2050)</div>
-    <p class="note">Art 4(2) — chunk <b>fueleu-art4</b>.</p>
-    <div class="formula">Compliance balance [gCO₂eq] = (GHGIE_target − GHGIE_actual) × [Σᵢ Mᵢ·LCVᵢ + Σₖ Eₖ]     (Annex IV A — no RWD here)
-FuelEU penalty [EUR] = |CB| / (GHGIE_actual × 41 000) × 2 400 × (1 + (n−1)/10)</div>
-    <p class="note">Annex IV — chunk <b>fueleu-annexiv</b>; consecutive-deficit multiplier Art 23(2) — chunk <b>fueleu-art23</b>. Rounding: intermediates unrounded, final penalty to nearest EUR — chunk <b>essf-ws1-1-3-5</b>.</p>
+  <!-- ============================= FuelEU ============================= -->
+  <div class="fsub" id="fsub-fueleu">
+    <div class="card">
+      <h2>FuelEU Maritime — a limit on the greenhouse-gas intensity of the energy a ship uses</h2>
+      <div class="fgrid">
+        <div class="fcol">
+          <div class="fcol-head">How it works — step by step</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">The idea: an intensity target, not a tonnage cap</span>
+            <p>FuelEU does not cap how many tonnes of CO₂ a ship may emit. Instead it sets a maximum <b>greenhouse-gas intensity</b> — grams of CO₂-equivalent per <b>megajoule (MJ)</b> of energy used. Burn cleaner energy per MJ and you comply, no matter how far you sail.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Add up the energy used</span>
+            <div class="formula">E = Σᵢ Mᵢ × LCVᵢ        [MJ]</div>
+            <p>For each fuel <b>i</b>, <b>Mᵢ</b> is the mass burned and <b>LCVᵢ</b> its <i>lower calorific value</i> — the energy released per gram. Multiply and add to get total energy <b>E</b> in megajoules.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Find the intensity of that energy</span>
+            <div class="formula">GHGIE = f_wind × (WtT + TtW)        [gCO₂eq/MJ]   (Annex I Eq. 1 &amp; 2)</div>
+            <p><b>WtT</b> ("Well-to-Tank") is the emissions from producing and delivering the fuel; <b>TtW</b> ("Tank-to-Wake") is the emissions from burning it on board. Each is an energy-weighted average across all fuels. The <b>slip</b> term matters for LNG: the fraction of gas that escapes the engine unburned is counted at the <b>global-warming potential of methane</b>, because unburned methane is itself a strong greenhouse gas. Renewable fuels of non-biological origin (<b>RFNBOs</b>) get a reward <b>RWD = ×2</b> in 2025–2033; a wind-assist factor <b>f_wind</b> (0.99 / 0.97 / 0.95) gives a small discount for sails or rotors. GWPs here are CO₂ 1 · CH₄ 25 · N₂O 298.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Read off this year's target</span>
+            <div class="formula">target = 91.16 × (1 − r)        r: 2%(2025) · 6%(2030) · 14.5%(2035) · 31%(2040) · 62%(2045) · 80%(2050)</div>
+            <p><b>91.16</b> gCO₂eq/MJ is the 2020 fleet baseline; <b>r</b> is the reduction required for the year. The target tightens in steps over time.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Compare, as a compliance balance</span>
+            <div class="formula">CB = (target − GHGIE_actual) × E        [gCO₂eq]   (Annex IV — no RWD in this energy term)</div>
+            <p><b>CB</b> is the compliance balance. If your actual intensity is above target, CB is <b>negative</b> — a deficit. Note the energy term here uses plain energy (no ×2 RWD reward), per Annex IV.</p></div></div>
+          <div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Turn a deficit into a penalty</span>
+            <div class="formula">penalty [€] = |CB| ÷ (GHGIE_actual × 41,000) × 2,400 × (1 + (n−1)/10)</div>
+            <p>The deficit is expressed as <b>tonnes of VLSFO-equivalent energy</b> — that is what dividing by <b>41,000</b> MJ (the energy in one tonne of very-low-sulphur fuel oil) does — then charged at <b>€2,400</b> per such tonne. If the ship is in deficit for <b>n</b> consecutive years, the multiplier <b>1+(n−1)/10</b> adds 10% each year. Only the final euro figure is rounded.</p></div></div>
+          <div class="fstep"><div class="n">7</div><div class="body"><span class="sh">Flexibility: banking, borrowing, pooling</span>
+            <p><b>Banking</b> — a surplus (positive CB) can be carried forward to a future year. <b>Borrowing</b> — a ship may borrow up to 2% of its target-energy against next year to erase a deficit now, repaid with 1.1× interest and not two years running. <b>Pooling</b> — several ships combine balances; if the pool's total is ≥ 0, no ship in it pays a penalty. These are applied after the raw CB, before the penalty.</p></div></div>
+          <div class="fstep"><div class="n">8</div><div class="body"><span class="sh">Breakeven blend (an EmA KPI, not regulation)</span>
+            <div class="formula">find x so GHGIE(x of energy switched to a substitute) = target   ·   net P&amp;L = extra fuel cost − penalty avoided</div>
+            <p>This calculator adds a decision KPI (<b>not</b> part of the FuelEU regulation): the share <b>x</b> of in-scope energy you would swap to a cleaner substitute fuel so the balance lands exactly at zero — solved exactly on the Annex I formula (including RWD and slip, by bisection over 80 iterations) — and whether that swap costs more or less than the penalty it avoids.</p></div></div>
+        </div>
+        <div class="fcol fex">
+          <div class="fcol-head">Worked example — 970 t HFO + 30 t bio-diesel, all in-EEA, 2026</div>
+          <div class="fstep"><div class="n">1–2</div><div class="body"><span class="sh">Energy used</span>
+            <p>HFO: 970 t × 0.0405 MJ/g = <b>39,285,000 MJ</b>. Bio-diesel: 30 t × 0.037 = <b>1,110,000 MJ</b>. Total <b>E = 40,395,000 MJ</b>.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity</span>
+            <p>HFO WtW intensity = 13.5 (WtT) + 78.24 (TtW) = <b>91.74</b> gCO₂eq/MJ. Bio-diesel, with a certified E value of 14.9, has WtT = 14.9 − (2.834/0.037) = −61.69, so WtW = −61.69 + 78.08 = <b>16.38</b> — very low, which pulls the average down. Energy-weighted: GHGIE = <b>89.673</b> gCO₂eq/MJ.</p></div></div>
+          <div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Target</span>
+            <p>2026 target = 91.16 × (1 − 0.02) = <b>89.34</b> gCO₂eq/MJ.</p></div></div>
+          <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Compliance balance</span>
+            <p>CB = (89.34 − 89.673) × 40,395,000 = <b>−13,596,464 gCO₂eq</b> = −13.60 t CO₂eq. Negative → a <b>deficit</b> (the 30 t of bio was not quite enough).</p></div></div>
+          <div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Penalty</span>
+            <p>penalty = 13,596,464 ÷ (89.673 × 41,000) × 2,400 = <b>€8,875</b> (first year, multiplier 1). A second consecutive deficit year would apply ×1.1 → €9,763.</p></div></div>
+          <div class="fstep"><div class="n">7</div><div class="body"><span class="sh">What flexibility would do</span>
+            <p><b>Banking:</b> carrying in a ≥13.60 t surplus from last year lifts CB to ≥ 0 → penalty <b>€0</b>. <b>Borrowing:</b> borrow the 13.60 t now (well under the 72.18 t limit), repay 14.96 t next year → <b>€0</b> this year. <b>Pooling:</b> a partner ship contributing +20 t makes the pool +6.4 t → <b>€0</b> for the pool.</p></div></div>
+          <div class="ftake"><b>Takeaway:</b> a small intensity miss (89.67 vs 89.34) on 1,000 t of fuel is an €8,875 penalty — or nothing at all if banking, borrowing or pooling covers the 13.6 t deficit.</div>
+        </div>
+      </div>
+      <p class="fsrc"><b>Where this comes from:</b> intensity Eq. 1 &amp; 2, slip, RWD, f_wind — Regulation (EU) 2023/1805 Annex I, chunk <b>fueleu-annexi</b> (verbatim; GWP CO₂ 1 / CH₄ 25 / N₂O 298 per Directive 2018/2001 Annex V C(4)). Default LCV/WtT/Cf/Cslip — Annex II, chunk <b>fueleu-annexii</b> (biofuel WtT = E − Cf_CO2/LCV, col. 4(a); RFNBO WtT from certificate, col. 4(b)). Target 91.16 &amp; schedule — Art 4(2), chunk <b>fueleu-art4</b>. Compliance balance &amp; penalty — Annex IV, chunk <b>fueleu-annexiv</b>; consecutive-deficit multiplier — Art 23(2), chunk <b>fueleu-art23</b>; rounding (intermediates unrounded, final penalty to nearest EUR) — chunk <b>essf-ws1-1-3-5</b>. Banking / borrowing / pooling — Art 20(1), Art 20(2), Art 21, chunks <b>fueleu-art20</b>, <b>fueleu-art21</b>. Example plausibility anchored against the ESSF WS1 worked examples (chunks <b>essf-ws1-1-*</b>, examples 1–3).</p>
+    </div>
+  </div>
     <div class="formula">banking: surplus → next period (Art 20(1))
 borrowing: advance ≤ 2% × target × energy; ×1.1 subtracted next period; not 2 periods in a row (Art 20(2))
 pooling: Σ pool balances ≥ 0 ⇒ no penalty for the pool (Art 21)</div>
     <p class="note">Chunks <b>fueleu-art20</b>, <b>fueleu-art21</b>.</p>
 
-    <h3>SCC / Sea Cargo Charter</h3>
-    <div class="formula">voyage intensity = CO₂e / (cargo × distance)   [g/t·nm]
-category / annual alignment Δ = (weighted intensity − required r) / r × 100%     (Eq. 4 / Eq. 5)</div>
-    <p class="note">SCC Technical Guidance 2025 §2.5 — chunk <b>scc-2-5</b>; trajectory definition §2.4 / Appendix 4 — chunks <b>scc-2-4</b>, <b>scc-appendix-4</b>. Annual required-intensity tables are published by the SCC secretariat and are user inputs here.</p>
-
-    <h3>Breakeven blend (EmA KPI — derived, not a regulatory formula)</h3>
-    <div class="formula">find x ∈ [0,1]:  GHGIE(mix with x of in-scope energy replaced by substitute) = target   (bisection, 80 iters)
-substitute tonnes = x × E_total / LCV_sub · net P&amp;L = extra fuel cost − penalty avoided</div>
-    <p class="note">Exact solve on the Annex I formula incl. RWD and slip; proportional displacement of the existing mix.</p>
+  <!-- ============================= SCC ============================= -->
+  <div class="fsub" id="fsub-scc">
+    <div class="card">
+      <h2>Sea Cargo Charter (SCC) — voyage carbon intensity versus a climate-alignment trajectory</h2>
+      <div class="fgrid">
+        <div class="fcol">
+          <div class="fcol-head">How it works — step by step</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Intensity of a single voyage</span>
+            <div class="formula">voyage intensity = CO₂e ÷ (cargo × distance)        [g/t·nm]</div>
+            <p>For one voyage, divide the CO₂e emitted by the transport work — the <b>cargo</b> carried (tonnes) times the <b>distance</b> sailed (nm). The result, grams per tonne-mile, says how much CO₂ it took to move one tonne of cargo one nautical mile. Lower is better.</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Weight up to the fleet / annual level</span>
+            <div class="formula">weighted intensity = Σ CO₂e ÷ Σ (cargo × distance)</div>
+            <p>To combine voyages, add all the CO₂e and divide by all the transport work — so heavier, longer voyages count for more. This gives one weighted intensity for the category or the year.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Compare with the required trajectory</span>
+            <div class="formula">alignment Δ = (weighted − required r) ÷ required r × 100%        (Eq. 4 / Eq. 5)</div>
+            <p><b>Δ</b> (delta) is the percentage the fleet sits above or below the <b>required</b> intensity <b>r</b> for the year. Negative = below the line = aligned / ahead; positive = above the line = behind. The required-intensity trajectory tables are published by the SCC secretariat and are entered here as user inputs.</p></div></div>
+        </div>
+        <div class="fcol fex">
+          <div class="fcol-head">Worked example — two voyages, required 5.0 g/t·nm</div>
+          <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Each voyage's intensity</span>
+            <p><b>Voyage A</b>: 300 t HFO → 934.2 t CO₂; 50,000 t cargo × 5,000 nm = 250,000,000 t·nm → intensity = <b>3.737 g/t·nm</b>.</p>
+            <p><b>Voyage B</b>: 400 t HFO → 1,245.6 t CO₂; 30,000 t × 8,000 nm = 240,000,000 t·nm → intensity = <b>5.190 g/t·nm</b> (less cargo per mile, so higher intensity).</p></div></div>
+          <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Weighted intensity</span>
+            <p>weighted = (934.2 + 1,245.6) t of CO₂ ÷ (250,000,000 + 240,000,000) t·nm = <b>4.449 g/t·nm</b>.</p></div></div>
+          <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span>
+            <p>Δ = (4.449 − 5.0) ÷ 5.0 × 100 = <b>−11.0%</b> versus the 5.0 required line (and +11.2% against a stricter 4.0 "striving" line).</p></div></div>
+          <div class="ftake"><b>Takeaway:</b> together the two voyages sit <b>11% below</b> the 5.0 g/t·nm requirement — aligned — even though Voyage B on its own is above it. Weighting by transport work is what lets the heavy, efficient Voyage A carry the result.</div>
+        </div>
+      </div>
+      <p class="fsrc"><b>Where this comes from:</b> intensity &amp; alignment Eq. 4 / Eq. 5 — SCC Technical Guidance 2025 §2.5, chunk <b>scc-2-5-calculating-alignment-at-the-vessel-</b>; decarbonisation trajectory definition §2.4 / Appendix 4 — chunks <b>scc-2-4-decarbonisation-trajectory</b>, <b>scc-appendix-4</b>. Annual required-intensity tables are published by the SCC secretariat and are user inputs here.</p>
+    </div>
   </div>
+
+  <!-- ============================= REFERENCE DATA ============================= -->
+  <div class="fsub" id="fsub-reference">
+  <p class="note funits" style="margin-bottom:14px">These are the lookup tables the calculations above draw on. Each carries a one-line note saying which sub-tab uses it.</p>
 
   <div class="card">
     <h2>Fuel factor library — FuelEU Annex II (chunk <i>fueleu-annexii</i>) / UK ETS Table C2 (chunk <i>ukets-sch2a-p36</i>)</h2>
-    <p class="note">All derived columns are computed live from the base Annex II constants (LCV, Cf's, slip) — scroll horizontally for the full set.
+    <p class="note"><b>Used by the EU ETS, UK ETS and FuelEU sub-tabs</b> — this is where the carbon factors, LCVs and slip values in those worked examples come from. All derived columns are computed live from the base Annex II constants (LCV, Cf's, slip) — scroll horizontally for the full set.
     <b>Factor (t/t)</b> = tonnes CO₂eq per tonne of fuel · <b>Intensity (gCO₂eq/MJ)</b> = factor ÷ LCV.
     TtW includes methane slip: (1−s)·(Cf<sub>CO₂</sub> + GWP<sub>CH₄</sub>·Cf<sub>CH₄</sub> + GWP<sub>N₂O</sub>·Cf<sub>N₂O</sub>) + s·GWP<sub>CH₄</sub>.
     <b>AR4</b> = GWP 25/298 (FuelEU / RED II basis) · <b>AR5</b> = GWP 28/265 (UK ETS Table C1 basis). WtW = WtT + TtW.</p>
@@ -1996,6 +2262,7 @@ substitute tonnes = x × E_total / LCV_sub · net P&amp;L = extra fuel cost − 
 
   <div class="grid">
     <div class="card"><h2>CII reference-line &amp; rating parameters</h2>
+      <p class="note"><b>Used by the IMO CII sub-tab</b> — the a, c and exp(d1..d4) values behind steps 4 and 6 of that worked example.</p>
       <table><tr><th>Ship type</th><th>Capacity</th><th class="num">a</th><th class="num">c</th><th class="num">exp(d1..d4)</th></tr>
       <tr><td>Bulk carrier (cap 279k)</td><td>DWT</td><td class="num">4745</td><td class="num">0.622</td><td class="num">0.86/0.94/1.06/1.18</td></tr>
       <tr><td>Gas carrier ≥65k / &lt;65k</td><td>DWT</td><td class="num">14405×10⁷ / 8104</td><td class="num">2.071 / 0.639</td><td class="num">0.81..1.44 / 0.85..1.25</td></tr>
@@ -2012,6 +2279,7 @@ substitute tonnes = x × E_total / LCV_sub · net P&amp;L = extra fuel cost − 
       <p class="note">a/c: MEPC.353(78) Table 1 (chunk imo-g2-s4). exp(d): MEPC.354(78) Table 1 (chunk imo-g4-s4).</p>
     </div>
     <div class="card"><h2>Regulatory scalars &amp; GWPs</h2>
+      <p class="note"><b>Used by every regulation sub-tab</b> — the fixed numbers (targets, penalty rate, GWP multipliers, scope percentages) each pillar's steps rely on, with the KB chunk each is drawn from.</p>
       <div class="kv"><span>FuelEU reference 91.16; reduction schedule 2025→2050</span><b><span class="ok">fueleu-art4</span></b></div>
       <div class="kv"><span>FuelEU penalty €2,400 / tVLSFO-eq (41,000 MJ)</span><b><span class="ok">fueleu-annexiv</span></b></div>
       <div class="kv"><span>Deficit multiplier 1+(n−1)/10</span><b><span class="ok">fueleu-art23</span></b></div>
@@ -2027,7 +2295,8 @@ substitute tonnes = x × E_total / LCV_sub · net P&amp;L = extra fuel cost − 
     </div>
   </div>
   <div class="card"><h2>Source chunks used</h2>
-  <p class="note">fueleu-art4 · fueleu-annexi · fueleu-annexii · fueleu-annexiv · fueleu-art20 · fueleu-art21 · fueleu-art23 · euets-art3ga · euets-art3gb · mrv-annexi/ii · ukets-sch2a-p2 · ukets-sch2a-p7 · ukets-sch2a-p35 · ukets-sch2a-p36 · imo-g1-s4 · imo-g2-s4 · imo-g4-s4 · imo-a6-reg28 · imo-circ905-annex (optional CII Cf override) · scc-2-4 · scc-2-5 · scc-appendix-4 · ovd-ovd-bunker-report-details-p1/p3 &amp; other ovd-* guides · essf-ws1 examples 1–3 (validation fixtures). Open any of these in <b>rulefinder.html</b> for verbatim legal text and plain-language explanations.</p></div>`;
+  <p class="note">fueleu-art4 · fueleu-annexi · fueleu-annexii · fueleu-annexiv · fueleu-art20 · fueleu-art21 · fueleu-art23 · euets-art3ga · euets-art3gb · mrv-annexi/ii · ukets-sch2a-p2 · ukets-sch2a-p7 · ukets-sch2a-p35 · ukets-sch2a-p36 · imo-g1-s4 · imo-g2-s4 · imo-g4-s4 · imo-a6-reg28 · imo-circ905-annex (optional CII Cf override) · scc-2-4 · scc-2-5 · scc-appendix-4 · ovd-ovd-bunker-report-details-p1/p3 &amp; other ovd-* guides · essf-ws1 examples 1–3 (validation fixtures). Open any of these in <b>rulefinder.html</b> for verbatim legal text and plain-language explanations.</p></div>
+  </div>`;
 }
 
 /* ---------- HELP TAB + SELF-TEST ---------- */
@@ -2039,7 +2308,7 @@ function renderHelp(){
     <div class="helpstep"><div class="n">1</div><div><b>Set up the vessel once</b> — on the <i>Settings</i> tab: name, ship type, capacity (DWT/GT), <b>reporting year</b> (with multi-year imports it decides which rows are calculated — the rest grey out), the <b>Main-engine and Auxiliary-engine LNG consumer classes</b> (they drive CH₄ slip for the machinery split), market prices (EUA/UKA, fuel €/t), and the <b>EU ETS GWP basis (AR4/AR5)</b> — this selector affects only the EU ETS 2026+ CO₂e proxy; FuelEU (25/298) and UK ETS (28/265) GWPs are prescribed by regulation and locked. These rarely change.</div></div>
     <div class="helpstep"><div class="n">2</div><div><b>Enter the activity</b> — on the <i>Workspace</i> tab, add voyages and port stays with the fuel consumed. Type a <b>port name or LOCODE</b> (e.g. "Rotterdam" or NLRTM) and pick from the list — the EU/UK/other zone is set automatically from the port's country (19,782 ports embedded from the DNV UN/LOCODE list); outermost-region / overseas-territory ports get an ⚠ OMR badge and advisory. Ports are optional — you can also just set the zones directly. Or skip typing entirely: click <b>⬆ Import data</b> in the header and load a DNV OVD Log Abstract CSV, an MDA event-log export (.xlsx or .csv) or an EMSA THETIS-MRV GHG Emissions XML — legs, port names, zones, dates, consumption, cargo and shore power are built automatically (format auto-detected).</div></div>
     <div class="helpstep"><div class="n">3</div><div><b>Watch the right-hand panel</b> — every keystroke recalculates live: the annual summary (distance, time at sea, cargo, transport work, fuel by type, CO₂ at berth vs sea, intensity ratios) and all five pillar cards, including the <b>FuelEU allocation selector</b> (optimal cleanest-first per ESSF WS1 §2.5, or proportional for comparison) with the allocated-mix table. No page switching.</div></div>
-    <div class="helpstep"><div class="n">4</div><div><b>Dig into the numbers</b> — the <b>🧮 Calculations</b> tab holds the full working: the voyage &amp; berth breakdown (per-row EU ETS / UK ETS / FuelEU coverage %, EUA, UKA, LCV, eligible energy, compliance balance and penalty, with factor info icons), the FuelEU allocation working, the EU ETS working, and a <b>report-level trace</b> at MDA granularity where the derived <b>ARRIVAL</b>/<b>DEPARTURE</b> replace IN_PORT and every consumption, ROB and distance is visible. Both tables download as <b>Excel</b> (generated fully offline — the report table in OVD format for diagnostics).</div></div>
+    <div class="helpstep"><div class="n">4</div><div><b>Dig into the numbers</b> — the <b>🧮 Calculations</b> tab holds the voyage &amp; berth breakdown (per-row EU ETS / UK ETS / FuelEU coverage %, EUA, UKA, eligible energy, compliance balance and penalty, with factor info icons) plus the FuelEU allocation and EU ETS workings — download the breakdown as <b>Excel</b> from that tab. The <b>📋 Reports</b> tab holds the full <b>report-level trace</b> at MDA granularity, where the derived <b>ARRIVAL</b>/<b>DEPARTURE</b> replace IN_PORT and every consumption, ROB, distance and per-regulation eligibility % is visible — download it in OVD format via the <b>⬇ OVD-format Excel</b> button in the header (generated fully offline).</div></div>
     <div class="helpstep"><div class="n">5</div><div><b>Run what-ifs</b> — change a fuel to a biofuel (enter its certified E value from the BDN), toggle FuelEU banking/borrowing/pooling or the allocation method, adjust the substitute fuel for the breakeven KPI, edit the ⚙ machinery split, or move a voyage between zones and watch scope change.</div></div>
     <div class="helpstep"><div class="n">6</div><div><b>Your work saves itself</b> — everything persists automatically in this browser (including the raw MDA reports behind the Calculations tab); <b>Reset</b> in the header returns to an empty workspace.</div></div>
   </div>
@@ -2055,7 +2324,7 @@ function renderHelp(){
       <tr><td>Event (Departure / Noon / Arrival …)</td><td>Sea vs at-berth attribution: a report covers the period since the previous report — Departure-report consumption goes to the berth being left; reports after Arrival go to the arrival berth; the rest to the sea leg</td></tr>
       <tr><td>Distance</td><td>Summed per leg (nm)</td></tr>
       <tr><td>Cargo_Mt</td><td>Max per leg → SCC transport work</td></tr>
-      <tr><td>ME/AE/Boiler/Inert_gas/Cargo_Heating…_Consumption_&lt;FUEL&gt;</td><td>Summed per fuel per leg. Fuel codes: HFO, LFO, MGO+MDO→MDO/MGO, LPGP, LPGB, LNG, M→Methanol, E→Ethanol</td></tr>
+      <tr><td>ME/AE/Boiler/Inert_gas/Cargo_Heating…_Consumption_&lt;FUEL&gt;</td><td>Summed per fuel per leg. Fuel codes: HFO, LFO, MGO+MDO→MGO, LPGP, LPGB, LNG, M→Methanol, E→Ethanol</td></tr>
       <tr><td>Shore_Side_Electricity_Reception (kWh)</td><td>× 3.6 → FuelEU OPS energy (MJ)</td></tr>
     </table>
     <p class="note"><b>Not imported (add manually):</b> "O" (other) fuel columns — biofuel/e-fuel components reported via the OVD Bunker Report with EU_GHG_Intensity / EU_Lower_Calorific_Value / BDN fields (see chunk ovd-ovd-bunker-report-details-p3) are not in the Log Abstract, so add such fuels as rows here with the certified E/WtT values; ROB fields; weather; EEOI cargo corrections. On import you choose <b>Replace</b> or <b>Append</b>, and any skipped columns are listed.</p>
@@ -2085,7 +2354,7 @@ function renderHelp(){
       <tr><td>Fuel names in FUEL_CONSUMPTION</td><td>Every fuel-oil grade → HFO, except ULSFO → LFO; MGO/HSMGO/LSMGO/ULSMGO/HSD → MGO; MDO/DO → MDO; LNG, LPG, methanol, ethanol pass through. Unknown names are flagged as skipped, never guessed</td></tr>
       <tr><td>MAIN/AUXILIARY/BOILER _ENGINE_CONSUMPTION</td><td><b>Machinery split</b> per fuel grade (same mapping); the unassigned remainder per fuel type goes to <b>Other</b> (machines exceeding the total are scaled down and flagged). View/edit via the ⚙ toggle; for LNG the ME/AE shares take their slip class from the two consumer dropdowns in Settings — Boiler and Other are slip-free</td></tr>
       <tr><td>Rows crossing 31 Dec (multi-year file)</td><td>Split into per-year parts, <b>report-exactly</b> (a report period straddling midnight is pro-rated by time). POC derivation works across the boundary. The Settings reporting year decides which parts count in ALL KPIs; the other year's rows stay greyed in the list</td></tr>
-      <tr><td>FUEL_ROB · LATITUDE/LONGITUDE · CURRENT_PORT/COUNTRY/REGION</td><td>Retained per report (not used in calculations) — feed the report-level trace and the OVD-format Excel download on the Calculations tab</td></tr>
+      <tr><td>FUEL_ROB · LATITUDE/LONGITUDE · CURRENT_PORT/COUNTRY/REGION</td><td>Retained per report (not used in calculations) — feed the report-level trace on the <b>📋 Reports</b> tab and the OVD-format Excel download (header)</td></tr>
     </table>
     <p class="note">Files without an OPERATING_CONDITION column import with the legacy mapping (EOSP = arrival, SOSP = departure, POC column passthrough) and a note. Stays cut off by the file boundary are derived from the available side and flagged <b>incomplete</b> — upload ±1 month around year ends where possible.</p>
   </div>
@@ -2374,7 +2643,7 @@ function runSelfTests(){
     const totIn={HFO:35.8, MDO:4.3};
     const totOut=id=>xd.rows.reduce((s,r)=>s+fT(r,id),0);
     ck("DERIVE fuel conservation HFO (nothing lost in re-attribution)", totOut("HFO"), totIn.HFO, 0.001);
-    ck("DERIVE fuel conservation MDO/MGO", totOut("MDO"), totIn.MDO, 0.001);
+    ck("DERIVE fuel conservation MGO", totOut("MDO"), totIn.MDO, 0.001);
     ckT("DERIVE notes: derivation + transit + qty fallback + OPL + mismatch all reported",
         md.notes.some(n=>/ARRIVAL\/DEPARTURE derived/.test(n)) && md.notes.some(n=>/pure transit/.test(n)) &&
         md.notes.some(n=>/quantity fallback/.test(n)) && md.notes.some(n=>/OUTSIDE port limits/.test(n)) && md.notes.some(n=>/disagrees/.test(n)));

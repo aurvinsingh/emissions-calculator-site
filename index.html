@@ -23,26 +23,29 @@
     <span style="color:#697987;font-size:12px;align-self:center;font-style:italic">Created by Aurvin Singh</span>
     <button class="hbtn" onclick="document.getElementById('impovd').click()">⬆ Import data (OVD · MDA · THETIS)</button>
     <input type="file" id="impovd" style="display:none" accept=".csv,.txt,.xml,.xlsx" onchange="importOVDFile(event)">
+    <button class="hbtn" onclick="downloadReportsXlsx()">⬇ OVD-format Excel</button>
     <button class="hbtn" onclick="resetScenario()">Reset</button>
+    <span class="ibwrap ib-right"><button class="ib" type="button" onclick="event.stopPropagation();toggleInfo(this)" title="More information">i</button><span class="ibpop">Internal reference tool for ZeroNorth Emissions Analytics work — <b>not legal advice and not a verified compliance system</b>. All formulas and default factors are grounded in the regulatory knowledge base in <i>_RULEFINDER_BUILD</i> (baseline 2026-07-11); items marked <span class="flag">FILL-IN</span> come from outside the KB and must be verified before external use. If regulations may have changed, see <i>REGULATORY_CHANGE_MONITORING.md</i>.</span></span>
   </div>
 </header>
 <nav class="noprint">
   <button id="tb-work" class="on" onclick="showTab('work')">⚡ Workspace (live)</button>
+  <button id="tb-trace" onclick="showTab('trace')">📋 Reports</button>
   <button id="tb-calcs" onclick="showTab('calcs')">🧮 Calculations</button>
   <button id="tb-vessel" onclick="showTab('vessel')">🚢 Settings</button>
-  <button id="tb-constants" onclick="showTab('constants')">📚 Formulas</button>
+  <button id="tb-constants" style="margin-left:auto" onclick="showTab('constants')">📚 Formulas</button>
   <button id="tb-help" onclick="showTab('help')">❓ Help</button>
 
 </nav>
 <main>
-<div id="tab-work"></div>
-<div id="tab-calcs" style="display:none"></div>
-<div id="tab-vessel" style="display:none"></div>
-<div id="tab-constants" style="display:none"></div>
-<div id="tab-help" style="display:none"></div>
-
-<div class="disc">Internal reference tool for ZeroNorth Emissions Analytics work — <b>not legal advice and not a verified compliance system</b>. All formulas and default factors are grounded in the regulatory knowledge base in <i>_RULEFINDER_BUILD</i> (baseline 2026-07-11); items marked <span class="flag">FILL-IN</span> come from outside the KB and must be verified before external use. If regulations may have changed, see <i>REGULATORY_CHANGE_MONITORING.md</i>.</div>
+<div id="tab-work" class="tabpanel"></div>
+<div id="tab-calcs" class="tabpanel" style="display:none"></div>
+<div id="tab-trace" class="tabpanel" style="display:none"></div>
+<div id="tab-vessel" class="tabpanel" style="display:none"></div>
+<div id="tab-constants" class="tabpanel" style="display:none"></div>
+<div id="tab-help" class="tabpanel" style="display:none"></div>
 </main>
+<div class="disc">Internal reference tool for ZeroNorth Emissions Analytics work — <b>not legal advice and not a verified compliance system</b>. All formulas and default factors are grounded in the regulatory knowledge base in <i>_RULEFINDER_BUILD</i> (baseline 2026-07-11); items marked <span class="flag">FILL-IN</span> come from outside the KB and must be verified before external use. If regulations may have changed, see <i>REGULATORY_CHANGE_MONITORING.md</i>.</div>
 <script src="js/ports_data.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ui.js"></script>

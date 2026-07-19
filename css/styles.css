@@ -1,6 +1,7 @@
 :root{--bg:#f6f8f9;--card:#fff;--ink:#20323c;--sub:#697987;--line:#e2e8ec;--blue:#0e7c8a;--blue2:#e7f3f5;--green:#1d7a3e;--amber:#b26a00;--red:#b3261e;--chip:#eef2f4;
 --ra:#5f9d78;--rb:#93b884;--rc:#e2cc7e;--rd:#dcaa72;--re:#c17570}
 *{box-sizing:border-box}
+html,body{height:100%}
 body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink)}
 header{background:#fff;color:var(--ink);border-bottom:1px solid var(--line);padding:12px 22px;display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;position:sticky;top:0;z-index:20}
 header h1{font-size:17px;margin:0;color:#123c47}
@@ -13,10 +14,33 @@ nav button{background:#f2f6f7;border:1px solid var(--line);color:var(--sub);padd
 nav button:hover{background:var(--blue2);border-color:#bcd9de;color:var(--blue)}
 nav button.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
 main{max-width:1500px;margin:0 auto;padding:16px 20px 60px}
+.panelA,.panelB{display:flex;flex-direction:column}
+.panelA .tablescroll,.panelB .tablescroll{overflow-y:auto}
+details.workings summary{cursor:pointer;font-size:14px;font-weight:600;color:#123c47;padding:2px 0}
+/* compact column label — replaces a full h2 (which just repeated the summary's own wording) */
+.wlabel{font-size:12px;font-weight:700;color:#123c47;text-transform:uppercase;letter-spacing:.3px;margin:0 0 8px;display:flex;align-items:center;gap:6px}
+/* cap how tall the expanded workings section can grow, so it can't keep shrinking the breakdown
+   table above it down to its floor — past this height it scrolls internally instead */
+details.workings[open] .workingsgrid{max-height:42vh;overflow-y:auto;padding-right:4px}
+/* while workings is expanded, the shrunk breakdown table above it is itself a click-to-collapse
+   shortcut (js/ui.js closeWorkingsIfOpen()) — hint that with a pointer cursor */
+.card.panelA:has(~ details.workings[open]){cursor:pointer}
+.workingsgrid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
 .ws{display:grid;grid-template-columns:minmax(480px,7fr) minmax(420px,6fr);gap:36px;align-items:start}
 @media(max-width:1020px){.ws{grid-template-columns:1fr}}
 .wsright{position:sticky;top:100px;max-height:calc(100vh - 116px);overflow-y:auto;padding-right:2px}
+/* ---- fixed app-shell: every tab except Workspace (live) — pinned header/nav, only the tab
+   content (and, within it, long tables) scrolls independently. Toggled by showTab() in ui.js
+   via body.classList.toggle("shell", tab!=="work"). Workspace keeps the plain-document-scroll
+   + sticky-header/sticky-.wsright layout above, unchanged. ---- */
+body.shell{display:flex;flex-direction:column;overflow:hidden}
+body.shell header,body.shell nav{position:static;flex:0 0 auto}
+body.shell main{max-width:1500px;width:100%;margin:0 auto;padding:0 20px;flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+body.shell .tabpanel{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px 0 24px;display:flex;flex-direction:column}
+body.shell .panelA,body.shell .panelB{flex:1 1 auto;min-height:260px;overflow:hidden}
+body.shell .panelA .tablescroll,body.shell .panelB .tablescroll{flex:1 1 auto;min-height:0}
+body.shell details.workings{flex:0 0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(20,50,60,.04)}
 .card h2{font-size:14px;margin:0 0 12px;color:#123c47}
 .card h3{font-size:12.5px;margin:20px 0 8px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;font-weight:700}
@@ -65,7 +89,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .ciibar div{display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px}
 .marker{position:absolute;top:-4px;width:2px;height:38px;background:#111;box-shadow:0 0 0 1px #fff}
 .mlabel{position:absolute;top:-22px;transform:translateX(-50%);font-size:11px;font-weight:700;background:#111;color:#fff;border-radius:4px;padding:0 5px;white-space:nowrap}
-.disc{font-size:11.5px;color:var(--sub);margin-top:14px;border-top:1px solid var(--line);padding-top:8px}
+/* on-screen the disclaimer lives in the header info icon (ⓘ) instead — .disc is print-only,
+   so the legal notice still appears on printed/exported pages even though header is hidden there */
+.disc{display:none}
+@media print{.disc{display:block;font-size:11.5px;color:var(--sub);margin-top:14px;border-top:1px solid var(--line);padding-top:8px}}
 .testres{font-family:ui-monospace,Menlo,monospace;font-size:12px;white-space:pre-wrap;background:#0e1a2a;color:#c9e3ff;border-radius:8px;padding:12px;max-height:420px;overflow:auto}
 .formula{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;background:#f4f7fb;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;padding:8px 12px;margin:6px 0;overflow-x:auto;white-space:pre}
 
@@ -89,7 +116,48 @@ h4.sec{margin:20px 0 10px;font-size:13px;color:var(--ink)}
 .helpstep{display:flex;gap:10px;margin:8px 0;align-items:flex-start}
 .helpstep .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
 kbd{background:#eef2f7;border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:12px}
-@media print{header,nav,.noprint{display:none}body{background:#fff}.wsright{position:static;max-height:none}}
+/* ---- Formulas tab: per-regulation sub-tabs + step-by-step two-column explainers (2026-07-19) ---- */
+.fsubbar{display:flex;gap:6px;flex-wrap:wrap;position:sticky;top:0;z-index:6;background:var(--bg);padding:2px 0 10px;margin:0 0 4px}
+/* Formulas tab runs plain whole-page scroll (body.shell disabled there) — the header+nav are
+   sticky in that mode too, so the sub-nav must stick below them (100px, matching .wsright) rather
+   than at top:0 where it would be hidden behind the header's higher z-index */
+body:not(.shell) .fsubbar{top:100px}
+.fsubbar button{background:#f2f6f7;border:1px solid var(--line);color:var(--sub);padding:6px 14px;font-size:12.5px;cursor:pointer;border-radius:8px;font-weight:600}
+.fsubbar button:hover{background:var(--blue2);border-color:#bcd9de;color:var(--blue)}
+.fsubbar button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.funits{background:#f8fafb;border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:0 0 14px;line-height:1.55}
+.fsub{display:none}
+.fsub.on{display:block}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}
+.fcol-head{font-size:12.5px;font-weight:700;color:#123c47;text-transform:uppercase;letter-spacing:.4px;margin:0 0 14px;padding-bottom:8px;border-bottom:2px solid var(--blue2)}
+.fex .fcol-head{border-bottom-color:#ecdcbe}
+.fstep{display:flex;gap:12px;margin:0 0 18px;align-items:flex-start}
+.fstep .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--blue);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:12.5px;margin-top:1px}
+.fstep .body{flex:1;min-width:0}
+.fstep .body .sh{display:block;font-weight:700;color:#123c47;margin-bottom:4px}
+.fstep .body p{margin:6px 0;line-height:1.6;color:var(--ink);font-size:13px}
+.fstep .body .formula{margin:6px 0}
+.fex{background:#fbf7ef;border:1px solid #ecdcbe;border-radius:10px;padding:16px 18px}
+.fex .fstep .n{background:var(--amber)}
+.fex .formula{background:#fff;border-left-color:var(--amber)}
+.ftake{background:var(--blue2);border:1px solid #bcd9de;border-radius:10px;padding:11px 14px;margin-top:6px;font-size:13px;line-height:1.55}
+.ftake b{color:#123c47}
+.fsrc{margin-top:18px;padding-top:12px;border-top:1px dashed var(--line);font-size:12px;color:var(--sub);line-height:1.55}
+@media(max-width:900px){.fgrid{grid-template-columns:1fr;gap:8px}.fex{margin-top:4px}}
+@media print{
+  header,nav,.noprint{display:none}
+  body{background:#fff}
+  body.shell{height:auto;overflow:visible;display:block}
+  body.shell main{overflow:visible;display:block;flex:none;height:auto}
+  body.shell .tabpanel{overflow:visible;flex:none;height:auto;display:block}
+  body.shell .panelA,body.shell .panelB{overflow:visible;flex:none;height:auto}
+  body.shell .panelA .tablescroll,body.shell .panelB .tablescroll{overflow:visible;max-height:none}
+  .panelA,.panelB{display:block}
+  .tablescroll{overflow:visible;max-height:none}
+  details.workings{display:block}
+  details.workings[open] .workingsgrid{max-height:none;overflow:visible}
+  .wsright{position:static;max-height:none}
+}
 #lock{position:fixed;inset:0;background:linear-gradient(160deg,#0e2036,#1a3a5c);z-index:200;display:flex;align-items:center;justify-content:center}
 .lockbox{background:#fff;border-radius:14px;padding:30px 34px;max-width:360px;width:90%;text-align:center;box-shadow:0 18px 60px rgba(0,0,0,.45)}
 .lockbox h2{margin:0 0 4px;font-size:17px;color:#122a44}
@@ -112,6 +180,8 @@ body.locked main,body.locked nav{display:none}
 .ibpop{display:none;position:absolute;z-index:120;top:21px;left:-10px;width:max-content;min-width:240px;max-width:min(380px,82vw);background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;font-weight:400;line-height:1.5;color:var(--ink);box-shadow:0 10px 30px rgba(20,40,70,.25);text-align:left;white-space:normal;text-transform:none;letter-spacing:0}
 .ibpop.open{display:block}
 .ibpop b{color:var(--blue)}
+/* right-anchored variant: popover expands leftward from the icon, for icons pinned to a right edge */
+.ib-right .ibpop{left:auto;right:-10px}
 /* ---------- responsive layout ---------- */
 nav{overflow-x:auto;scrollbar-width:thin}
 .card{overflow-x:auto}
@@ -119,11 +189,17 @@ nav{overflow-x:auto;scrollbar-width:thin}
   .inline{flex-wrap:wrap}
   .inline>div{flex:1 1 45%;min-width:130px}
   .fuelline{grid-template-columns:repeat(2,1fr)}
-  main{padding:12px 12px 50px}
   header{padding:10px 12px}
   nav{padding:0 8px;top:auto;position:static}
   header{position:static}
   .wsright{position:static;max-height:none;overflow:visible}
+  .fsubbar{position:static}
+  /* small screens: give up the fixed desktop-app shell (non-Workspace tabs), fall back to a normal scrolling page */
+  body.shell{overflow:visible;display:block}
+  body.shell main{overflow:visible;display:block;flex:none;padding:12px 12px 50px}
+  body.shell .tabpanel{overflow:visible;display:block;flex:none;padding:0}
+  body.shell .panelA,body.shell .panelB{overflow:visible;display:block;flex:none;min-height:0}
+  body.shell .panelA .tablescroll,body.shell .panelB .tablescroll{overflow-y:visible}
 }
 @media(max-width:620px){
   .fuelline{grid-template-columns:repeat(2,1fr)}
