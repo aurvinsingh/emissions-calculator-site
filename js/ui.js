@@ -602,6 +602,9 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     /* segment: a stay = everything between an ARRIVAL-EOSP and the next DEPARTURE-SOSP;
        a leading in-port block with no EOSP / a trailing one with no SOSP = incomplete stay */
     const stays=[]; let cur=null;
+    /* one resolved current-port per derived Port Stay, collected below and applied to every
+       report file-wide afterwards (2026-07-19, Aurvin) — see the pass after this loop */
+    const resolvedStays=[];
     for(const c of recs){
       if(c.skip) continue;                                  // bunker events: transparent to segmentation too
       if(c.rt==="ARRIVAL-EOSP"){ if(cur && cur.members.length) stays.push(cur); cur={eosp:c, members:[], sosp:null}; }
@@ -684,10 +687,26 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            in the Calculations report table */
         if(firstPort) firstPort.role = firstPort===lastPortRec? "ARRIVAL · DEPARTURE" : "ARRIVAL";
         if(lastPortRec && lastPortRec!==firstPort) lastPortRec.role = "DEPARTURE";
+        /* Resolve ONE current-port for this whole Port Stay (2026-07-19, Aurvin, per explicit
+           spec) — Arrival.CURRENT_PORT and Departure.CURRENT_PORT are, by definition, the same
+           physical port: use Arrival's own CURRENT_PORT whenever it has one (whether or not
+           Departure's agrees or is blank); only when Arrival itself has no usable CURRENT_PORT
+           do we fall back to the bounding SOSP's ORIGIN_PORT. This resolved port — and the
+           stay's departure time — feed the file-wide Voyage_From/Voyage_To pass below; it is
+           no longer written directly onto firstPort/lastPortRec here. */
+        if(firstPort){
+          const resolvedPort = firstPort.cur || (st.sosp && st.sosp.org) || "";
+          if(resolvedPort){
+            resolvedStays.push({ dep, resolvedPort });
+            /* unified branches (2026-07-19b): stamp the stay's single resolved port on every
+               in-window report so the workspace CSV emits it too (see emission pass below) */
+            for(const m of M) if(m.ev==="Port") m.stayPort = resolvedPort;
+          }
+        }
         if(st.eosp && firstPort)
-          firstPort.before.push({ev:"Arrival", dtIso:arr, vFrom:inbound[0], vTo:inbound[1]});      // zero-consumption boundary marker
+          firstPort.before.push({ev:"Arrival", dtIso:arr, vFrom:inbound[0], vTo:inbound[1], src:st.eosp});      // zero-consumption boundary marker
         if(st.sosp){
-          (firstPost||st.sosp).before.push({ev:"Departure", dtIso:dep, vFrom:outbound[0], vTo:outbound[1]});
+          (firstPost||st.sosp).before.push({ev:"Departure", dtIso:dep, vFrom:outbound[0], vTo:outbound[1], src:st.sosp});
           st.sosp.ev="Noon";                               // pre-SOSP period is already at sea (post-departure)
         }
       } else if(st.eosp && st.sosp){
@@ -702,6 +721,28 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         for(const m of M){ if(m.ev==="Port"){ m.poc = cargoTest? "YES":"NO"; if(!fp) fp=m; } }
         if(fp) fp.meta={arr:null,dep:null,rule:null,flags:flags.join("+")};
       }
+    }
+
+    /* ---- Voyage_From / Voyage_To, file-wide, from the resolved Port Stays only (2026-07-19,
+       Aurvin, per explicit spec) — never from each report's own raw ORIGIN/DESTINATION_PORT:
+         Voyage_To  = the resolved port of the next stay not yet departed — while still inside
+                      a stay pre-departure that's trivially the same stay's own port. It changes
+                      only at each Departure (inclusive), to the FOLLOWING stay's resolved port.
+                      Only past the last stay in the file does it fall back to that report's own
+                      DESTINATION_PORT_UNLO_CODE (absolute last resort).
+         Voyage_From = the resolved port of the most recently departed stay; changes only at
+                      each Departure (inclusive), to THAT stay's own resolved port, and holds
+                      through the following stay's arrival phase. Before the first Departure in
+                      the file, falls back to the first non-blank ORIGIN_PORT_UNLO_CODE found
+                      anywhere in the file (its opening context), if any. */
+    resolvedStays.sort((a,b)=> a.dep<b.dep?-1:(a.dep>b.dep?1:0));
+    let bootstrapOrg=""; for(const c of recs){ if(c.org){ bootstrapOrg=c.org; break; } }
+    let jTo=0, jFrom=-1;
+    for(const c of recs){
+      while(jTo<resolvedStays.length && resolvedStays[jTo].dep<=c.tEnd) jTo++;
+      c.dst = jTo<resolvedStays.length ? resolvedStays[jTo].resolvedPort : (c.dst||"");
+      while(jFrom+1<resolvedStays.length && resolvedStays[jFrom+1].dep<=c.tEnd) jFrom++;
+      c.org = jFrom>=0 ? resolvedStays[jFrom].resolvedPort : bootstrapOrg;
     }
   } else {
     /* legacy import — POC passthrough from the file's own column */
@@ -719,12 +760,22 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   const blank=GROUPS.map(()=>codes.map(()=> "")).flat();
   const rnd = v => v? Math.round(v*1000)/1000 : "";
   const fuelCells = c => GROUPS.map(([g])=>codes.map(k=> rnd(g? ((c.mach||{})[g]||{})[k] : c.fuels[k]))).flat();
+  /* unified Voyage_From / Voyage_To (2026-07-19b): the workspace CSV now carries the SAME
+     corrected ports as the reports/download branch (c.org / c.dst, rewritten by the file-wide
+     pass above) — previously it used the older per-report vFrom/vTo, so the Workspace and the
+     OVD download could disagree and voyages fragmented on stale raw ports. Port-stay rows carry
+     the stay's single resolved port; boundary markers read the corrected ports of the report
+     they were derived from. Legacy files (no OPERATING_CONDITION) keep the original values. */
+  const vf  = c => hasOC ? (c.ev==="Port" ? (c.stayPort||c.vFrom||"") : (c.org||c.vFrom||"")) : (c.vFrom||"");
+  const vt  = c => hasOC ? (c.ev==="Port" ? (c.stayPort||c.vTo||"")   : (c.dst||c.vTo||""))   : (c.vTo||"");
+  const bvf = b => (hasOC && b.src) ? (b.src.org||b.vFrom||"") : (b.vFrom||"");
+  const bvt = b => (hasOC && b.src) ? (b.src.dst||b.vTo||"")   : (b.vTo||"");
   for(const c of recs){
     if(c.skip) continue;
     for(const b of c.before)
-      lines.push([b.dtIso.slice(0,10),b.dtIso.slice(11,16),b.vFrom||"",b.vTo||"",b.ev,"","","","","","",""].concat(blank).join(","));
+      lines.push([b.dtIso.slice(0,10),b.dtIso.slice(11,16),bvf(b),bvt(b),b.ev,"","","","","","",""].concat(blank).join(","));
     const meta=c.meta||{};
-    lines.push([c.dt[0],c.dt[1],c.vFrom||"",c.vTo||"",c.ev,c.dist||"",c.qty||"",c.poc||"",meta.arr||"",meta.dep||"",meta.rule||"",meta.flags||""]
+    lines.push([c.dt[0],c.dt[1],vf(c),vt(c),c.ev,c.dist||"",c.qty||"",c.poc||"",meta.arr||"",meta.dep||"",meta.rule||"",meta.flags||""]
       .concat(fuelCells(c)).join(","));
   }
   /* raw per-report retention (2026-07-16): foundation for the future OVD-format download.
@@ -2627,7 +2678,9 @@ function runSelfTests(){
     const fT=(r,id)=>{ const f=(r&&r.fuels||[]).find(z=>z.fuelId===id); return f?f.tonnes:0; };
     const legs=xd.rows.filter(r=>r.kind==="voyage"), ports=xd.rows.filter(r=>r.kind==="port");
     const pAt=c=>ports.find(p=>p.port&&p.port.c===c);
-    ckT("DERIVE: 5 legs + 4 port stays (NLRTM transit merged away)", legs.length===5 && ports.length===4 && !pAt("NLRTM"));
+    /* (2026-07-19b) unified branches: a pure transit no longer breaks the voyage into two legs —
+       the workspace now shows ONE leg BEANR→DEHAM, same as the OVD download's Voyage_From/To */
+    ckT("DERIVE: 4 legs + 4 port stays (NLRTM transit merged away, voyage stays whole)", legs.length===4 && ports.length===4 && !pAt("NLRTM"));
     const pB=pAt("BEANR"), pD=pAt("DEHAM"), pG=pAt("GBLON");
     ckT("DERIVE stay A: arrival = start of cargo-op chain (manoeuvring excluded)", pB && pB.arrGmt==="2026-03-02T18:00");
     ckT("DERIVE stay A: departure = end of chain (FUEL_STOCK transparent, chain continues through it)", pB && pB.depGmt==="2026-03-03T18:00");
@@ -2636,7 +2689,10 @@ function runSelfTests(){
     ck("DERIVE leg1 gets pre-arrival manoeuvring (0.4)", fT(legs[0],"MDO"), 0.4, 0.001);
     ck("DERIVE leg1 HFO 10+2 (EOSP is sea passage)", fT(legs[0],"HFO"), 12, 0.001);
     ck("DERIVE leg2 gets post-departure + SOSP + transit stay fuel (0.3+0.2+0.7+0.1)", fT(legs[1],"MDO"), 1.3, 0.001);
-    ck("DERIVE leg2 HFO 8+1 (transit EOSP merged into voyage)", fT(legs[1],"HFO"), 9, 0.001);
+    ck("DERIVE leg2 HFO 8+1+7+0.8 (whole transit passage merged into ONE voyage)", fT(legs[1],"HFO"), 16.8, 0.001);
+    ckT("DERIVE unified: workspace leg2 endpoints = download branch Voyage_From/To (BEANR→DEHAM)",
+        legs[1] && legs[1].fromPort.c==="BEANR" && legs[1].toPort.c==="DEHAM" &&
+        (md.reports||[]).some(r=>r.rt==="AT_SEA" && r.t==="2026-03-05T00:00" && r.org==="BEANR" && r.dst==="DEHAM"));
     ckT("DERIVE stay C: Case B AT_BERTH window", pD && pD.arrGmt==="2026-03-06T12:00" && pD.depGmt==="2026-03-07T00:00" && pD.deriveRule==="AT_BERTH");
     ckT("DERIVE stay C: quantity-fallback POC (6000→0, no recorded cargo op) → poc on + orange flag", pD && pD.poc===true && pD.pocQty===true && pD.pocMismatch!==true);
     ckT("DERIVE stay D: STS outside port limits → derived window kept but classified transit (poc off)", pG && pG.poc===false && pG.arrGmt==="2026-03-08T06:00" && pG.deriveRule==="CASE_A");
