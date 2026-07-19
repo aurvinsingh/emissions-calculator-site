@@ -119,18 +119,75 @@ function ttwIntensity(fuel, engine){
    EU ETS (euets-art3ga) & FuelEU: EEA→EEA 100%, EEA↔other 50%, at berth EEA 100%.
    UK ETS (ukets-sch2a-p7): UK→UK voyages + UK in-port activity only.
    Port-of-call flag (2026-07-15): both regimes attach at-berth scope to a PORT OF CALL
-   (EU ETS Art 3(z) definition via euets-art3ga; FuelEU Art 2/3 "port of call"). A port
-   stay with poc:false (transit / anchorage-only, no cargo op or call) is OUT of EU ETS,
-   UK ETS and FuelEU scope. CII and SCC count all fuel regardless (imo-g1-s4).
-   poc undefined => true (default: a stay IS a call). */
+   (EU ETS Art 3(z) definition via euets-art3ga; FuelEU Art 2/3 "port of call").
+   CII and SCC count all fuel regardless (imo-g1-s4).
+   poc undefined => true (default: a stay IS a call).
+
+   2026-07-20 (owner decision, this session): a stay with poc:false (anchorage-only /
+   transit, no cargo op or call) does NOT end the voyage — the regulatory voyage runs
+   from the last port of call to the NEXT port of call (euets-art3ga port-of-call
+   definition). Therefore:
+   - fuel burned during a non-call stay carries the VOYAGE's coverage (not 0);
+   - the legs on either side of a non-call stay are scoped by the last-POC → next-POC
+     endpoints, not by the stay itself (e.g. EU port → EU anchorage(no call) → non-EU
+     port is ONE 50% voyage, not a 100% leg + an out-of-scope stay + a 50% leg).
+   annotateVoyageContinuity() below computes those effective endpoints (_covFrom/_covTo)
+   from the row sequence; it is re-run on every computeAll. A LONE non-call stay with no
+   surrounding voyage rows keeps the legacy behaviour (out of scope) because its voyage
+   endpoints are unknowable. */
+function annotateVoyageContinuity(rows){
+  rows = rows||[];
+  for(const r of rows){ delete r._covFrom; delete r._covTo; }   // poc flags may have changed
+  const isNC = r => r && r.kind==="port" && r.poc===false;      // non-call stay
+  /* forward: effective origin flows ACROSS non-call stays only (a voyage row followed
+     directly by another voyage row means the shared port had no stay row => it is a
+     call by default, so the chain must NOT survive past it) */
+  let openFrom=null;
+  for(let i=0;i<rows.length;i++){
+    const r=rows[i];
+    if(r.kind==="voyage"){
+      r._covFrom = openFrom || r.from;
+      openFrom = isNC(rows[i+1]) ? r._covFrom : null;
+    } else if(r.kind==="port"){
+      if(r.poc===false){ if(openFrom) r._covFrom = openFrom; }
+      else openFrom=null;
+    }
+  }
+  /* backward: effective destination, mirror image */
+  let openTo=null;
+  for(let i=rows.length-1;i>=0;i--){
+    const r=rows[i];
+    if(r.kind==="voyage"){
+      r._covTo = openTo || r.to;
+      openTo = isNC(rows[i-1]) ? r._covTo : null;
+    } else if(r.kind==="port"){
+      if(r.poc===false){ if(openTo) r._covTo = openTo; }
+      else openTo=null;
+    }
+  }
+}
+function covVoyEU(a,b){ const A=a==="EEA", B=b==="EEA"; return (A&&B)?1:((A||B)?0.5:0); }
 function euCoverage(row){
-  if(row.kind==="port") return (row.zone==="EEA" && row.poc!==false) ? 1 : 0;
-  const a=row.from==="EEA", b=row.to==="EEA";
-  return (a&&b)?1:((a||b)?0.5:0);
+  if(row.kind==="port"){
+    if(row.poc===false){
+      /* non-call stay = part of the voyage; a missing side falls back to the stay's own
+         zone (realistic proxy); BOTH sides missing = lone stay => legacy out-of-scope */
+      if(!row._covFrom && !row._covTo) return 0;
+      return covVoyEU(row._covFrom||row.zone, row._covTo||row.zone);
+    }
+    return row.zone==="EEA" ? 1 : 0;
+  }
+  return covVoyEU(row._covFrom||row.from, row._covTo||row.to);
 }
 function ukCoverage(row){
-  if(row.kind==="port") return (row.zone==="UK" && row.poc!==false) ? 1 : 0;
-  return (row.from==="UK"&&row.to==="UK")?1:0;
+  if(row.kind==="port"){
+    if(row.poc===false){
+      if(!row._covFrom && !row._covTo) return 0;
+      return ((row._covFrom||row.zone)==="UK" && (row._covTo||row.zone)==="UK") ? 1 : 0;
+    }
+    return row.zone==="UK" ? 1 : 0;
+  }
+  return ((row._covFrom||row.from)==="UK" && (row._covTo||row.to)==="UK") ? 1 : 0;
 }
 /* UK ETS maritime scheme window (SI 2026/392, in force 1 July 2026): the FIRST scheme year
    2026 is the HALF-YEAR 1 Jul–31 Dec 2026 only — activity before 1 Jul 2026 is out of UK ETS
@@ -183,9 +240,17 @@ function machineParts(fr, f, t, state){
 
 /* ---------- MAIN ---------- */
 function computeAll(state){
+  annotateVoyageContinuity(state.rows);   // 2026-07-20: non-call stays don't end the voyage
   const y = Number(state.year)||2026;
   const GWP_EUETS = euetsGwp(state);   // user-selected AR set (EU ETS 2026+ CO2e only — see note above)
   const warn = [];
+  /* transparency: say when the voyage-continuity rule changed a row's scope endpoints */
+  let nVC=0;
+  for(const r of state.rows||[]){
+    if(r.kind==="voyage" && ((r._covFrom&&r._covFrom!==r.from)||(r._covTo&&r._covTo!==r.to))) nVC++;
+    else if(r.kind==="port" && r.poc===false && (r._covFrom||r._covTo)) nVC++;
+  }
+  if(nVC) warn.push("Voyage continuity: "+nVC+" row(s) involve a stay that is NOT a port of call (anchorage/transit) — the voyage is treated as continuing to the next real call (EU ETS Art 3(z) 'port of call', euets-art3ga; owner decision 2026-07-20). Their EU/UK ETS and FuelEU % use the last-call → next-call endpoints, and fuel burned at such a stay rides the voyage. CII and SCC count all fuel regardless.");
   const resolveFuel = (fr)=>{
     const base = FUEL_BY_ID[fr.fuelId]; if(!base) return null;
     const f = Object.assign({}, base);
@@ -216,7 +281,11 @@ function computeAll(state){
   for(const row of state.rows||[]){
     if(!rowInYear(row)){ nOutOfYear++; continue; }
     const covEU = euCoverage(row);
-    const ukFrac = ukSchemeFraction(row, y);
+    /* UK ETS 1 Jul 2026 window fraction: prefer the REPORT-EXACT share computed at import
+       (row.ukInFrac = actual consumption on/after 1 Jul ÷ total, per report — same granular
+       basis as the calendar-year split), and fall back to the time-proration ukSchemeFraction
+       for manual/undated rows that have no per-report backing. (2026-07-20, Aurvin) */
+    const ukFrac = (row.ukInFrac!=null) ? row.ukInFrac : ukSchemeFraction(row, y);
     const covUK = ukCoverage(row) * ukFrac;               // 2026 = half-year 1 Jul–31 Dec only
     if(y===2026 && ukCoverage(row)>0 && ukFrac<1) nUkPartial++;
     const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
@@ -347,10 +416,15 @@ function computeAll(state){
   /* UK ETS maritime scope in force 1 July 2026 (SI 2026/392, Sch 2A). Scope modelled:
      UK↔UK domestic voyages 100% + UK ports of call (at berth/anchorage) 100%, incl. for
      vessels arriving from abroad (ukets-sch2a-p7); GWP 28/265 (Table C1). Reg checked
-     2026-07-16. Known simplifications flagged below. */
+     2026-07-16. Re-checked 2026-07-19 against the full SI 2026/392 PDF and KR Technical
+     Information 2026-ETC-02 (chunks ukets-sch2a-p49-98, ukets-order-sch2-pt1/pt2,
+     kr-etc02-*): scope, rates, GWPs, half-year 2026 and double-surrender all confirmed;
+     Crown Dependency / Overseas Territory ports confirmed OUTSIDE UK jurisdiction
+     (kr-etc02-scope), matching the UK OMR→OTHER zone default. Known simplifications
+     flagged below. */
   if(ukActive && ukets_t>0){
-    if(y===2026) warn.push("UK ETS: the first maritime scheme year is the half-year 1 Jul–31 Dec 2026 (first surrender combined with 2027 by 30 Apr 2028). Only dated activity on/after 1 Jul 2026 is counted in UK ETS scope"+(nUkPartial? " ("+nUkPartial+" row(s) straddling 1 Jul were time-pro-rated)":"")+"; undated rows are counted in full — enter dates (or import) so the 1 Jul cutoff applies automatically.");
-    warn.push("UK ETS scope simplifications: NI↔GB voyages get a 50% surrender deduction (modelled here at 100% — verify if relevant); ship assumed ≥5,000 GT; offshore ships (in scope from 1 Jan 2027) not distinguished. No free allocation applies (operator buys all allowances) — reflected here.");
+    if(y===2026) warn.push("UK ETS: the first maritime scheme year is the half-year 1 Jul–31 Dec 2026 (first surrender combined with 2027 by 30 Apr 2028). Only dated activity on/after 1 Jul 2026 is counted in UK ETS scope"+(nUkPartial? " ("+nUkPartial+" row(s) straddling 1 Jul were time-pro-rated)":"")+"; undated rows are counted in full — enter dates (or import) so the 1 Jul cutoff applies automatically. Imported rows straddling 1 Jul are split from the actual per-report consumption (report-exact), not assumed uniform over the leg.");
+    warn.push("UK ETS scope simplifications: NI↔GB voyages get a 50% surrender deduction (modelled here at 100% — verify if relevant); ship assumed ≥5,000 GT; offshore ships (in scope from 1 Jan 2027) not distinguished. No free allocation applies (operator buys all allowances) — reflected here. Non-compliance costs (not modelled): failure to surrender £100/tCO2e inflation-adjusted plus the surrender obligation remains (2020 Order art 52, kr-etc02-penalties); EMP/monitoring/AER failures £20,000 + £500/day up to £45,000 (arts 64B–64E, ukets-order-sch2-pt2).");
   }
 
   /* ---- FuelEU ---- */

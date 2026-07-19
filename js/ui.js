@@ -293,11 +293,30 @@ function parseOVD(text){
     out[b.slice(0,4)]=(B-t0)/(B-A);
     return out;
   };
+  /* the part of a report period [a,b] that falls inside calendar year yy (clipped to the year) */
+  const segOf = (a, b, yy)=>[
+    (a && a.slice(0,4)===String(yy)) ? a : yy+"-01-01T00:00",
+    (b && b.slice(0,4)===String(yy)) ? b : (Number(yy)+1)+"-01-01T00:00"
+  ];
+  /* ---- UK ETS report-exact 1 Jul 2026 window (2026-07-20, Aurvin) ----
+     The UK ETS maritime scheme is in force from 1 Jul 2026 (SI 2026/392). We accumulate, per
+     row, the fraction of ACTUAL consumption that occurred on/after 1 Jul 2026 — report by report,
+     exactly like the calendar-year split — so the engine no longer time-pro-rates the whole leg
+     (which assumed uniform burn). ukWinFracOfSeg gives the on/after-1-Jul share of one report's
+     (year-clipped) period; it matches ukSchemeFraction's straddle formula so per-report badges
+     and the aggregated total use identical logic. */
+  const UK_CUT = Date.parse("2026-07-01T00:00:00Z");
+  const ukWinFracOfSeg = (segA, segB)=>{
+    const s=Date.parse(segA+":00Z"), e=Date.parse(segB+":00Z");
+    if(!isFinite(s)||!isFinite(e)||!(e>s)) return 1;
+    if(e<=UK_CUT) return 0;
+    if(s>=UK_CUT) return 1;
+    return (e-UK_CUT)/(e-s);
+  };
   const bucketOf = (row, yy, a, b)=>{
     row._byYear = row._byYear || {};
-    const bk = row._byYear[yy] || (row._byYear[yy]={fuels:{},dist:0,cargo:0,tStart:null,tEnd:null});
-    const segA = (a && a.slice(0,4)===String(yy)) ? a : yy+"-01-01T00:00";
-    const segB = (b && b.slice(0,4)===String(yy)) ? b : (Number(yy)+1)+"-01-01T00:00";
+    const bk = row._byYear[yy] || (row._byYear[yy]={fuels:{},dist:0,cargo:0,tStart:null,tEnd:null,ukInMass:0,massTot:0});
+    const [segA,segB] = segOf(a, b, yy);
     if(!bk.tStart || segA<bk.tStart) bk.tStart=segA;
     if(!bk.tEnd || segB>bk.tEnd) bk.tEnd=segB;
     return bk;
@@ -309,10 +328,18 @@ function parseOVD(text){
     fr.tonnes = Math.round((fr.tonnes+t)*1000)/1000;
     if(trackSplit && mach){ fr.split=fr.split||{}; fr.split[mach]=Math.round(((fr.split[mach]||0)+t)*1000)/1000; }
     if(yfr) for(const yy in yfr){
-      const e0 = bucketOf(row, yy, a, b).fuels;
+      const bk = bucketOf(row, yy, a, b);
+      const e0 = bk.fuels;
       const e = e0[fuelId] || (e0[fuelId]={t:0});
-      e.t += t*yfr[yy];
-      if(trackSplit && mach) e[mach]=(e[mach]||0)+t*yfr[yy];
+      const massYY = t*yfr[yy];
+      e.t += massYY;
+      if(trackSplit && mach) e[mach]=(e[mach]||0)+massYY;
+      /* UK ETS report-exact window: accumulate the on/after-1-Jul-2026 share of this report's
+         consumption for this year-part (pre-2026 → 0, post-2026 → full, 2026 → clipped share). */
+      bk.massTot += massYY;
+      const [segA,segB] = segOf(a, b, yy);
+      const inWin = Number(yy)>2026 ? 1 : Number(yy)<2026 ? 0 : ukWinFracOfSeg(segA, segB);
+      bk.ukInMass += massYY*inWin;
     }
   };
   const makeLeg = (from,to)=>{
@@ -393,17 +420,22 @@ function parseOVD(text){
      count; the derived POC / arrival / departure metadata is copied to both parts. ---- */
   let nSplitYear=0;
   const rowsFinal=[];
+  /* report-exact UK ETS in-scope fraction for a year bucket (share of its consumption on/after
+     1 Jul 2026); no consumption → default by year (pre-2026 out, 2026+ in). Used by the engine
+     instead of the old leg-level time-proration. (2026-07-20, Aurvin) */
+  const ukFracOfBucket = (bk, yy)=> (bk && bk.massTot>1e-9) ? bk.ukInMass/bk.massTot : (Number(yy)>=2026?1:0);
   for(const r of out){
     const by=r._byYear; delete r._byYear;
     const ys = by? Object.keys(by).filter(yy=>{
       const bk=by[yy];
       return Object.keys(bk.fuels).some(k=>bk.fuels[k].t>5e-4) || bk.dist>0.05;
     }).sort() : [];
-    if(ys.length<2){ rowsFinal.push(r); continue; }
+    if(ys.length<2){ if(ys.length===1) r.ukInFrac = ukFracOfBucket(by[ys[0]], ys[0]); rowsFinal.push(r); continue; }
     nSplitYear++;
     for(const yy of ys){
       const bk=by[yy];
       const c=Object.assign({}, r);
+      c.ukInFrac = ukFracOfBucket(bk, yy);
       c.fuels = Object.entries(bk.fuels).filter(([,e])=>e.t>5e-4).map(([fuelId,e])=>{
         const fr={fuelId, tonnes:Math.round(e.t*1000)/1000, price:0};
         const sp={}; let any=false;
@@ -676,16 +708,33 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         const inbound  = st.eosp? [st.eosp.vFrom, st.eosp.vTo] : null;
         const outbound = st.sosp? [st.sosp.vFrom, st.sosp.vTo] : null;
         if(st.eosp) st.eosp.ev="Noon";                     // EOSP is a sea-passage marker, not the arrival
-        let firstPort=null, firstPost=null, lastPortRec=null;
+        let firstPort=null, firstPost=null, lastPortRec=null, approach=null;
         for(const m of M){
-          if(m.tEnd<=arr){ m.ev="Noon"; if(inbound){ m.vFrom=inbound[0]; m.vTo=inbound[1]; } }
+          if(m.tEnd<=arr){ m.ev="Noon"; if(inbound){ m.vFrom=inbound[0]; m.vTo=inbound[1]; } approach=m; }
           else if(m.tStart>=dep){ m.ev="Noon"; if(outbound){ m.vFrom=outbound[0]; m.vTo=outbound[1]; } if(!firstPost) firstPost=m; }
           else { m.ev="Port"; m.poc = poc? "YES":"NO"; if(!firstPort) firstPort=m; lastPortRec=m; }
         }
         if(firstPort) firstPort.meta={arr,dep,rule,flags:flags.join("+")};
-        /* report-level labels (2026-07-16): the derived window boundaries replace IN_PORT
-           in the Calculations report table */
-        if(firstPort) firstPort.role = firstPort===lastPortRec? "ARRIVAL · DEPARTURE" : "ARRIVAL";
+        /* report-level labels (2026-07-16; ARRIVAL placement corrected 2026-07-20, Aurvin):
+           the arrival INSTANT is `arr`, the boundary between the last inbound "approach" report
+           (the report whose period ENDS at arr — e.g. the MANOEUVRING report on the way in) and
+           the first at-port report. Reports are timestamped by period END, so it is the APPROACH
+           report whose own timestamp already reads the arrival time. Put the ARRIVAL label there,
+           not on the first at-port report (whose period ends later) — that way the badge lands on
+           the row that already shows the arrival instant, with NO timestamp changes and NO two
+           rows sharing a time. When there is no such approach report (the stay opens straight from
+           the EOSP marker — EOSP is never a stay member), keep ARRIVAL on the first at-port report,
+           exactly as before (locked by the RFIX self-test). This is a display-label move only:
+           `arr`/`dep`, POC, consumption attribution and the workspace rows are all unchanged. */
+        const arrRep = (approach && approach.tEnd===arr) ? approach : firstPort;
+        if(firstPort){
+          if(arrRep===firstPort){
+            firstPort.role = firstPort===lastPortRec? "ARRIVAL · DEPARTURE" : "ARRIVAL";
+          } else {
+            arrRep.role = "ARRIVAL";
+            if(firstPort===lastPortRec) firstPort.role = "DEPARTURE";   // single at-port report → it is the departure end
+          }
+        }
         if(lastPortRec && lastPortRec!==firstPort) lastPortRec.role = "DEPARTURE";
         /* Resolve ONE current-port for this whole Port Stay (2026-07-19, Aurvin, per explicit
            spec) — Arrival.CURRENT_PORT and Departure.CURRENT_PORT are, by definition, the same
@@ -1602,6 +1651,17 @@ function trPctBadge(p){
 function trMatchRow(r){
   const t = r.t;
   if(!t) return null;
+  /* 2026-07-20 (owner decision): a report's consumption covers the period ENDING at its
+     timestamp (period = since the previous report). So the matching window must be
+     tStart EXCLUSIVE, tEnd INCLUSIVE — a DEPARTURE report (t = end of the berth period)
+     matches the berth row it is leaving, and an ARRIVAL report (t = end of the sea leg)
+     matches the leg, not the port stay that starts at that instant. Before this fix the
+     match was [tStart, tEnd), which showed boundary rows the % of the FOLLOWING period. */
+  for(const row of S.rows||[]){
+    if(row.tStart && row.tEnd && t>row.tStart && t<=row.tEnd) return row;
+  }
+  /* first report of the file: no preceding period exists — fall back to the window
+     that STARTS at this timestamp so the row still gets a badge instead of "–" */
   for(const row of S.rows||[]){
     if(row.tStart && row.tEnd && t>=row.tStart && t<row.tEnd) return row;
   }
@@ -1613,10 +1673,30 @@ function trMatchRow(r){
 function trCoverage(r){
   const row = trMatchRow(r);
   if(!row) return { eu:null, uk:null, feu:null };
-  const eu = euCoverage(row)*100, uk = ukCoverage(row)*100;
+  const eu = euCoverage(row)*100;
+  /* UK ETS — use the SAME regulatory logic as the totals, at report granularity (2026-07-20,
+     Aurvin). The engine computes covUK = ukCoverage(row) × ukSchemeFraction(row, y); UK ETS
+     maritime is in force only from 1 Jul 2026 (SI 2026/392). The badge must apply
+     ukSchemeFraction to THIS REPORT'S OWN period (r.ts→r.te), NOT the aggregated row's:
+     otherwise every report inside a stay that straddles 1 Jul (e.g. an anchorage spanning
+     late June into July) inherits the whole stay's in-force status and wrongly shows 100% on
+     its June days — the bug reported here. Rules:
+       • frac === 0  (period wholly before the window, or a pre-2026 year) → UK ETS not
+         applicable to this report → dash (null), not a spatial 0%/100%.
+       • frac  >  0  → show the in-scope share = ukCoverage(row) × frac × 100, i.e. exactly the
+         totals' formula. A period straddling 1 Jul therefore shows a partial %, matching the
+         calculation. Undated reports → frac = 1 (counted in full, as in the totals).
+     Display-only: engine, totals and workspace rows are untouched. */
+  const frac = ukSchemeFraction({tStart:r.ts, tEnd:r.te}, Number(S.year)||2026);
+  const uk = frac>0 ? ukCoverage(row)*frac*100 : null;
   return { eu, uk, feu:eu };
 }
+/* 2026-07-20: coverage depends on the voyage-continuity annotations (non-call stays);
+   computeAll() sets them, but re-annotate before rendering the trace so the badges are
+   correct even if the trace renders before any recompute of S. Idempotent and cheap. */
+function trAnnotate(){ if(typeof annotateVoyageContinuity==="function") annotateVoyageContinuity(S.rows); }
 function reportTraceTable(reps){
+  trAnnotate();                                             // 2026-07-20: see trAnnotate()
   const pad="6px 12px", padV="6px";                         // compact density
   const thBase="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;vertical-align:bottom";
   const thSub="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;background:#f8fafc;padding:5px 12px;border-bottom:1px solid #e2e8f0";
@@ -2033,8 +2113,190 @@ function showFormulaSub(name){
   document.querySelectorAll("#tab-constants .fsub").forEach(d=>d.classList.toggle("on", d.id==="fsub-"+name));
   document.querySelectorAll("#tab-constants .fsubbar button").forEach(b=>b.classList.toggle("on", b.getAttribute("data-fsub")===name));
 }
+
+/* ---------- LIVE WORKED EXAMPLE ("Your ship") — 2026-07-20 ----------
+   Display-only: every value below is read from computeAll(S) (the SAME engine result the
+   Workspace cards and Calculations tab use). The only display-side arithmetic is regrouping
+   (per-fuel CO2 lines, coverage counts, headroom) — each regrouped total is asserted against
+   the engine total in runSelfTests(). No engine/derivation/coverage logic is touched. */
+const FEX_LIVE = { cii:false, euets:false, ukets:false, fueleu:false, scc:false };
+function showFormulaEx(sub, live){
+  FEX_LIVE[sub] = live;
+  const ex = document.getElementById("fex-"+sub+"-example");
+  const lv = document.getElementById("fex-"+sub+"-live");
+  if(ex) ex.style.display = live?"none":"";
+  if(lv) lv.style.display = live?"":"none";
+  const head = document.getElementById("fexhead-"+sub);
+  if(head) head.querySelectorAll("button").forEach((b,i)=>b.classList.toggle("on",(i===1)===live));
+}
+const fexToggle = (sub)=>`<span class="fex-toggle noprint" id="fexhead-${sub}"><button type="button" class="on" onclick="showFormulaEx('${sub}',false)">Example ship</button><button type="button" onclick="showFormulaEx('${sub}',true)">Your ship</button></span>`;
+
+function fexNoData(year){
+  return `<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">No activity data for ${year}</span>
+    <p>Import a file (⬆ Import data in the header) or add voyages and port stays on the <b>Workspace</b> tab — or switch the reporting year in <b>Settings</b> if your data is from another year. This walkthrough fills in with your own numbers as soon as there is activity in ${year}.</p></div></div>`;
+}
+function fexContext(R){
+  const nm = (S.ship&&S.ship.name)? esc(S.ship.name) : "This vessel";
+  const imo = (S.ship&&S.ship.imo)? " · IMO "+esc(S.ship.imo) : "";
+  let excl = "";
+  const w = (R.warnings||[]).find(x=>/row\(s\) dated outside/.test(x));
+  if(w){ const m = w.match(/^(\d+) row/); if(m) excl = ` · <b>${m[1]}</b> row(s) outside ${R.year} excluded`; }
+  return `<div class="fexcap"><b>${nm}</b>${imo} · reporting year <b>${R.year}</b>${excl}</div>`;
+}
+
+function fexLiveCII(R){
+  const c = R.cii;
+  if(!R.rowDetails.length) return fexContext(R)+fexNoData(R.year);
+  const fbt = R.summary.fuelByType||{};
+  const ids = Object.keys(fbt).filter(id=>fbt[id]>0);
+  let rows="", sumT=0;
+  for(const id of ids){
+    const f = FUEL_BY_ID[id]||{}; const t = fbt[id]; const cf = Number(f.cf)||0; const co2 = t*cf; sumT += co2;
+    rows += `<tr><td>${esc(f.name||id)}</td><td class="num">${fmtF(t,2)}</td><td class="num">${fmtF(cf,3)}</td><td class="num">${fmtF(co2,2)}</td></tr>`;
+  }
+  const override = (S.rows||[]).some(r=>(r.fuels||[]).some(fr=>fr.ciiCf!==undefined&&fr.ciiCf!==""&&fr.ciiCf!=null));
+  const cap = Number((S.ship||{}).capacity)||0;
+  let out = fexContext(R);
+  out += `<div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Fuel → CO₂</span>
+    ${ids.length?`<table class="scctable"><tr><th>Fuel</th><th class="num">tonnes</th><th class="num">Cf</th><th class="num">t CO₂</th></tr>${rows}
+      <tr><td><b>Total M</b></td><td class="num"></td><td class="num"></td><td class="num"><b>${fmtF(c.co2_t,2)}</b></td></tr></table>
+    <p>M = Σ FCⱼ × CFⱼ = <b>${fmtF(c.co2_t,2)} t CO₂</b> = ${fmtI(c.co2_t*1e6)} g.${override?` <span class="note">Some lines use a Circ.905 Cf override — the engine total above already reflects it.</span>`:""}</p>`
+    :`<p>No fuel recorded for ${R.year}.</p>`}</div></div>`;
+  out += `<div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Transport work</span>
+    ${(cap>0&&c.totalDist>0)?`<p>W = Capacity × Dt = ${fmtI(cap)} ${c.capUnit} × ${fmtI(c.totalDist)} nm = <b>${fmtI(cap*c.totalDist)} ${c.capUnit}·nm</b>.</p>`
+    :`<p>${cap>0?`Sailed distance in ${R.year} is 0 nm — add voyages with distance on the Workspace tab`:`Capacity is not set — enter it on the Settings tab`} to complete the attained-CII calculation.</p>`}</div></div>`;
+  out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Attained CII</span>
+    ${c.attained!=null?`<p>attained = M ÷ W = <b>${fmtF(c.attained,3)} gCO₂/${c.capUnit}·nm</b>.</p>`
+    :`<p>Needs both capacity and distance (above) before it can be computed.</p>`}</div></div>`;
+  out += `<div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Reference line</span>
+    <p>For ${esc(c.type)}: a = ${fmtI(c.g2.a)}, c = ${c.g2.c}. CII_ref = a × ${fmtI(c.g2.cap)}⁻ᶜ = <b>${fmtF(c.ciiRef,3)}</b>.${c.g2.note?` <span class="note">${esc(c.g2.note)}</span>`:""}</p></div></div>`;
+  out += `<div class="fstep"><div class="n">5</div><div class="body"><span class="sh">This year's requirement</span>
+    <p>Z for ${R.year} is ${c.Z}%. required = (1 − ${c.Z}/100) × ${fmtF(c.ciiRef,3)} = <b>${fmtF(c.ciiReq,3)}</b>. <span class="flag">FILL-IN</span> — the numeric Z is not in the KB.</p></div></div>`;
+  out += `<div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Rating</span>
+    ${c.rating?`<p>Boundaries: A ≤ ${fmtF(c.bounds.sup,3)} · B ≤ ${fmtF(c.bounds.low,3)} · C ≤ ${fmtF(c.bounds.up,3)} · D ≤ ${fmtF(c.bounds.inf,3)}. Attained ${fmtF(c.attained,3)} → <b style="color:${ratingColor(c.rating)}">rating ${c.rating}</b>.</p>`
+    :`<p>Rating needs the attained value (capacity + distance) first.</p>`}</div></div>`;
+  if(c.rating){
+    const nextEdge = c.rating==="A"?c.bounds.sup:c.rating==="B"?c.bounds.low:c.rating==="C"?c.bounds.up:c.rating==="D"?c.bounds.inf:null;
+    out += `<div class="ftake"><b>Takeaway:</b> ${esc(S.ship.name||"the ship")} attains ${fmtF(c.attained,3)} against a ${R.year} requirement of ${fmtF(c.ciiReq,3)} — rating <b>${c.rating}</b>.${(nextEdge!=null&&c.rating!=="E")?` Next band boundary at ${fmtF(nextEdge,3)}.`:""}</div>`;
+  }
+  return out;
+}
+
+function fexLiveETS(R){
+  const e = R.ets;
+  if(!R.rowDetails.length) return fexContext(R)+fexNoData(R.year);
+  let n100=0,n50=0,n0=0;
+  for(const d of R.rowDetails){ if(d.covEU>=1) n100++; else if(d.covEU>0) n50++; else n0++; }
+  const nonPoc = (S.rows||[]).filter(r=>r.kind==="port"&&r.poc===false).length;
+  let out = fexContext(R);
+  out += `<div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Which activity counts</span>
+    <p>Of ${R.rowDetails.length} in-year ${R.year} row(s): <b>${n100}</b> fully in EU scope (100%), <b>${n50}</b> at 50% (EEA↔non-EEA), <b>${n0}</b> outside EU scope (0%).${nonPoc?` ${nonPoc} non-port-of-call stay(s) are excluded from ETS.`:""}</p></div></div>`;
+  if(e.covered_t_co2<=0 && e.covered_t_co2e<=0){
+    out += `<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">No EU-scope emissions</span><p>All ${R.year} activity is outside EU/EEA scope, so there are no EUAs to surrender.</p></div></div>`;
+    return out;
+  }
+  out += `<div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Covered emissions</span>
+    <p>Covered CO₂ = <b>${fmtF(e.covered_t_co2,2)} t</b>${R.year>=2026?`; with CH₄+N₂O as CO₂e (${esc(e.gwp.label)}) = <b>${fmtF(e.covered_t_co2e,2)} t CO₂e</b>`:``}. Basis (${esc(e.basisLabel)}) = <b>${fmtF(e.basis_t,2)} t</b>.</p></div></div>`;
+  out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Phase-in → EUAs</span>
+    <p>EUAs = basis × phase-in = ${fmtF(e.basis_t,2)} × ${e.phase*100}% = <b>${fmt(e.euas)}</b>.</p></div></div>`;
+  out += `<div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Cost</span>
+    <p>${fmt(e.euas)} EUAs × €${fmt(S.euaPrice||0)} = <b>€${fmt(e.cost,0)}</b>.</p></div></div>`;
+  out += `<div class="ftake"><b>Takeaway:</b> ${R.year} EU ETS exposure ≈ <b>${fmt(e.euas)}</b> allowances ≈ <b>€${fmt(e.cost,0)}</b>.</div>`;
+  return out;
+}
+
+function fexLiveUKETS(R){
+  const u = R.ukets;
+  if(!u.active) return fexContext(R)+`<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">UK ETS applies from 2026</span><p>The reporting year is ${R.year}; the UK maritime scheme starts in 2026 (first period the half-year 1 Jul–31 Dec 2026). Switch the reporting year to 2026 or later in Settings to see this walkthrough.</p></div></div>`;
+  if(!R.rowDetails.length) return fexContext(R)+fexNoData(R.year);
+  let out = fexContext(R);
+  if(u.tco2e<=0){
+    out += `<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">No UK-scope activity</span><p>None of the ${R.year} activity is UK-domestic (UK→UK voyages or fuel at berth in UK ports), so there are no UKAs to surrender.</p></div></div>`;
+    return out;
+  }
+  out += `<div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Three gases</span>
+    <p>UK-scope totals: CO₂ = <b>${fmtF(u.co2,3)} t</b> · CH₄ = <b>${fmtF(u.ch4,4)} t</b> · N₂O = <b>${fmtF(u.n2o,5)} t</b> (any methane slip already moved onto the CH₄ line).</p></div></div>`;
+  out += `<div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Combine at GWP 28 / 265</span>
+    <p>ME_ETS = CO₂ + 28×CH₄ + 265×N₂O = ${fmtF(u.co2,3)} + ${fmtF(28*u.ch4,3)} + ${fmtF(265*u.n2o,3)} = <b>${fmtF(u.tco2e,3)} t CO₂e</b>.</p></div></div>`;
+  out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Cost</span>
+    <p>${fmtF(u.tco2e,2)} UKAs × ${fmt(S.ukaPrice||0)} = <b>${fmt(u.cost,0)}</b> (price as set in Settings).</p></div></div>`;
+  if(R.year===2026) out += `<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">2026 is a half-year</span><p>Only activity on/after 1 Jul 2026 is in UK scope; the first surrender is combined with 2027.</p></div></div>`;
+  out += `<div class="ftake"><b>Takeaway:</b> ${R.year} UK ETS ≈ <b>${fmtF(u.tco2e,2)} tCO₂e</b> of allowances.</div>`;
+  return out;
+}
+
+function fexLiveFuelEU(R){
+  const f = R.fueleu;
+  if(!R.rowDetails.length) return fexContext(R)+fexNoData(R.year);
+  let out = fexContext(R);
+  if(!(f.E_total>0) || f.ghgie==null){
+    out += `<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">No FuelEU-scope energy</span><p>All ${R.year} activity is outside EU/EEA scope, so there is no in-scope energy and no FuelEU balance to compute.</p></div></div>`;
+    return out;
+  }
+  out += `<div class="fstep"><div class="n">1–2</div><div class="body"><span class="sh">Energy in scope</span>
+    <p>Fuel energy in scope = <b>${fmtF(f.E_fuel/1e6,3)} ×10⁶ MJ</b>${f.opsMJ>0?` + OPS ${fmtF(f.opsMJ/1e6,3)} ×10⁶ MJ`:""} → total <b>${fmtF(f.E_total/1e6,3)} ×10⁶ MJ</b>. Allocation: ${f.allocMethod==="optimal"?"optimal (cleanest-first)":"proportional"}.</p></div></div>`;
+  const al = (f.terms||[]).filter(t=>t.E>0);
+  if(al.length){
+    let tr="";
+    for(const t of al) tr += `<tr><td>${esc(t.name)}</td><td class="num">${fmtF(t.E/1e6,3)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td></tr>`;
+    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity of the allocated mix</span>
+      <table class="scctable"><tr><th>Fuel × consumer</th><th class="num">Alloc ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>${tr}</table>
+      <p>Energy-weighted GHGIE = <b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b>${f.fwind<1?` (incl. wind factor ${f.fwind})`:""}. Full allocation table on the 🧮 Calculations tab.</p></div></div>`;
+  } else {
+    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity</span><p>GHGIE = <b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b>.</p></div></div>`;
+  }
+  out += `<div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Target</span>
+    <p>${R.year} target = 91.16 × (1 − ${f.targetPct}%) = <b>${fmtF(f.target,5)} gCO₂eq/MJ</b>.</p></div></div>`;
+  out += `<div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Compliance balance</span>
+    <p>CB = (target − GHGIE) × E = (${fmtF(f.target,3)} − ${fmtF(f.ghgie,3)}) × ${fmtF(f.E_total/1e6,3)}×10⁶ = <b>${fmt(f.cb/1e6)} t CO₂eq</b> (${f.cb<0?"deficit":"surplus"}).</p></div></div>`;
+  const flex=[];
+  if(f.banked) flex.push(`banked in ${fmt(f.banked/1e6)} t`);
+  if(f.poolCB) flex.push(`pool partner ${fmt(f.poolCB/1e6)} t`);
+  if(f.borrowUsed) flex.push(`borrowed ${fmt(f.borrowUsed/1e6)} t (repay ${fmt(f.borrowDebt/1e6)} t)`);
+  if(flex.length) out += `<div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Flexibility applied</span><p>${flex.join("; ")}. Balance after flexibility = <b>${fmt((f.cbFinal||0)/1e6)} t CO₂eq</b>.</p></div></div>`;
+  if(f.penalty>0){
+    out += `<div class="fstep"><div class="n">${flex.length?7:6}</div><div class="body"><span class="sh">Penalty</span>
+      <p>penalty = |CB| ÷ (GHGIE × 41,000) × 2,400${f.mult>1?` × ${f.mult} (consecutive deficit years)`:""} = <b>€${fmtI(f.penalty)}</b>.</p></div></div>`;
+    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU intensity ${fmtF(f.ghgie,3)} vs target ${fmtF(f.target,3)} → penalty <b>€${fmtI(f.penalty)}</b>.</div>`;
+  } else if(f.surplusValue>0){
+    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU is compliant (intensity ${fmtF(f.ghgie,3)} ≤ target ${fmtF(f.target,3)}); surplus worth ≈ <b>€${fmtI(f.surplusValue)}</b> if banked or pooled.</div>`;
+  } else {
+    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU balance is essentially zero — no penalty.</div>`;
+  }
+  return out;
+}
+
+function fexLiveSCC(R){
+  const s = R.scc;
+  if(!R.rowDetails.length) return fexContext(R)+fexNoData(R.year);
+  const v = s.voyages||[];
+  if(!v.length || s.weighted==null){
+    return fexContext(R)+`<div class="fstep"><div class="n">·</div><div class="body"><span class="sh">No transport work yet</span><p>SCC needs voyages that have BOTH cargo (t) and distance (nm). None of the ${R.year} voyages carry both, so no intensity can be computed. Add cargo/distance on the Workspace tab or import a file that includes them.</p></div></div>`;
+  }
+  let out = fexContext(R);
+  const show = v.slice(0,10);
+  let tr="";
+  for(const x of show) tr += `<tr><td>${esc(x.label)}</td><td class="num">${fmtF(x.co2,2)}</td><td class="num">${fmtI(x.tw)}</td><td class="num">${fmtF(x.intensity,3)}</td></tr>`;
+  out += `<div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Each voyage's intensity</span>
+    <table class="scctable"><tr><th>Voyage</th><th class="num">t CO₂</th><th class="num">t·nm</th><th class="num">g/t·nm</th></tr>${tr}</table>
+    ${v.length>10?`<p class="note">… and ${v.length-10} more voyage(s) — all counted in the weighted figure below.</p>`:""}</div></div>`;
+  out += `<div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Weighted intensity</span>
+    <p>weighted = Σ CO₂ ÷ Σ (cargo×distance) = ${fmtF(s.totCO2,2)} t ÷ ${fmtI(s.totTW)} t·nm = <b>${fmtF(s.weighted,3)} g/t·nm</b>.</p></div></div>`;
+  const reqMin = Number(S.sccReqMin)||null, reqStr = Number(S.sccReqStriving)||null;
+  if(reqMin||reqStr){
+    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span>
+      <p>${reqMin?`vs Minimum ${reqMin}: Δ = <b>${fmtF(s.deltaMin,1)}%</b>`:""}${(reqMin&&reqStr)?" · ":""}${reqStr?`vs Striving ${reqStr}: Δ = <b>${fmtF(s.deltaStr,1)}%</b>`:""}. Negative = below the line (aligned).</p></div></div>`;
+    const d = s.deltaMin!=null?s.deltaMin:s.deltaStr;
+    out += `<div class="ftake"><b>Takeaway:</b> the ${R.year} weighted intensity is ${fmtF(s.weighted,3)} g/t·nm, ${d<0?"below":"above"} the required line by ${fmtF(Math.abs(d),1)}%.</div>`;
+  } else {
+    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span><p>Enter the required 'Minimum' / 'Striving' intensities on the Workspace SCC card to see the alignment Δ.</p></div></div>`;
+  }
+  return out;
+}
+
 function renderConstants(){
   const el = document.getElementById("tab-constants");
+  const R = computeAll(S);   // live "Your ship" walkthrough reads the SAME engine result as the Calculations tab
   el.innerHTML = `
   <div class="fsubbar">
     <button class="on" data-fsub="cii" onclick="showFormulaSub('cii')">IMO CII</button>
@@ -2073,7 +2335,9 @@ function renderConstants(){
             <p>Four multipliers <b>exp(d1..d4)</b> (again published per ship type) set the boundaries around the required value. If the attained CII from step 3 falls under the first boundary the ship is rated <b>A</b>, under the next <b>B</b>, and so on down to <b>E</b>. C means "meeting the requirement"; three years at D, or one year at E, forces a corrective action plan.</p></div></div>
         </div>
         <div class="fcol fex">
-          <div class="fcol-head">Worked example — bulk carrier, 60,000 DWT, year 2026</div>
+          <div class="fcol-head">Worked example ${fexToggle('cii')}</div>
+          <div id="fex-cii-example">
+          <div class="fexcap">bulk carrier, 60,000 DWT, year 2026</div>
           <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Fuel → CO₂</span>
             <p>The ship burned <b>5,000 t of HFO</b> (carbon factor 3.114). M = 5,000 × 3.114 = <b>15,570 t CO₂</b> = 15,570,000,000 g.</p></div></div>
           <div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Transport work</span>
@@ -2087,6 +2351,8 @@ function renderConstants(){
           <div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Rating</span>
             <p>Boundaries: A ≤ 3.874 · B ≤ 4.234 · C ≤ 4.774 · D ≤ 5.315. The attained 4.718 is above the B limit but under the C limit → <b>rating C</b>, sitting close to the C/D boundary (4.774). A small efficiency slip would tip it into D.</p></div></div>
           <div class="ftake"><b>Takeaway:</b> this ship attains 4.718 against a 2026 requirement of 4.504 — it is a <b>C</b>, just inside the band, with little headroom before the C/D line at 4.774.</div>
+          </div>
+          <div id="fex-cii-live" style="display:none">${fexLiveCII(R)}</div>
         </div>
       </div>
       <p class="fsrc"><b>Where this comes from:</b> attained CII &amp; M/W — MEPC.352(78) G1 §4, Eq. (1)–(3), chunk <b>imo-g1-s4</b> (CFⱼ per MEPC.308(73)/Annex II; optional Circ.905 CF override, chunk <b>imo-circ905-annex</b>). Reference line a/c — MEPC.353(78) G2 §3.2, Table 1, chunk <b>imo-g2-s4</b>. Reduction factor Z — MARPOL Annex VI reg 28.4, chunk <b>imo-a6-reg28</b> (numeric Z values <span class="flag">FILL-IN</span>, not in KB: 2023–26 per MEPC.338(76); 2027–30 per MEPC 83). Rating boundaries exp(d1..d4) — MEPC.354(78) G4 §4.6, Table 1, chunk <b>imo-g4-s4</b>. Prior compact example: required 10 → 8.6/9.4/10.6/11.8, attained 9 → "B".</p>
@@ -2117,7 +2383,9 @@ function renderConstants(){
             <p>One <b>EUA</b> (EU Allowance) covers one tonne of CO₂e. The operator buys and surrenders that many allowances; the cost is simply the allowance count times the market EUA price you set in Settings.</p></div></div>
         </div>
         <div class="fcol fex">
-          <div class="fcol-head">Worked example — three activities, 2026, AR5 (28/265), EUA €80</div>
+          <div class="fcol-head">Worked example ${fexToggle('euets')}</div>
+          <div id="fex-euets-example">
+          <div class="fexcap">three activities, 2026, AR5 (28/265), EUA €80</div>
           <div class="fstep"><div class="n">1–3</div><div class="body"><span class="sh">Legs, coverage and CO₂e</span>
             <p><b>Intra-EEA leg</b> (Rotterdam→Hamburg), 100 t MGO, 100% covered → 320.6 t CO₂, and with CH₄+N₂O = <b>325.51 t CO₂e</b>.</p>
             <p><b>EEA↔Singapore leg</b>, 400 t HFO, 50% covered → only 200 t counts → 622.8 t CO₂ = <b>632.62 t CO₂e</b>.</p>
@@ -2127,6 +2395,8 @@ function renderConstants(){
           <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Cost</span>
             <p>1,023.23 EUAs × €80 = <b>€81,858.56</b>.</p></div></div>
           <div class="ftake"><b>Takeaway:</b> the Singapore leg burned the most fuel yet contributes the least, because 50% coverage halves it — scope, not just fuel, drives the bill. Total exposure: 1,023 allowances ≈ €81,859.</div>
+          </div>
+          <div id="fex-euets-live" style="display:none">${fexLiveETS(R)}</div>
         </div>
       </div>
       <p class="fsrc"><b>Where this comes from:</b> scope 100%/50% — Directive 2003/87/EC Art 3ga, chunk <b>euets-art3ga</b>. Phase-in 40/70/100% — Art 3gb, chunk <b>euets-art3gb</b>. Emission factors per Regulation (EU) 2015/757 (= Annex II Cf values) — chunks <b>mrv-annexi/ii</b>, <b>fueleu-annexii</b>. From 2026 CH₄+N₂O as CO₂e with GWP ${euetsGwp(S).ch4}/${euetsGwp(S).n2o} (${euetsGwp(S).label}, user-selected in Settings) <span class="flag">FILL-IN — amended MRV GWPs not in KB</span>.</p>
@@ -2158,7 +2428,9 @@ CO₂ = Σ (Mᵢ − Mᵢ,NC) × EF_CO2 · CH₄ = Σ (Mᵢ − Mᵢ,NC) × EF_C
             <p>One <b>UKA</b> (UK Allowance) covers one tonne of CO₂e. No free allocation applies to maritime, so the operator buys them all.</p></div></div>
         </div>
         <div class="fcol fex">
-          <div class="fcol-head">Worked example — UK coastal voyage, 100 t LNG + 10 t MGO at berth, UKA €50</div>
+          <div class="fcol-head">Worked example ${fexToggle('ukets')}</div>
+          <div id="fex-ukets-example">
+          <div class="fexcap">UK coastal voyage, 100 t LNG + 10 t MGO at berth, UKA €50</div>
           <div class="fstep"><div class="n">1–2</div><div class="body"><span class="sh">Scope and gases</span>
             <p>Both the coastal voyage and the berth stay are UK-domestic → 100% in scope. The LNG is burned in a medium-speed Otto engine with <b>3.1% methane slip</b>.</p></div></div>
           <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Slip splits the LNG</span>
@@ -2169,6 +2441,8 @@ CO₂ = Σ (Mᵢ − Mᵢ,NC) × EF_CO2 · CH₄ = Σ (Mᵢ − Mᵢ,NC) × EF_C
           <div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Cost</span>
             <p>388.65 UKAs × €50 = <b>€19,432.53</b>.</p></div></div>
           <div class="ftake"><b>Takeaway:</b> the 3.1 t of methane slip adds 86.8 t CO₂e — about <b>22%</b> of the whole UK ETS bill — even though it is a tiny fraction of the fuel mass. On LNG ships, slip is where the cost hides.</div>
+          </div>
+          <div id="fex-ukets-live" style="display:none">${fexLiveUKETS(R)}</div>
         </div>
       </div>
       <p class="fsrc"><b>Where this comes from:</b> ME_ETS structure &amp; GWP 28/265 — UK ETS Order Schedule 2A para 35 + Table C1, chunk <b>ukets-sch2a-p35</b> (verbatim). Emission factors and slip Cⱼ — Table C2, chunk <b>ukets-sch2a-p36</b>. Scope (UK→UK voyages + UK in-port, ships ≥5,000 GT) — chunks <b>ukets-sch2a-p2</b>, <b>ukets-sch2a-p7</b>.</p>
@@ -2206,7 +2480,9 @@ CO₂ = Σ (Mᵢ − Mᵢ,NC) × EF_CO2 · CH₄ = Σ (Mᵢ − Mᵢ,NC) × EF_C
             <p>This calculator adds a decision KPI (<b>not</b> part of the FuelEU regulation): the share <b>x</b> of in-scope energy you would swap to a cleaner substitute fuel so the balance lands exactly at zero — solved exactly on the Annex I formula (including RWD and slip, by bisection over 80 iterations) — and whether that swap costs more or less than the penalty it avoids.</p></div></div>
         </div>
         <div class="fcol fex">
-          <div class="fcol-head">Worked example — 970 t HFO + 30 t bio-diesel, all in-EEA, 2026</div>
+          <div class="fcol-head">Worked example ${fexToggle('fueleu')}</div>
+          <div id="fex-fueleu-example">
+          <div class="fexcap">970 t HFO + 30 t bio-diesel, all in-EEA, 2026</div>
           <div class="fstep"><div class="n">1–2</div><div class="body"><span class="sh">Energy used</span>
             <p>HFO: 970 t × 0.0405 MJ/g = <b>39,285,000 MJ</b>. Bio-diesel: 30 t × 0.037 = <b>1,110,000 MJ</b>. Total <b>E = 40,395,000 MJ</b>.</p></div></div>
           <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity</span>
@@ -2220,6 +2496,8 @@ CO₂ = Σ (Mᵢ − Mᵢ,NC) × EF_CO2 · CH₄ = Σ (Mᵢ − Mᵢ,NC) × EF_C
           <div class="fstep"><div class="n">7</div><div class="body"><span class="sh">What flexibility would do</span>
             <p><b>Banking:</b> carrying in a ≥13.60 t surplus from last year lifts CB to ≥ 0 → penalty <b>€0</b>. <b>Borrowing:</b> borrow the 13.60 t now (well under the 72.18 t limit), repay 14.96 t next year → <b>€0</b> this year. <b>Pooling:</b> a partner ship contributing +20 t makes the pool +6.4 t → <b>€0</b> for the pool.</p></div></div>
           <div class="ftake"><b>Takeaway:</b> a small intensity miss (89.67 vs 89.34) on 1,000 t of fuel is an €8,875 penalty — or nothing at all if banking, borrowing or pooling covers the 13.6 t deficit.</div>
+          </div>
+          <div id="fex-fueleu-live" style="display:none">${fexLiveFuelEU(R)}</div>
         </div>
       </div>
       <p class="fsrc"><b>Where this comes from:</b> intensity Eq. 1 &amp; 2, slip, RWD, f_wind — Regulation (EU) 2023/1805 Annex I, chunk <b>fueleu-annexi</b> (verbatim; GWP CO₂ 1 / CH₄ 25 / N₂O 298 per Directive 2018/2001 Annex V C(4)). Default LCV/WtT/Cf/Cslip — Annex II, chunk <b>fueleu-annexii</b> (biofuel WtT = E − Cf_CO2/LCV, col. 4(a); RFNBO WtT from certificate, col. 4(b)). Target 91.16 &amp; schedule — Art 4(2), chunk <b>fueleu-art4</b>. Compliance balance &amp; penalty — Annex IV, chunk <b>fueleu-annexiv</b>; consecutive-deficit multiplier — Art 23(2), chunk <b>fueleu-art23</b>; rounding (intermediates unrounded, final penalty to nearest EUR) — chunk <b>essf-ws1-1-3-5</b>. Banking / borrowing / pooling — Art 20(1), Art 20(2), Art 21, chunks <b>fueleu-art20</b>, <b>fueleu-art21</b>. Example plausibility anchored against the ESSF WS1 worked examples (chunks <b>essf-ws1-1-*</b>, examples 1–3).</p>
@@ -2248,7 +2526,9 @@ pooling: Σ pool balances ≥ 0 ⇒ no penalty for the pool (Art 21)</div>
             <p><b>Δ</b> (delta) is the percentage the fleet sits above or below the <b>required</b> intensity <b>r</b> for the year. Negative = below the line = aligned / ahead; positive = above the line = behind. The required-intensity trajectory tables are published by the SCC secretariat and are entered here as user inputs.</p></div></div>
         </div>
         <div class="fcol fex">
-          <div class="fcol-head">Worked example — two voyages, required 5.0 g/t·nm</div>
+          <div class="fcol-head">Worked example ${fexToggle('scc')}</div>
+          <div id="fex-scc-example">
+          <div class="fexcap">two voyages, required 5.0 g/t·nm</div>
           <div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Each voyage's intensity</span>
             <p><b>Voyage A</b>: 300 t HFO → 934.2 t CO₂; 50,000 t cargo × 5,000 nm = 250,000,000 t·nm → intensity = <b>3.737 g/t·nm</b>.</p>
             <p><b>Voyage B</b>: 400 t HFO → 1,245.6 t CO₂; 30,000 t × 8,000 nm = 240,000,000 t·nm → intensity = <b>5.190 g/t·nm</b> (less cargo per mile, so higher intensity).</p></div></div>
@@ -2257,6 +2537,8 @@ pooling: Σ pool balances ≥ 0 ⇒ no penalty for the pool (Art 21)</div>
           <div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span>
             <p>Δ = (4.449 − 5.0) ÷ 5.0 × 100 = <b>−11.0%</b> versus the 5.0 required line (and +11.2% against a stricter 4.0 "striving" line).</p></div></div>
           <div class="ftake"><b>Takeaway:</b> together the two voyages sit <b>11% below</b> the 5.0 g/t·nm requirement — aligned — even though Voyage B on its own is above it. Weighting by transport work is what lets the heavy, efficient Voyage A carry the result.</div>
+          </div>
+          <div id="fex-scc-live" style="display:none">${fexLiveSCC(R)}</div>
         </div>
       </div>
       <p class="fsrc"><b>Where this comes from:</b> intensity &amp; alignment Eq. 4 / Eq. 5 — SCC Technical Guidance 2025 §2.5, chunk <b>scc-2-5-calculating-alignment-at-the-vessel-</b>; decarbonisation trajectory definition §2.4 / Appendix 4 — chunks <b>scc-2-4-decarbonisation-trajectory</b>, <b>scc-appendix-4</b>. Annual required-intensity tables are published by the SCC secretariat and are user inputs here.</p>
@@ -2600,11 +2882,45 @@ function runSelfTests(){
     const pocState = poc => ({year:2026,ship:{typeId:"bulk",capacity:45000},rows:[{kind:"port",zone:"EEA",poc,fuels:[{fuelId:"MDO",tonnes:10}]}]});
     const rON=computeAll(pocState(true)), rOFF=computeAll(pocState(false)), rDEF=computeAll(pocState(undefined));
     ckT("POC on: EEA berth in EU ETS + FuelEU scope", rON.ets.basis_t>31 && rON.fueleu.E_total>0);
-    ckT("POC off: EEA berth OUT of EU ETS + FuelEU scope", rOFF.ets.basis_t===0 && rOFF.fueleu.E_total===0);
+    ckT("POC off, LONE stay (voyage endpoints unknowable): EEA berth OUT of EU ETS + FuelEU scope", rOFF.ets.basis_t===0 && rOFF.fueleu.E_total===0);
     ckT("POC default (undefined) counts as a call", rDEF.ets.basis_t===rON.ets.basis_t);
     ckT("POC off: CII still counts the fuel", Math.abs(rOFF.cii.co2_t - rON.cii.co2_t)<1e-9 && rOFF.cii.co2_t>30);
     const rUK=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:[{kind:"port",zone:"UK",poc:false,fuels:[{fuelId:"MDO",tonnes:10}]}]});
-    ckT("POC off: UK berth OUT of UK ETS scope", rUK.ukets.tco2e===0);
+    ckT("POC off, LONE stay: UK berth OUT of UK ETS scope", rUK.ukets.tco2e===0);
+    /* ---- voyage continuity across non-call stays (2026-07-20 owner decision):
+       a poc:false stay does not end the voyage — the stay AND the legs either side are
+       scoped last-POC → next-POC (euets-art3ga port-of-call definition) ---- */
+    const vcRows=[ {kind:"port", zone:"EEA", poc:true,  fuels:[]},
+                   {kind:"voyage", from:"EEA", to:"EEA", dist:100, fuels:[]},   // into the anchorage
+                   {kind:"port", zone:"EEA", poc:false, fuels:[]},              // anchorage, no call
+                   {kind:"voyage", from:"EEA", to:"OTHER", dist:100, fuels:[]}, // onwards to non-EU
+                   {kind:"port", zone:"OTHER", poc:true, fuels:[]} ];
+    annotateVoyageContinuity(vcRows);
+    ck("VOYCONT leg INTO a non-call EEA anchorage bound for non-EU = 50% (was 100%)", euCoverage(vcRows[1]), 0.5, 1e-9);
+    ck("VOYCONT non-call EEA anchorage fuel rides the EU→non-EU voyage = 50% (was 0%)", euCoverage(vcRows[2]), 0.5, 1e-9);
+    ck("VOYCONT leg out of the anchorage unchanged = 50%", euCoverage(vcRows[3]), 0.5, 1e-9);
+    ck("VOYCONT POC stays keep at-berth scope (EEA 100%, non-EU 0%)", euCoverage(vcRows[0])+euCoverage(vcRows[4]), 1, 1e-9);
+    const vcUK=[ {kind:"voyage", from:"UK", to:"UK", fuels:[]},
+                 {kind:"port", zone:"UK", poc:false, fuels:[]},
+                 {kind:"voyage", from:"UK", to:"UK", fuels:[]} ];
+    annotateVoyageContinuity(vcUK);
+    ck("VOYCONT UK: non-call UK stay mid UK→UK voyage = 100% UK ETS (was 0%)", ukCoverage(vcUK[1]), 1, 1e-9);
+    const vcAdj=[ {kind:"voyage", from:"EEA", to:"EEA", fuels:[]},
+                  {kind:"voyage", from:"EEA", to:"OTHER", fuels:[]} ];   // leg-to-leg, no stay row: boundary is a call by default
+    annotateVoyageContinuity(vcAdj);
+    ck("VOYCONT chain does NOT leak across an implicit call (leg-to-leg, no stay row)", euCoverage(vcAdj[0]), 1, 1e-9);
+    /* trace badge boundary matching (2026-07-20): a report's badge must reflect the
+       period ENDING at its timestamp — tStart exclusive, tEnd inclusive */
+    (function(){
+      const keep=S.rows;
+      S.rows=[ {kind:"port", zone:"EEA", tStart:"2026-03-01T00:00", tEnd:"2026-03-02T00:00"},
+               {kind:"voyage", from:"EEA", to:"OTHER", tStart:"2026-03-02T00:00", tEnd:"2026-03-03T00:00"} ];
+      const dep=trMatchRow({t:"2026-03-02T00:00"}), arr=trMatchRow({t:"2026-03-03T00:00"}), first=trMatchRow({t:"2026-03-01T00:00"});
+      ckT("TRACE badge: DEPARTURE-instant report matches the berth it leaves, not the next leg", dep===S.rows[0]);
+      ckT("TRACE badge: ARRIVAL-instant report matches the sea leg, not the next stay", arr===S.rows[1]);
+      ckT("TRACE badge: very first report falls back to the window starting at it", first===S.rows[0]);
+      S.rows=keep;
+    })();
   }catch(e){ fail++; out.push("FAIL  LNG-class/POC tests threw: "+e.message); }
   /* ---- MDA import fixtures (added 2026-07-15 with the native MDA import) ---- */
   try{
@@ -2776,6 +3092,23 @@ function runSelfTests(){
     ckT("Year split note reported", oy.notes.some(n=>/year boundary/.test(n)));
     const c25=computeAll({year:2025,ship:{typeId:"bulk",capacity:45000},rows:oy.rows}), c26=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:oy.rows});
     ckT("Reporting-year selector: 2025 sees 150 nm, 2026 sees 100 nm", Math.abs(c25.summary.dist-150)<0.2 && Math.abs(c26.summary.dist-100)<0.2);
+    /* UK ETS report-exact 1 Jul 2026 split (2026-07-20, Aurvin): a UK↔UK leg straddling 1 Jul
+       with NON-uniform burn — 90 t before 1 Jul, 10 t across the cutoff (⅔ of that 10 t after).
+       Report-exact in-scope share = (10×⅔)/100 ≈ 0.067; the old leg-level time-proration would
+       have said ≈0.5. Proves the calc now uses actual per-report consumption, matching the badges. */
+    const ukCSV="Date_UTC,Time_UTC,Voyage_From,Voyage_To,Event,Distance,Cargo_Mt,ME_Consumption_HFO\n"+
+      "2026-06-29,00:00,GBSOU,GBLIV,Departure,0,5000,0\n"+
+      "2026-06-30,00:00,GBSOU,GBLIV,Noon,100,5000,90\n"+       // 29→30 Jun: wholly before 1 Jul
+      "2026-07-03,00:00,GBSOU,GBLIV,Arrival,100,5000,10\n";    // 30 Jun→3 Jul: ⅔ after 1 Jul
+    const uo=parseOVD(ukCSV);
+    const uleg=uo.rows.find(r=>r.kind==="voyage");
+    ckT("UK ETS report-exact: straddling leg ukInFrac from actual burn (~0.067), not time (~0.5)",
+        uleg && Math.abs(uleg.ukInFrac-0.0667)<0.006 && ukSchemeFraction(uleg,2026)>0.4);
+    const ukFull=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},
+                    rows:[{kind:"voyage",from:"UK",to:"UK",dist:200,cargo:5000,fuels:[{fuelId:"HFO",tonnes:100}]}]}).ukets.tco2e;
+    const ukRE=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:uo.rows}).ukets.tco2e;
+    ckT("UK ETS total scales by the report-exact share (≈ full×0.067), not time (full×0.5)",
+        Math.abs(ukRE - ukFull*0.0667) < ukFull*0.02);
     /* MDA per-machine columns + raw report retention */
     const MH=["DATE_TIME_GMT","REPORT_TYPE","OPERATING_CONDITION","FUEL_CONSUMPTION","MAIN_ENGINE_CONSUMPTION","AUXILIARY_ENGINE_CONSUMPTION","BOILER_CONSUMPTION","FUEL_ROB","LATITUDE","LONGITUDE","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"];
     const MFIX=[MH,
@@ -2814,6 +3147,39 @@ function runSelfTests(){
         inport.length===2 && reportTypeLabel(inport[0])==="ARRIVAL" && reportTypeLabel(inport[1])==="DEPARTURE");
     ckT("reports carry CURRENT_PORT / COUNTRY / REGION for the trace table",
         inport[0].portN==="Antwerp" && inport[0].ctry==="Belgium" && inport[0].regn==="North Europe");
+    /* ARRIVAL badge lands on the inbound APPROACH report (2026-07-20, Aurvin): EOSP → MANOEUVRING
+       (approach, ends at the arrival instant) → AT_ANCHOR (first at-port) → AT_ANCHOR → SOSP.
+       No cargo ⇒ Case B AT_ANCHOR ladder ⇒ arr = first anchor .tStart = the manoeuvring .tEnd,
+       so the MANOEUVRING report (whose timestamp already reads the arrival instant) gets ARRIVAL,
+       the first anchor report is a plain IN_PORT, and the last anchor report is DEPARTURE — no row
+       is retimed and no two rows share a timestamp. */
+    const AFIX=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE","CURRENT_PORT","CURRENT_COUNTRY","CURRENT_REGION"],
+      ["2026-04-01 06:00","2026-04-01 00:00","2026-04-01 06:00","ARRIVAL-EOSP","","","",'{"MDO": 1}',"10","5000","SGSIN","DKSKA","DKSKA","Skagen","Denmark","North Europe"],
+      ["2026-04-01 09:00","2026-04-01 06:00","2026-04-01 09:00","IN_PORT","MANOEUVRING","","FALSE",'{"MDO": 0.2}',"0","5000","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-01 20:00","2026-04-01 09:00","2026-04-01 20:00","IN_PORT","AT_ANCHOR","AWAITING_ORDERS","FALSE",'{"MDO": 0.3}',"0","5000","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-02 06:00","2026-04-01 20:00","2026-04-02 06:00","IN_PORT","AT_ANCHOR","AWAITING_ORDERS","FALSE",'{"MDO": 0.3}',"0","5000","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-02 10:00","2026-04-02 06:00","2026-04-02 10:00","DEPARTURE-SOSP","MANOEUVRING","","",'{"MDO": 0.2}',"2","5000","DKSKA","","NLRTM","","",""]];
+    const ma=mdaToOVD(AFIX, 20000);
+    const ipa=ma.reports.filter(r=>r.rt==="IN_PORT");
+    ckT("ARRIVAL badge on the approach (MANOEUVRING) report, first at-port plain, last DEPARTURE — no retime, no duplicate time",
+        ipa.length===3 && ipa[0].oc==="MANOEUVRING" && reportTypeLabel(ipa[0])==="ARRIVAL"
+        && reportTypeLabel(ipa[1])==="IN_PORT" && reportTypeLabel(ipa[2])==="DEPARTURE");
+    /* Reports-tab UK ETS badge uses the engine's own scheme-window logic per REPORT (2026-07-20,
+       Aurvin): one UK↔UK stay straddling 1 Jul 2026 — a June report is dash (not applicable), a
+       report straddling 1 Jul shows the time-pro-rated in-scope % (matching the totals), and a
+       July report shows 100%. Guards the granularity bug where June days inside a straddling stay
+       showed 100%. */
+    {
+      const _rows=S.rows, _year=S.year;
+      S.year=2026;
+      S.rows=[{kind:"voyage",from:"UK",to:"UK",tStart:"2026-06-01T00:00",tEnd:"2026-08-03T00:00"}];
+      const cBefore  =trCoverage({t:"2026-06-02T00:00",ts:"2026-06-01T00:00",te:"2026-06-02T00:00"});
+      const cStraddle=trCoverage({t:"2026-07-01T12:00",ts:"2026-06-30T12:00",te:"2026-07-01T12:00"});
+      const cAfter   =trCoverage({t:"2026-08-02T00:00",ts:"2026-08-01T00:00",te:"2026-08-02T00:00"});
+      S.rows=_rows; S.year=_year;
+      ckT("UK ETS reports badge: June dash, 1 Jul straddle 50%, July 100% (same logic as totals)",
+          cBefore.uk===null && Math.abs(cStraddle.uk-50)<0.01 && cAfter.uk===100);
+    }
     /* async tail: write an xlsx with our offline writer, read it back with the app's own reader */
     (async ()=>{
       const el2=document.getElementById("testout");
@@ -2852,6 +3218,51 @@ function runSelfTests(){
     ckT("UK ETS gate: straddling-row warning notes time-pro-ration",
         computeAll(ukDated("2026-06-29T00:00","2026-07-03T00:00",2026)).warnings.some(w=>/time-pro-rated/.test(w)));
   }catch(e){ fail++; out.push("FAIL  UK ETS currency tests threw: "+e.message); }
+
+  /* ---- Live worked example ("Your ship") panel builders — display-only, must mirror the engine ---- */
+  try{
+    const Ssave = (typeof S!=="undefined") ? S : null;
+    /* Fixture with EU + UK + FuelEU + CII + SCC all active, plus a machinery-split-free LNG line. */
+    const fx = { year:2026, ship:{typeId:"bulk",capacity:60000,name:"MV Test",imo:"9999999"},
+                 euaPrice:80, ukaPrice:50, arSet:"AR5",
+                 rows:[
+                   {kind:"voyage",from:"EEA",to:"EEA",dist:5000,cargo:50000,tStart:"2026-02-01T00:00",tEnd:"2026-02-05T00:00",fuels:[{fuelId:"HFO",tonnes:970},{fuelId:"BDSL",tonnes:30}]},
+                   {kind:"voyage",from:"UK",to:"UK",dist:500,cargo:20000,tStart:"2026-08-01T00:00",tEnd:"2026-08-03T00:00",fuels:[{fuelId:"MDO",tonnes:40}]}
+                 ] };
+    S = fx;
+    const Rx = computeAll(S);
+    /* CII: per-fuel display CO2 lines must sum to the engine total co2_t */
+    let ciiSum=0; const fbt=Rx.summary.fuelByType||{};
+    for(const id of Object.keys(fbt)){ const f=FUEL_BY_ID[id]||{}; ciiSum += (fbt[id]||0)*(Number(f.cf)||0); }
+    ck("Live CII: per-fuel CO2 lines sum = engine co2_t", ciiSum, Rx.cii.co2_t, 1e-6);
+    const cii=fexLiveCII(Rx);
+    ckT("Live CII panel: contains attained value", cii.indexOf(fmtF(Rx.cii.attained,3))>=0);
+    ckT("Live CII panel: contains required value", cii.indexOf(fmtF(Rx.cii.ciiReq,3))>=0);
+    ckT("Live CII panel: no NaN", cii.indexOf("NaN")<0);
+    ckT("Live CII panel: no undefined", cii.indexOf("undefined")<0);
+    const ets=fexLiveETS(Rx);
+    ckT("Live ETS panel: contains EUAs figure", ets.indexOf(fmt(Rx.ets.euas))>=0);
+    ckT("Live ETS panel: no NaN/undefined", ets.indexOf("NaN")<0 && ets.indexOf("undefined")<0);
+    const uke=fexLiveUKETS(Rx);
+    ckT("Live UK ETS panel: contains tCO2e figure", uke.indexOf(fmtF(Rx.ukets.tco2e,3))>=0);
+    ckT("Live UK ETS panel: no NaN/undefined", uke.indexOf("NaN")<0 && uke.indexOf("undefined")<0);
+    const feu=fexLiveFuelEU(Rx);
+    ckT("Live FuelEU panel: contains GHGIE (5dp)", feu.indexOf(fmtF(Rx.fueleu.ghgie,5))>=0);
+    ckT("Live FuelEU panel: no NaN/undefined", feu.indexOf("NaN")<0 && feu.indexOf("undefined")<0);
+    const scc=fexLiveSCC(Rx);
+    ckT("Live SCC panel: contains weighted intensity", scc.indexOf(fmtF(Rx.scc.weighted,3))>=0);
+    ckT("Live SCC panel: no NaN/undefined", scc.indexOf("NaN")<0 && scc.indexOf("undefined")<0);
+    /* Empty-state: no rows → guidance message, never NaN */
+    S = { year:2026, ship:{typeId:"bulk",capacity:60000}, rows:[] };
+    const Re = computeAll(S);
+    const ecii=fexLiveCII(Re);
+    ckT("Live CII empty-state: shows no-data message", ecii.indexOf("No activity data")>=0);
+    ckT("Live CII empty-state: no NaN", ecii.indexOf("NaN")<0);
+    ckT("Live UK ETS pre-2026: shows applies-from-2026 note",
+        fexLiveUKETS(computeAll({year:2025,ship:{typeId:"bulk",capacity:60000},rows:[]})).indexOf("applies from 2026")>=0);
+    S = Ssave;
+  }catch(e){ fail++; out.push("FAIL  Live worked-example tests threw: "+e.message); }
+
   const g=(pass+" passed, "+fail+" failed");
   const el=document.getElementById("testout"); el.style.display=""; el.textContent=out.join("\n")+"\n\n"+g;
 }
