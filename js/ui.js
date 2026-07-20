@@ -360,8 +360,19 @@ function parseOVD(text){
     const ts = tsOf(row);                          // this row covers the period [prevTs, ts]
     const yfr = yearFracs(prevTs, ts);             // calendar-year fractions of that period
     /* ---- consumption target (the row covers the period SINCE the previous report) ---- */
-    let target;
     const isDep = ev.includes("departure"), isBosp = ev.includes("bosp")||ev.includes("begin of sea");
+    /* 2026-07-20 (Aurvin — breakdown aggregation fix 1): file starts MID-VOYAGE. The first
+       data row is an at-sea report (has a route pair and distance) but the parser still sits
+       in its initial "port" state with no known port — previously that first report's fuel
+       landed on a phantom zero-length berth row at the DESTINATION port (seen on the 2026
+       file: "At berth Singapore", 31 t HFO, 01 Jan 06:00→06:00). Open the sea leg BEFORE
+       choosing the consumption target so the fuel goes to the voyage. Only fires in the
+       no-context start state (no curPort, no port row, no leg yet). */
+    if(mode==="port" && !curPort && !portRow && !seaLeg && pair && dist>0
+       && !isDep && !isBosp && !ev.includes("arrival")){
+      seaLeg = makeLeg(from,to); mode="sea";
+    }
+    let target;
     if(isDep || (isBosp && mode!=="sea")){
       target = getPortRow(from||curPort||to);        // pre-departure / pre-BOSP period was at berth or anchorage
     } else if(ev.includes("arrival")){
@@ -372,6 +383,20 @@ function parseOVD(text){
     /* ---- leg lifecycle: DEPARTURE or BOSP starts/continues a sea leg (some reports have BOSP but no DEPARTURE) ---- */
     if(isDep || isBosp){
       if(pair && (!seaLeg || seaLeg._from!==from || seaLeg._to!==to)) seaLeg = makeLeg(from,to); // always a fresh leg — same route may be sailed again later in the year
+      else if(isDep && mode==="port" && (from||curPort||to)){
+        /* 2026-07-20 (Aurvin — breakdown aggregation fix 2): a DEPARTURE that leaves a port
+           stay ALWAYS opens a fresh leg segment, even when the Voyage_From/To pair is
+           unchanged (waiting/drifting stays mid-approach, e.g. Mumbai) or From===To
+           (same-port shifts, e.g. berth → bunker anchorage at Daesan). Previously the old
+           leg silently continued and its time window stretched across the port stay, so
+           voyage rows OVERLAPPED berth rows in the breakdown, and post-departure shift fuel
+           landed on the already-finished inbound leg (wrong ETS bucket at EU ports).
+           BOSP deliberately keeps the pair-change-only rule above, so pure-transit windows
+           (Suez, straits, Gibraltar-type calls) still merge into one leg — locked by the
+           2026-07-19b transit tests. */
+        const f0=from||curPort||to;
+        seaLeg = makeLeg(f0, to||f0);
+      }
       mode="sea"; curPort=null;
     }
     /* ---- distance & cargo always follow the Voyage_From→Voyage_To pair, so nothing is lost
@@ -488,9 +513,13 @@ function parseOVD(text){
      cargo-op report → DEPARTURE = chain-end REPORT_END_GMT. Chains are clamped at the
      EOSP end / SOSP start. Multiple cargo clusters in one stay = one operation.
    - Case B (no cargo ops), fallback ladder: first/last AT_BERTH → condition chain around
-     BUNKERING → first/last AT_ANCHOR → first/last DRIFTING.
+     BUNKERING → first/last AT_ANCHOR → first/last DRIFTING, where the DRIFTING rung
+     (2026-07-20b, owner decision) only fires if the cargo-quantity fallback shows cargo
+     moved during the window — drifting-only waiting (no berth / bunkering / anchorage /
+     cargo evidence) is NOT a port stay and falls through to PURE TRANSIT.
    - Ladder exhausted: PURE TRANSIT — no port-stay row; the whole EOSP→SOSP window merges
-     into the adjacent voyage (e.g. canal transits with only MANOEUVRING reports).
+     into the adjacent voyage (e.g. canal transits with only MANOEUVRING reports, or
+     drifting-only waiting periods since 2026-07-20b).
    POC test: cargo ops occurred (incl. quantity fallback: |CARGO_QTY at SOSP − at EOSP|
    > 5% of DWT, or any 0↔loaded transition, with no recorded cargo activity → orange ❗)
    AND no report inside the derived window has OUTSIDE_PORT_LIMIT TRUE (an STS outside
@@ -664,6 +693,11 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         for(let j=idx+1;j<M.length;j++){ if(M[j].transparent) continue; if(M[j].oc===cond) e=j; else break; }
         return e; };
       const ops=M.filter(m=>MDA_CARGO_ACT[m.aa]);
+      /* cargo-quantity fallback: EOSP vs SOSP CARGO_QTY — 0↔loaded or >5% of DWT
+         (2026-07-20b: computed BEFORE the ladder — the DRIFTING rung now depends on it) */
+      const qtyE = st.eosp? st.eosp.qty : (M.length? M[0].qty : 0);
+      const qtyS = st.sosp? st.sosp.qty : (M.length? M[M.length-1].qty : 0);
+      const qtyTrig = !ops.length && ( ((qtyE===0)!==(qtyS===0)) || Math.abs(qtyE-qtyS)>0.05*dwt );
       let arr=null, dep=null, rule=null;
       if(ops.length){                                       /* Case A — cargo operations recorded */
         const f=ops[0], l=ops[ops.length-1], cf=effCond(f), cl=effCond(l);
@@ -680,12 +714,15 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
              dep = M[ cl!=null? chainEnd(M.indexOf(l),cl)   : M.indexOf(l) ].tEnd;
              rule="BUNKERING"; return true; })()
         || firstLast("AT_ANCHOR","AT_ANCHOR")
-        || firstLast("DRIFTING","DRIFTING");
+        /* 2026-07-20b (Aurvin, explicit owner decision this session): DRIFTING alone no
+           longer derives an arrival/departure. A stay whose members are only drifting
+           (no berth, no bunkering activity, no anchorage) is waiting at sea, not a port
+           call — it now falls through to PURE TRANSIT and merges into the voyage.
+           The rung still fires when the cargo-quantity fallback shows cargo actually
+           moved during the window (0↔loaded or >5% of DWT — e.g. an unrecorded STS
+           transfer while drifting), so a real cargo call can never be silently lost. */
+        || (qtyTrig && firstLast("DRIFTING","DRIFTING"));
       }
-      /* cargo-quantity fallback: EOSP vs SOSP CARGO_QTY — 0↔loaded or >5% of DWT */
-      const qtyE = st.eosp? st.eosp.qty : (M.length? M[0].qty : 0);
-      const qtyS = st.sosp? st.sosp.qty : (M.length? M[M.length-1].qty : 0);
-      const qtyTrig = !ops.length && ( ((qtyE===0)!==(qtyS===0)) || Math.abs(qtyE-qtyS)>0.05*dwt );
       const cargoTest = ops.length>0 || qtyTrig;
       const incomplete = !st.eosp || !st.sosp;
       const flags=[];
@@ -793,6 +830,18 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
       while(jFrom+1<resolvedStays.length && resolvedStays[jFrom+1].dep<=c.tEnd) jFrom++;
       c.org = jFrom>=0 ? resolvedStays[jFrom].resolvedPort : bootstrapOrg;
     }
+    /* 2026-07-20c (Aurvin — owner report, awaiting-orders fix): past the file's LAST resolved
+       stay, c.dst falls back to the report's own raw destination — which is BLANK while the
+       ship sails "awaiting orders" (destination not yet known, e.g. dep Fos 09 Jul, OPL
+       drifting, orders received 11 Jul). parseOVD turned that blank into a same-port leg
+       (Fos→Fos, EU→EU = 100%) until the destination first appeared — the owner saw the
+       eligibility badge wrongly at 100% from departure until mid-sea. The voyage's real
+       endpoint is the port the ship EVENTUALLY sails to (euets-art3ga: voyage = port of
+       call → next port of call), so fill a blank destination BACKWARD from the next report
+       whose destination is known. Only tail rows can still be blank here (every row before
+       the last stay was already overwritten from resolvedStays above); a file that ENDS
+       with orders still unknown keeps blanks (nothing to fill from) — legacy behaviour. */
+    for(let i=recs.length-2;i>=0;i--){ if(!recs[i].dst && recs[i+1].dst) recs[i].dst = recs[i+1].dst; }
   } else {
     /* legacy import — POC passthrough from the file's own column */
     for(const c of recs){ if(c.rt==="IN_PORT" && (c.pocFile==="YES"||c.pocFile==="NO")) c.poc=c.pocFile; }
@@ -1170,7 +1219,7 @@ const DERIVE_RULE_TXT = {
   AT_BERTH: "first → last AT_BERTH report (no cargo operations recorded)",
   BUNKERING:"OPERATING_CONDITION chain containing the bunkering report (no cargo ops / berth)",
   AT_ANCHOR:"first → last AT_ANCHOR report (no cargo ops / berth / bunkering)",
-  DRIFTING: "first → last DRIFTING report (no cargo ops / berth / bunkering / anchorage)"
+  DRIFTING: "first → last DRIFTING report — used only because the cargo quantity changed during this window (no cargo ops / berth / bunkering / anchorage recorded); drifting-only waiting without cargo evidence is treated as sea passage since 2026-07-20b"
 };
 /* icon-only version (2026-07-19): the actual arrival/departure values are already shown
    once, in the compact timeframe line below the port fields — no need to repeat them here
@@ -2679,7 +2728,7 @@ function renderHelp(){
     <p>The same ⬆ Import button also accepts an <b>MDA event-log export</b> — the workbook with one row per report period, fuel consumption as JSON (e.g. <code>{"MGO": 0.65}</code>) and ORIGIN/CURRENT/DESTINATION UN/LOCODEs. Upload the .xlsx directly (read fully in your browser — no data leaves your machine) or a CSV saved from it. Columns are matched <b>by name</b>, so files with extra fields import fine; unknown columns are ignored. Required: DATE_TIME_GMT (or DATETIME_GMT), REPORT_TYPE, FUEL_CONSUMPTION, DISTANCE, CARGO_QTY and the three *_PORT_UNLO_CODE columns.</p>
     <table>
       <tr><th>MDA</th><th>Becomes</th></tr>
-      <tr><td>ARRIVAL-EOSP / DEPARTURE-SOSP</td><td>Sea-passage markers only — <b>not</b> the regulatory arrival/departure. The true ARRIVAL and DEPARTURE (GMT) of each stay are <b>derived</b>: with cargo operations, the unbroken OPERATING_CONDITION chain around the first/last cargo-op report; without, the fallback ladder AT_BERTH → BUNKERING chain → AT_ANCHOR → DRIFTING. Consumption before the derived arrival / after the derived departure counts on the voyage, not the berth</td></tr>
+      <tr><td>ARRIVAL-EOSP / DEPARTURE-SOSP</td><td>Sea-passage markers only — <b>not</b> the regulatory arrival/departure. The true ARRIVAL and DEPARTURE (GMT) of each stay are <b>derived</b>: with cargo operations, the unbroken OPERATING_CONDITION chain around the first/last cargo-op report; without, the fallback ladder AT_BERTH → BUNKERING chain → AT_ANCHOR → DRIFTING (drifting only counts when the cargo quantity changed during the window; drifting-only waiting is sea passage). Consumption before the derived arrival / after the derived departure counts on the voyage, not the berth</td></tr>
       <tr><td>AT_SEA</td><td>Noon report on the ORIGIN→DESTINATION leg (consumption covers the period since the previous report, same as OVD)</td></tr>
       <tr><td>IN_PORT</td><td>At-berth/anchorage stay at the CURRENT port between the <b>derived</b> arrival and departure; a missing LOCODE is filled with the last known port (noted at import). A stay with no berth / anchorage / drifting / bunkering period at all (e.g. canal transit, MANOEUVRING only) is pure transit — merged into the voyage, no port row</td></tr>
       <tr><td>FUEL_OIL_BUNKER / FUEL_STOCK</td><td>Stock movements — skipped for consumption and transparent to the derivation logic (they never break a condition chain)</td></tr>
@@ -3019,6 +3068,37 @@ function runSelfTests(){
     ckT("DERIVE notes: derivation + transit + qty fallback + OPL + mismatch all reported",
         md.notes.some(n=>/ARRIVAL\/DEPARTURE derived/.test(n)) && md.notes.some(n=>/pure transit/.test(n)) &&
         md.notes.some(n=>/quantity fallback/.test(n)) && md.notes.some(n=>/OUTSIDE port limits/.test(n)) && md.notes.some(n=>/disagrees/.test(n)));
+    /* ---- 2026-07-20b (owner decision): drifting-only waiting is NOT a port stay ---- */
+    const DRIFT_FIX=[DH,
+      /* SGSIN→OMDQM with a drifting-only waiting window off OMDQM (no cargo evidence)
+         → pure transit: no port row, OMDQM vanishes as a voyage endpoint */
+      ["2026-04-01 00:00","2026-03-31 12:00","2026-04-01 00:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","50000","SGSIN","","OMDQM"],
+      ["2026-04-02 00:00","2026-04-01 00:00","2026-04-02 00:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"200","50000","SGSIN","","OMDQM"],
+      ["2026-04-02 06:00","2026-04-02 00:00","2026-04-02 06:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","50000","SGSIN","OMDQM","OMDQM"],
+      ["2026-04-03 06:00","2026-04-02 06:00","2026-04-03 06:00","IN_PORT","DRIFTING","AWAITING_ORDERS","FALSE","NO",'{"MGO": 0.8}',"0","50000","","OMDQM",""],
+      ["2026-04-04 06:00","2026-04-03 06:00","2026-04-04 06:00","IN_PORT","DRIFTING","AWAITING_ORDERS","FALSE","NO",'{"MGO": 0.9}',"0","50000","","OMDQM",""],
+      ["2026-04-04 12:00","2026-04-04 06:00","2026-04-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.1}',"2","50000","OMDQM","","AEJEA"],
+      /* drifting stay WITH a cargo-quantity change (unrecorded STS: 50000→10000, DWT 20000)
+         → the DRIFTING rung still fires; stay kept, POC on, orange qty flag */
+      ["2026-04-05 00:00","2026-04-04 12:00","2026-04-05 00:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 6}',"100","50000","OMDQM","","AEJEA"],
+      ["2026-04-05 06:00","2026-04-05 00:00","2026-04-05 06:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 0.5}',"5","50000","OMDQM","AEJEA","AEJEA"],
+      ["2026-04-06 06:00","2026-04-05 06:00","2026-04-06 06:00","IN_PORT","DRIFTING","AWAITING_ORDERS","FALSE","NO",'{"MGO": 0.6}',"0","50000","","AEJEA",""],
+      ["2026-04-06 12:00","2026-04-06 06:00","2026-04-06 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.1}',"1","10000","AEJEA","","SGSIN"]
+    ];
+    const mdr=mdaToOVD(DRIFT_FIX, 20000), xr=parseOVD(mdr.csv);
+    const rLegs=xr.rows.filter(r=>r.kind==="voyage"), rPorts=xr.rows.filter(r=>r.kind==="port");
+    const rAt=c=>rPorts.find(p=>p.port&&p.port.c===c);
+    ckT("DRIFT: drifting-only waiting → NO port stay at OMDQM (pure transit)", !rAt("OMDQM"));
+    ckT("DRIFT: OMDQM vanishes as endpoint — leg runs SGSIN→AEJEA whole",
+        rLegs[0] && rLegs[0].fromPort.c==="SGSIN" && rLegs[0].toPort.c==="AEJEA" &&
+        (mdr.reports||[]).some(r=>r.rt==="AT_SEA" && r.t==="2026-04-02T00:00" && r.org==="SGSIN" && r.dst==="AEJEA"));
+    ck("DRIFT: waiting-window fuel stays on the voyage (0.8+0.9+0.1 MGO)", fT(rLegs[0],"MDO"), 1.8, 0.001);
+    const rA=rAt("AEJEA");
+    ckT("DRIFT: drifting + cargo-qty change (unrecorded STS) still derives the stay — rule DRIFTING, POC on, qty flag",
+        rA && rA.deriveRule==="DRIFTING" && rA.poc===true && rA.pocQty===true &&
+        rA.arrGmt==="2026-04-05T06:00" && rA.depGmt==="2026-04-06T06:00");
+    ck("DRIFT fuel conservation VLSFO", xr.rows.reduce((s,r)=>s+fT(r,"HFO"),0), 18, 0.001);
+    ck("DRIFT fuel conservation MGO", xr.rows.reduce((s,r)=>s+fT(r,"MDO"),0), 2.5, 0.001);
     /* DATETIME_GMT header variant + incomplete stay at file end */
     const INC_FIX=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
       ["2026-06-01 00:00","2026-05-31 12:00","2026-06-01 00:00","AT_SEA","NORMAL SAILING","","",'{"VLSFO": 5}',"60","9000","SGSIN","","AEJEA"],
@@ -3029,6 +3109,31 @@ function runSelfTests(){
     const pI=xi.rows.find(r=>r.kind==="port" && r.arrGmt);   // skip the legacy leading row a mid-voyage file start creates
     ckT("DERIVE: DATETIME_GMT header accepted; truncated stay derived one-sided + flagged incomplete",
         !!pI && pI.arrGmt==="2026-06-01T06:00" && pI.incomplete===true && pI.poc===true);
+    /* ---- 2026-07-20c (owner report): awaiting-orders — blank destination must not create a
+       phantom same-port EU→EU leg. Ship departs FRFOS with NO destination (orders pending),
+       drifts OPL, then orders arrive: GIGIB. The blank tail destinations are backfilled from
+       the first later report whose destination is known, so the whole stretch is ONE
+       FRFOS→GIGIB 50% leg — previously it was FRFOS→FRFOS (100%) until the orders row. */
+    const AWAIT_FIX=[DH,
+      ["2026-07-07 20:54","2026-07-07 10:00","2026-07-07 20:54","ARRIVAL-EOSP","","","","",'{"HFO": 1}',"8","9000","ESCEU","FRFOS","FRFOS"],
+      ["2026-07-08 10:00","2026-07-07 20:54","2026-07-08 10:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE","YES",'{"MGO": 2}',"0","0","","FRFOS",""],
+      ["2026-07-09 05:24","2026-07-08 10:00","2026-07-09 05:24","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.9}',"3","0","FRFOS","",""],
+      ["2026-07-09 10:00","2026-07-09 05:24","2026-07-09 10:00","AT_SEA","NORMAL SAILING","","","",'{"HFO": 4}',"50","0","FRFOS","",""],
+      ["2026-07-09 17:12","2026-07-09 10:00","2026-07-09 17:12","ARRIVAL-EOSP","","","","",'{"HFO": 7}',"83","0","FRFOS","",""],
+      ["2026-07-09 17:30","2026-07-09 17:12","2026-07-09 17:30","IN_PORT","MANOEUVRING","","TRUE","",'{"MGO": 0.1}',"2","0","","",""],
+      ["2026-07-10 10:00","2026-07-09 17:30","2026-07-10 10:00","IN_PORT","DRIFTING","AWAITING_ORDERS","TRUE","",'{"MGO": 2.3}',"10","0","","",""],
+      ["2026-07-11 03:00","2026-07-10 10:00","2026-07-11 03:00","DEPARTURE-SOSP","DRIFTING","AWAITING_ORDERS","","",'{"MGO": 3.8}',"2","0","FRFOS","","GIGIB"],
+      ["2026-07-11 10:00","2026-07-11 03:00","2026-07-11 10:00","AT_SEA","NORMAL SAILING","","","",'{"HFO": 4.5}',"65","0","FRFOS","","GIGIB"]
+    ];
+    const maw=mdaToOVD(AWAIT_FIX, 20000), xaw=parseOVD(maw.csv);
+    const awLegs=xaw.rows.filter(r=>r.kind==="voyage");
+    ckT("AWAIT: blank destination while awaiting orders is backfilled — no phantom same-port FRFOS→FRFOS leg",
+        !awLegs.some(l=>l.fromPort && l.toPort && l.fromPort.c==="FRFOS" && l.toPort.c==="FRFOS"));
+    const awOut=awLegs.find(l=>l.fromPort && l.toPort && l.fromPort.c==="FRFOS" && l.toPort.c==="GIGIB");
+    ckT("AWAIT: whole post-Fos stretch (incl. OPL drifting window) is ONE FRFOS→GIGIB leg at 50% EU",
+        !!awOut && awOut.from==="EEA" && awOut.to==="OTHER" && Math.abs(euCoverage(awOut)-0.5)<1e-9);
+    ckT("AWAIT: reports branch agrees — awaiting-orders AT_SEA report carries dst GIGIB",
+        (maw.reports||[]).some(r=>r.rt==="AT_SEA" && r.t==="2026-07-09T10:00" && r.org==="FRFOS" && r.dst==="GIGIB"));
   }catch(e){ fail++; out.push("FAIL  MDA derivation tests threw: "+e.message); }
   /* ---- Session 2 (2026-07-16): FuelEU allocation · machinery split · multi-year ---- */
   try{
