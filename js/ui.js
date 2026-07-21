@@ -791,6 +791,26 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         }
         if(st.eosp && firstPort)
           firstPort.before.push({ev:"Arrival", dtIso:arr, vFrom:inbound[0], vTo:inbound[1], src:st.eosp});      // zero-consumption boundary marker
+        /* 2026-07-21 (Aurvin — owner report: missing berth row when the EOSP is outside the
+           export window). The Arrival boundary marker above is what makes parseOVD leave sea
+           mode (ui.js ~line 419) and open a port row; gating it on st.eosp meant a stay whose
+           ARRIVAL-EOSP is absent — typically a stay already underway when the file starts —
+           produced NO workspace port row at all, even though the derivation had already
+           resolved arr/dep correctly and the Reports tab + OVD download showed them right
+           (owner's 2026 file: Constantza 02 Jun 20:33 → 13 Jun 02:28, 11 days at berth,
+           POC YES, 31.7 t MGO booked to the sea leg at 50% EU ETS scope instead of at berth
+           at 100%). FALLBACK ONLY — when there is no EOSP, anchor the marker to the APPROACH
+           report (the inbound report whose period ends at the derived arrival). Its org/dst
+           are rewritten by the file-wide resolved-port pass below, so the marker carries the
+           same corrected ports as the download branch and the two branches stay unified
+           (owner's decision this session: label the inbound leg Batumi → Constantza, i.e.
+           keep its true origin, not the stay's own port).
+           Deliberately NOT done: the mirror case (missing SOSP → no Departure marker) is left
+           as it is, per the owner's instruction to change the Arrival path only. No fallback
+           when there is no approach report either — a file that opens already at berth has no
+           inbound voyage to close and parseOVD's initial "port" state already handles it. */
+        else if(firstPort && approach)
+          firstPort.before.push({ev:"Arrival", dtIso:arr, vFrom:approach.vFrom, vTo:approach.vTo, src:approach});
         if(st.sosp){
           (firstPost||st.sosp).before.push({ev:"Departure", dtIso:dep, vFrom:outbound[0], vTo:outbound[1], src:st.sosp});
           st.sosp.ev="Noon";                               // pre-SOSP period is already at sea (post-departure)
@@ -3269,6 +3289,42 @@ function runSelfTests(){
     ckT("ARRIVAL badge on the approach (MANOEUVRING) report, first at-port plain, last DEPARTURE — no retime, no duplicate time",
         ipa.length===3 && ipa[0].oc==="MANOEUVRING" && reportTypeLabel(ipa[0])==="ARRIVAL"
         && reportTypeLabel(ipa[1])==="IN_PORT" && reportTypeLabel(ipa[2])==="DEPARTURE");
+    /* 2026-07-21 (Aurvin — owner report): a stay whose ARRIVAL-EOSP falls OUTSIDE the export
+       window still produces a workspace berth row. The file opens mid-approach (an at-sea
+       report, then the inbound MANOEUVRING report, then cargo at berth) — there is no EOSP,
+       so before this fix no "Arrival" boundary marker was emitted, parseOVD never left sea
+       mode and the whole berth stay was booked to the voyage (owner's 2026 file: Constantza,
+       11 days, 31.7 t MGO at 50% EU ETS scope instead of at berth at 100%). The Arrival
+       marker now falls back to the approach report, which also keeps the inbound leg's TRUE
+       origin (SGSIN→DKSKA, not DKSKA→DKSKA) so the ETS scope of that leg stays correct. */
+    const NOEOSP=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE","CURRENT_PORT","CURRENT_COUNTRY","CURRENT_REGION"],
+      ["2026-04-01 04:00","2026-04-01 00:00","2026-04-01 04:00","AT_SEA","NORMAL SAILING","","",'{"MDO": 5}',"100","0","SGSIN","","DKSKA","","",""],
+      ["2026-04-01 06:00","2026-04-01 04:00","2026-04-01 06:00","IN_PORT","MANOEUVRING","","FALSE",'{"MDO": 0.5}',"4","0","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-01 18:00","2026-04-01 06:00","2026-04-01 18:00","IN_PORT","AT_BERTH","CARGO_LOADING","FALSE",'{"MDO": 1}',"0","5000","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-02 06:00","2026-04-01 18:00","2026-04-02 06:00","IN_PORT","AT_BERTH","CARGO_LOADING","FALSE",'{"MDO": 1}',"0","9000","","DKSKA","","Skagen","Denmark","North Europe"],
+      ["2026-04-02 10:00","2026-04-02 06:00","2026-04-02 10:00","DEPARTURE-SOSP","MANOEUVRING","","",'{"MDO": 0.2}',"2","9000","DKSKA","","NLRTM","","",""]];
+    {
+      const rNo=parseOVD(mdaToOVD(NOEOSP, 20000).csv);
+      const pNo=rNo.rows.filter(r=>r.kind==="port"), lNo=rNo.rows.filter(r=>r.kind==="voyage");
+      const berth=pNo[0];
+      ckT("DERIVE no-EOSP fallback: stay with its ARRIVAL-EOSP outside the file still makes a berth row",
+          pNo.length===1 && !!berth && berth.port && berth.port.c==="DKSKA");
+      ckT("DERIVE no-EOSP fallback: berth row spans the derived arrival→departure, not the voyage",
+          !!berth && berth.tStart==="2026-04-01T06:00" && berth.tEnd==="2026-04-02T06:00");
+      ckT("DERIVE no-EOSP fallback: berth carries the at-berth fuel (2 t), voyage keeps the approach fuel",
+          !!berth && Math.abs(berth.fuels.reduce((s,f)=>s+f.tonnes,0)-2)<0.001);
+      ckT("DERIVE no-EOSP fallback: inbound leg keeps its TRUE origin (SGSIN→DKSKA, not DKSKA→DKSKA)",
+          lNo.length>=1 && lNo[0].fromPort.c==="SGSIN" && lNo[0].toPort.c==="DKSKA"
+          && lNo[0].tEnd==="2026-04-01T06:00");
+      ckT("DERIVE no-EOSP fallback: stay is still flagged INCOMPLETE (the EOSP really is missing)",
+          !!berth && berth.incomplete===true);
+      /* guard the deliberate non-change: a file that opens ALREADY at berth has no inbound
+         voyage to close, so no fallback marker is emitted and no phantom leg appears */
+      const ATBERTH=[NOEOSP[0], NOEOSP[3], NOEOSP[4], NOEOSP[5]];
+      const rAb=parseOVD(mdaToOVD(ATBERTH, 20000).csv);
+      ckT("DERIVE no-EOSP fallback: file opening AT BERTH still yields one berth row, no phantom leg",
+          rAb.rows.filter(r=>r.kind==="port").length===1);
+    }
     /* Reports-tab UK ETS badge uses the engine's own scheme-window logic per REPORT (2026-07-20,
        Aurvin): one UK↔UK stay straddling 1 Jul 2026 — a June report is dash (not applicable), a
        report straddling 1 Jul shows the time-pro-rated in-scope % (matching the totals), and a
