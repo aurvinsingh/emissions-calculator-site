@@ -52,8 +52,8 @@ function showTab(t){
     document.getElementById("tb-"+x).classList.toggle("on", x===t);
   }
   /* fixed app-shell (pinned header/nav, independently scrolling tab content) applies to
-     Calculations/Reports/Settings only — Workspace, Formulas and Help keep plain whole-page
-     scroll (2026-07-19: Formulas/Help shell disabled at Aurvin's request pending a later look) */
+     Leg-Wise/Report-Wise/Settings only — Workspace, Calculations and Help keep plain whole-page
+     scroll (2026-07-19: Calculations/Help shell disabled at Aurvin's request pending a later look) */
   document.body.classList.toggle("shell", t!=="work" && t!=="constants" && t!=="help");
   if(t==="work") renderWorkspace();
   if(t==="calcs") renderCalcs();
@@ -63,13 +63,74 @@ function showTab(t){
   if(t==="help") renderHelp();
   if(window.SUITE_ONSHOW) window.SUITE_ONSHOW(t);
 }
-/* info-icon popover: click ⓘ to open, click anywhere else to close */
+/* info-icon popover: click ⓘ to open, click anywhere else to close.
+   2026-07-22h (owner, Aurvin): the popup is now position:fixed (see .ibpop in styles.css)
+   instead of absolutely positioned inside its card. Before this, a tooltip opened inside a
+   card that scrolls — or inside the tight Workspace blue band — was clipped by that card,
+   which sprouted its own horizontal and vertical scrollbars just to show it. Fixed
+   positioning takes the popup out of every ancestor, so nothing can clip it; the trade-off
+   is that its coordinates must be computed in JS, which is what placeInfoPop does.
+   2026-07-22i — that alone wasn't enough for icons in the Leg-Wise breakdown's sticky
+   column header (`position:sticky;top:0` wrapper, js/ui.js breakdownGrid): Safari treats a
+   sticky ancestor as a containing block for position:fixed descendants (a known engine
+   bug), so the popup was being placed relative to the sticky header box instead of the
+   real viewport and rendered clipped off the top. Reparenting the popup to <body> on open
+   removes it from every ancestor's containing-block chain, sticky included. */
+let _openInfo = null;   // {btn,pop} of the popup currently on screen — kept so it can follow its icon on scroll
 function toggleInfo(btn){
-  const p = btn.nextElementSibling;
+  const p = btn.__pop || (btn.__pop = btn.nextElementSibling);
+  if(p.parentElement !== document.body) document.body.appendChild(p);
   document.querySelectorAll(".ibpop.open").forEach(x=>{ if(x!==p) x.classList.remove("open"); });
-  p.classList.toggle("open");
+  const opening = !p.classList.contains("open");
+  p.classList.toggle("open", opening);
+  _openInfo = opening ? {btn:btn, pop:p} : null;
+  if(opening) placeInfoPop(btn, p);
 }
-document.addEventListener("click", e=>{ if(!e.target.closest(".ibwrap")) document.querySelectorAll(".ibpop.open").forEach(x=>x.classList.remove("open")); });
+/* Puts the popup just under its ⓘ button in SCREEN coordinates, then keeps it fully on screen:
+   nudged in from either edge, flipped above the icon if that leaves more room, and given an
+   internal scrollbar (rather than left to overflow the viewport) if it's taller than the room
+   available on whichever side wins. */
+function placeInfoPop(btn, p){
+  const M = 8, GAP = 6;
+  p.style.maxHeight = "none";
+  p.style.left = "0px"; p.style.top = "0px";          // measure at a known origin first
+  const r = btn.getBoundingClientRect(), w = p.offsetWidth;
+  let h = p.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  /* .ib-right icons sit at a right-hand corner and expand leftward, as before */
+  let left = btn.closest(".ib-right") ? r.right - w : r.left - 10;
+  left = Math.min(Math.max(M, left), Math.max(M, vw - w - M));
+  let top = r.bottom + GAP;
+  if(top + h > vh - M){
+    const spaceBelow = vh - top - M, spaceAbove = r.top - GAP - M;
+    if(spaceAbove > spaceBelow){                              // more room above → flip
+      top = Math.max(M, r.top - GAP - h);
+      if(h > spaceAbove){ p.style.maxHeight = Math.max(80, spaceAbove) + "px"; h = spaceAbove; }
+    } else if(h > spaceBelow){                                 // stays below but taller than the room → scroll, don't overflow
+      p.style.maxHeight = Math.max(80, spaceBelow) + "px"; h = spaceBelow;
+    }
+  }
+  p.style.left = left + "px";
+  p.style.top  = top  + "px";
+}
+/* fixed popups do not scroll with the page, so an open one is repositioned to follow its icon
+   (capture:true — the scroll may happen in an inner .shell panel, not on the window).
+   2026-07-22j — a long popup scrolls internally (.ibpop's own overflow-y:auto), and that
+   "scroll" event also reaches this capture-phase listener; without the guard below every
+   internal scroll tick re-ran placeInfoPop (which resets max-height first), fighting the
+   user's own scroll gesture. Skip repositioning when the scroll came from inside the popup. */
+function _trackInfoPop(e){
+  if(!_openInfo) return;
+  const {btn, pop} = _openInfo;
+  if(e && (e.target===pop || (pop.contains && pop.contains(e.target)))) return;
+  if(!btn.isConnected){ pop.classList.remove("open"); _openInfo = null; return; }
+  const r = btn.getBoundingClientRect();
+  if(r.bottom < 0 || r.top > window.innerHeight){ pop.classList.remove("open"); _openInfo = null; return; }
+  placeInfoPop(btn, pop);
+}
+window.addEventListener("scroll", _trackInfoPop, true);
+window.addEventListener("resize", _trackInfoPop);
+document.addEventListener("click", e=>{ if(!e.target.closest(".ibwrap") && !e.target.closest(".ibpop")){ document.querySelectorAll(".ibpop.open").forEach(x=>x.classList.remove("open")); _openInfo = null; } });
 /* align="right": popover expands leftward from the icon instead of rightward — use for icons
    pinned to a right-edge corner, where the default rightward expansion would run off-screen */
 const info = (html,align)=>`<span class="ibwrap${align==="right"?" ib-right":""}"><button class="ib" type="button" onclick="event.stopPropagation();toggleInfo(this)" title="More information">i</button><span class="ibpop">${html}</span></span>`;
@@ -83,6 +144,17 @@ function upd(path, val){
   save(); renderLive();
 }
 function num(v){ return v===""?"":Number(v); }
+/* 2026-07-22g (owner, Aurvin): the Workspace blue band now edits ship type, capacity and
+   reporting year in place. Those two fields change what the whole page LOOKS like — the
+   capacity unit label (DWT vs GT follows the ship type) and the per-row "outside the
+   reporting year" greying — so unlike upd() they need a full workspace repaint, plus a
+   Settings repaint so the same fields there never show a stale value. Capacity itself
+   deliberately stays on plain upd() (save + renderLive only): repainting on every
+   keystroke would steal focus from the box mid-typing.
+   NOT a second copy of the settings — it writes to the same S.ship / S.year, so there is
+   no chance of the two places disagreeing. Owner decision 2026-07-22g: when the ship type
+   flips the unit (DWT↔GT) the capacity NUMBER is kept and only the label changes. */
+function updBand(path, val){ upd(path, val); renderWorkspace(); renderVessel(); }
 function updTime(ri, key, val){
   S.rows[ri][key] = val;
   const r = S.rows[ri];
@@ -814,7 +886,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            mode (ui.js ~line 419) and open a port row; gating it on st.eosp meant a stay whose
            ARRIVAL-EOSP is absent — typically a stay already underway when the file starts —
            produced NO workspace port row at all, even though the derivation had already
-           resolved arr/dep correctly and the Reports tab + OVD download showed them right
+           resolved arr/dep correctly and the Report-Wise tab + OVD download showed them right
            (owner's 2026 file: Constantza 02 Jun 20:33 → 13 Jun 02:28, 11 days at berth,
            POC YES, 31.7 t MGO booked to the sea leg at 50% EU ETS scope instead of at berth
            at 100%). FALLBACK ONLY — when there is no EOSP, anchor the marker to the APPROACH
@@ -1191,7 +1263,7 @@ function applyImport(res, label, extraNotes, reports){
 /* short display labels for the fuel picker + breakdown Excel export only (2026-07-19, Aurvin) —
    drops the regulation/pathway suffix (RED II, RFNBO, fossil/natural-gas) and collapses the four
    LNG engine-cycle entries to their CH4 slip %; engine.js FUELS[].name (used for calculations,
-   the Formulas tab and everywhere else) is untouched. */
+   the Calculations tab and everywhere else) is untouched. */
 const FUEL_SHORT = {
   LNGDS:"LNG (0.2%)", LNGOS:"LNG (1.7%)", LNG:"LNG (3.1%)", LNGBSI:"LNG (2.6%)",
   METH:"Methanol", NH3:"Ammonia", H2:"Hydrogen",
@@ -1211,7 +1283,7 @@ function updSplit(ri, fi, g, v){
   fr.split = fr.split||{};
   fr.split[g] = Math.max(0, Number(v)||0);
   fr.tonnes = Math.round(["ME","AE","BLR","OTH"].reduce((s,k)=>s+(Number(fr.split[k])||0),0)*1000)/1000;
-  const tot=document.getElementById("tons_"+ri+"_"+fi); if(tot) tot.value=fr.tonnes;
+  const tot=document.getElementById("tons_"+ri+"_"+fi); if(tot) tot.value=fr.tonnes.toFixed(1);
   save(); renderLive();
 }
 function updTonnes(ri, fi, v){
@@ -1221,7 +1293,7 @@ function updTonnes(ri, fi, v){
     const fixed=(Number(fr.split.ME)||0)+(Number(fr.split.AE)||0)+(Number(fr.split.BLR)||0);
     if(t>=fixed){ fr.split.OTH=Math.round((t-fixed)*1000)/1000; }
     else { const k=fixed>0? t/fixed:0; for(const g of ["ME","AE","BLR"]) if(fr.split[g]) fr.split[g]=Math.round(Number(fr.split[g])*k*1000)/1000; fr.split.OTH=0; }
-    for(const g of ["ME","AE","BLR","OTH"]){ const el=document.getElementById("sp_"+g+"_"+ri+"_"+fi); if(el) el.value=fr.split[g]??""; }
+    for(const g of ["ME","AE","BLR","OTH"]){ const el=document.getElementById("sp_"+g+"_"+ri+"_"+fi); if(el) el.value=fr.split[g]!=null?Number(fr.split[g]).toFixed(1):""; }
   }
   fr.tonnes=t; save(); renderLive();
 }
@@ -1238,7 +1310,11 @@ function fuelLineHtml(ri, fi, fr){
     <div><label>Cf CH₄ g/g</label><input type="number" step="any" value="${fr.ch4??""}" oninput="upd('rows.${ri}.fuels.${fi}.ch4',num(this.value))"></div>
     <div><label>Cf N₂O g/g</label><input type="number" step="any" value="${fr.n2o??""}" oninput="upd('rows.${ri}.fuels.${fi}.n2o',num(this.value))"></div>`;
   const sp = fr.split||{};
-  const spCell = (g,lbl)=>`<div><label>${lbl} mt</label><input type="number" step="any" min="0" id="sp_${g}_${ri}_${fi}" value="${sp[g]??""}" placeholder="0" oninput="updSplit(${ri},${fi},'${g}',this.value)"></div>`;
+  /* 2026-07-22l (owner, Aurvin): DISPLAY ONLY — the box shows 1dp; if left untouched the
+     full-precision stored value still drives every calculation. Plain toFixed (no thousands
+     separator) because this is a live <input type=number> value, not text — a comma would
+     make the browser treat it as invalid. */
+  const spCell = (g,lbl)=>`<div><label>${lbl} mt</label><input type="number" step="any" min="0" id="sp_${g}_${ri}_${fi}" value="${sp[g]!=null?Number(sp[g]).toFixed(1):""}" placeholder="0" oninput="updSplit(${ri},${fi},'${g}',this.value)"></div>`;
   const spRow = S.showSplit? `<div class="fuelline" style="background:#f6f9fa;border-radius:6px">
     <div style="align-self:end;max-width:96px;padding-bottom:8px"><span class="note" style="cursor:help" title="Machinery split — ME and AE take their LNG slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. Editing a machine updates the line total; editing the total sends the difference to Other.">⚙ split</span></div>
     ${spCell("ME","Main engine")}${spCell("AE","Aux engine")}${spCell("BLR","Boiler")}${spCell("OTH","Other")}
@@ -1246,7 +1322,7 @@ function fuelLineHtml(ri, fi, fr){
   /* fuel entries stack as a table grid (2026-07-16) — one shared header, no per-line labels */
   return `<div class="fuelline">
     <div><select onchange="upd('rows.${ri}.fuels.${fi}.fuelId',this.value);renderWorkspace()">${fuelOptions(fr.fuelId)}</select></div>
-    <div><input type="number" step="any" min="0" id="tons_${ri}_${fi}" value="${fr.tonnes??""}" oninput="updTonnes(${ri},${fi},this.value)"></div>
+    <div><input type="number" step="any" min="0" id="tons_${ri}_${fi}" value="${fr.tonnes!=null?Number(fr.tonnes).toFixed(1):""}" oninput="updTonnes(${ri},${fi},this.value)"></div>
     <div class="opt"><input type="number" step="any" min="0" value="${fr.price||""}" placeholder="optional" oninput="upd('rows.${ri}.fuels.${fi}.price',num(this.value))"></div>
     <div class="opt"><input type="number" step="any" value="${fr.ciiCf??""}" placeholder="optional" oninput="upd('rows.${ri}.fuels.${fi}.ciiCf',num(this.value))"></div>
     <div><button class="del" title="Remove fuel" onclick="S.rows[${ri}].fuels.splice(${fi},1);save();renderWorkspace()">✕</button></div>
@@ -1353,14 +1429,24 @@ function renderWorkspace(){
   el.innerHTML = `
   <div class="ws">
     <div>
-      <div class="card noprint" style="background:var(--blue2);border-color:#bcd9de">
-        <b>${esc(S.ship.name||"Vessel")}</b> · ${(TYPE_BY_ID[S.ship.typeId]||{}).name||""} · ${fmtI(S.ship.capacity)} ${(TYPE_BY_ID[S.ship.typeId]||{}).capUnit||""} · year <b>${S.year}</b>
-        &nbsp; <button class="pill hbtn" style="background:#fff;color:var(--blue);border-color:#bcd9de" onclick="showTab('vessel')">Edit settings →</button>
+      <div class="card noprint band" style="background:var(--blue2);border-color:#bcd9de">
+        <b style="font-size:13px">${esc(S.ship.name||"Vessel")}</b>
+        <span class="bsep">·</span>
+        <select class="bandsel" title="Ship type (CII G2). Also decides whether the ship's size is measured in deadweight (DWT) or gross tonnage (GT)." onchange="updBand('ship.typeId',this.value)">${SHIP_TYPES.map(t=>`<option value="${t.id}" ${t.id===S.ship.typeId?"selected":""}>${esc(t.name)}</option>`).join("")}</select>
+        <span class="bsep">·</span>
+        <input class="bandnum" type="number" step="any" min="0" value="${S.ship.capacity??""}" title="Ship capacity — deadweight (DWT) or gross tonnage (GT) depending on the ship type. Drives the CII transport-work denominator." oninput="upd('ship.capacity',num(this.value))">
+        <b>${(TYPE_BY_ID[S.ship.typeId]||{}).capUnit||""}</b>
+        <span class="bandtail">
+          <span class="bsep">·</span>
+          <span style="font-size:12px">year</span>
+          <select class="bandsel bandyear" title="Reporting year. Rows dated outside it are greyed out and excluded from every KPI." onchange="updBand('year',Number(this.value))">${[2024,2025,2026,2027,2028,2029,2030].map(y=>`<option ${y===S.year?"selected":""}>${y}</option>`).join("")}</select>
+          <span style="margin-left:4px">${info("<b>Quick edits (2026-07-22g):</b> ship type, capacity and reporting year can be changed right here — they are the <i>same</i> settings as on the 🚢 Settings tab, not a copy, so a change in either place shows in both and recalculates everything immediately. Everything else about the vessel still lives on the Settings tab.<br><br><b>Capacity unit:</b> cargo ships (bulk carrier, tanker, container, general cargo…) are measured in <b>DWT</b> (deadweight — how much weight the ship can carry); passenger and ro-ro ships in <b>GT</b> (gross tonnage — enclosed volume). If you change the ship type and the unit flips, the number you typed is <b>kept as-is</b> and only the label changes — check it still makes sense for the new unit.")}</span>
+        </span>
       </div>
       <h4 class="sec" style="margin-top:0">Voyages &amp; port stays — edit anything, results update live → ${info("<b>Scope per row:</b> EU ETS &amp; FuelEU — EEA↔EEA and at berth EEA 100%, EEA↔other 50% (euets-art3ga); UK ETS — UK→UK voyages and UK in-port only (ukets-sch2a-p7); at-berth scope applies only when the stay is a <b>port of call</b> (POC toggle on each port row); CII &amp; SCC count all activity (imo-g1-s4).<br><br>Import a DNV OVD Log Abstract CSV, an MDA event-log export (.xlsx/.csv) or a THETIS-MRV GHG Emissions XML from the header bar to fill this list automatically.")}</h4>
       <div class="noprint" style="display:flex;gap:22px;flex-wrap:wrap">
         <div class="chk"><input type="checkbox" ${S.showDates?"checked":""} onchange="S.showDates=this.checked;save();renderWorkspace()"> 🕓 Optional date entry ${info("Shows From/To date-time fields on each row — mainly useful for seeing which report period an OVD-imported row covers.")}</div>
-        <div class="chk"><input type="checkbox" ${S.showSplit?"checked":""} onchange="S.showSplit=this.checked;save();renderWorkspace()"> ⚙ Machinery split (ME · AE · Boiler · Other) ${info("Shows the per-machine consumption split on every fuel line, filled automatically from the MDA MAIN/AUXILIARY/BOILER consumption columns (per fuel type, the unassigned remainder is <b>Other</b>).<br><br><b>Editable:</b> changing a machine figure updates the line total; changing the total sends the difference to Other (if the new total is below ME+AE+Boiler, those scale down pro-rata).<br><br>For LNG-family fuels the ME and AE shares take their CH₄-slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. The split also feeds the OVD-format download (⬇ OVD-format Excel, header) and the Reports tab.")}</div>
+        <div class="chk"><input type="checkbox" ${S.showSplit?"checked":""} onchange="S.showSplit=this.checked;save();renderWorkspace()"> ⚙ Machinery split (ME · AE · Boiler · Other) ${info("Shows the per-machine consumption split on every fuel line, filled automatically from the MDA MAIN/AUXILIARY/BOILER consumption columns (per fuel type, the unassigned remainder is <b>Other</b>).<br><br><b>Editable:</b> changing a machine figure updates the line total; changing the total sends the difference to Other (if the new total is below ME+AE+Boiler, those scale down pro-rata).<br><br>For LNG-family fuels the ME and AE shares take their CH₄-slip class from the two consumer-class dropdowns in Settings; Boiler and Other are slip-free. The split also feeds the OVD-format download (⬇ OVD-format Excel, header) and the Report-Wise tab.")}</div>
       </div>
       ${S.rows.length? S.rows.map((r,ri)=>rowHtml(r,ri)).join("") : `<div class="card" style="text-align:center;padding:26px"><b>No activity yet.</b><div class="note" style="margin-top:6px">Add a voyage or port stay below — or click <b>⬆ Import data (OVD · MDA · THETIS)</b> in the header to load a reporting file. Set up the vessel first under <b>Settings</b>.</div></div>`}
       <button class="add" onclick="S.rows.push({kind:'voyage',label:'',from:'EEA',to:'EEA',dist:0,cargo:0,fuels:[{fuelId:'HFO',tonnes:0,price:0}]});save();renderWorkspace()">+ Add voyage</button>
@@ -1371,7 +1457,12 @@ function renderWorkspace(){
   renderLive();
 }
 
-const fmt = (x,d=2)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:Math.max(d,2),minimumFractionDigits:2});
+/* 2026-07-22f (owner, Aurvin): the hardcoded minimumFractionDigits:2 below used to force at
+   least 2 decimals even when a call site explicitly asked for fmt(x,0) — every €/£ cost
+   figure in the app passes ,0 wanting a whole number and was silently getting 2dp anyway.
+   Fixed to honour the requested d exactly, same as fmtF. DISPLAY ONLY — every value fmt()
+   receives is already fully computed; this only changes how many decimals are shown. */
+const fmt = (x,d=2)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmtI = (x)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:0});
 const fmtF = (x,d=2)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:d,minimumFractionDigits:d});
 function ratingColor(r){ return {A:"var(--ra)",B:"var(--rb)",C:"var(--rc)",D:"var(--rd)",E:"var(--re)"}[r]||"#888"; }
@@ -1418,7 +1509,7 @@ function renderLive(){
     <div class="kv"><span>Cargo quantity (Σ voyages)</span><b>${fmt(sm.cargo)} mt</b></div>
     <div class="kv"><span>Transport work</span><b>${fmt(sm.tw/1e6)} ×10⁶ t·nm</b></div>
     <h3>Fuel consumption (annual)</h3>
-    ${Object.entries(sm.fuelByType).map(([id,t])=>`<div class="kv"><span>${esc((FUEL_BY_ID[id]||{}).name||id)}</span><b>${fmt(t)} mt</b></div>`).join("")||'<p class="note">No fuel entered yet.</p>'}
+    ${Object.entries(sm.fuelByType).map(([id,t])=>`<div class="kv"><span>${esc((FUEL_BY_ID[id]||{}).name||id)}</span><b>${fmt(t,1)} mt</b></div>`).join("")||'<p class="note">No fuel entered yet.</p>'}
     <div class="kv"><span><b>Total fuel consumption</b></span><b>${fmt(sm.fuelTotal)} mt</b></div>
     <h3>Emissions &amp; intensity metrics</h3>
     <div class="kv"><span>CO₂ at berth / sea passage</span><b>${fmt(sm.co2Berth)} / ${fmt(sm.co2Sea)} mt</b></div>
@@ -1431,9 +1522,9 @@ function renderLive(){
   </div>
 
   <div class="card noprint" style="padding:10px 16px">
-    <span class="note">📊 The detailed <b>voyage &amp; berth breakdown</b> (per-row ETS %, EUA/UKA, eligible energy, CB, penalty) and the FuelEU allocation working are on the <b>🧮 Calculations</b> tab; the MDA-level <b>report-level trace</b> is on the <b>📋 Reports</b> tab — both downloadable as Excel.</span>
-    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('calcs')">Open Calculations →</button>
-    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('trace')">Open Reports →</button>
+    <span class="note">📊 The detailed <b>voyage &amp; berth breakdown</b> (per-row ETS %, EUA/UKA, eligible energy, CB, penalty) and the FuelEU allocation working are on the <b>⛵ Leg-Wise</b> tab; the MDA-level <b>report-level trace</b> is on the <b>📋 Report-Wise</b> tab — both downloadable as Excel.</span>
+    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('calcs')">Open Leg-Wise →</button>
+    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('trace')">Open Report-Wise →</button>
   </div>
 
   <div class="card">
@@ -1441,8 +1532,8 @@ function renderLive(){
     <div style="display:flex;gap:16px;align-items:center">
       <span class="badge" style="background:${ratingColor(c.rating)}">${c.rating??"—"}</span>
       <div style="flex:1">
-        <div class="kv"><span>Attained CII</span><b>${fmtF(c.attained,3)} gCO₂/${c.capUnit}·nm</b></div>
-        <div class="kv"><span>Required (Z=${c.Z}% <span class="flag">FILL-IN</span>)</span><b>${fmtF(c.ciiReq,3)}</b></div>
+        <div class="kv"><span>Attained CII</span><b>${fmtF(c.attained,2)} gCO₂/${c.capUnit}·nm</b></div>
+        <div class="kv"><span>Required (Z=${c.Z}% <span class="flag">FILL-IN</span>)</span><b>${fmtF(c.ciiReq,2)}</b></div>
       </div>
     </div>
     ${ciiBarHtml(c)}
@@ -1474,9 +1565,9 @@ function renderLive(){
         <option value="optimal" ${f.allocMethod==="optimal"?"selected":""}>Optimal — cleanest-first (ESSF WS1 §2.5)</option>
         <option value="proportional" ${f.allocMethod==="proportional"?"selected":""}>Proportional (comparison)</option>
       </select></b></div>
-    <div class="kv"><span>GHGIE<sub>actual</sub>${f.fwind<1?` (f<sub>wind</sub>=${f.fwind})`:""}</span><b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b></div>
-    <div class="kv"><span>Target (91.16 − ${f.targetPct}%)</span><b>${fmtF(f.target,5)}</b></div>
-    ${f.ghgieAlt!=null && Math.abs((f.ghgieAlt??0)-(f.ghgie??0))>1e-9?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method would give</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
+    <div class="kv"><span>GHGIE<sub>actual</sub>${f.fwind<1?` (f<sub>wind</sub>=${f.fwind})`:""}</span><b>${fmtF(f.ghgie,2)} gCO₂eq/MJ</b></div>
+    <div class="kv"><span>Target (91.16 − ${f.targetPct}%)</span><b>${fmtF(f.target,2)}</b></div>
+    ${f.ghgieAlt!=null && Math.abs((f.ghgieAlt??0)-(f.ghgie??0))>1e-9?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method would give</span><b>${fmtF(f.ghgieAlt,2)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
     <div class="kv"><span>Energy in scope (fuel + OPS)</span><b>${fmt(f.E_total/1e6)} ×10⁶ MJ</b></div>
     ${f.E_pool>f.E_total-f.opsMJ+1e-6?`<div class="kv"><span>Allocatable fuel energy (MRV pool)</span><b>${fmt(f.E_pool/1e6)} ×10⁶ MJ</b></div>`:""}
     ${f.terms&&f.terms.length?`<table class="scctable" style="margin-top:6px"><tr><th>Fuel × consumer</th><th class="num">Pool (mt)</th><th class="num">Allocated (mt)</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>
@@ -1496,9 +1587,9 @@ function renderLive(){
     <h2>SCC commercial KPIs ${info("<b>Source:</b> Sea Cargo Charter 2025 Technical Guidance — Equation 2 (§2.1), ballast-leg rule (Appendix 3), emission factors <b>Table 8</b> (Appendix 4), GWP AR6 (fossil CH₄ 29.8 · biogenic CH₄ 27.2 · N₂O 273).<br><br>2026-07-22 (owner decision): intensity is <b>well-to-wake</b>; the numerator is the ballast leg + the laden leg <b>including all port consumption</b>; the denominator is cargo × laden distance. Ballast legs have no line of their own. Cargo comes from each leg's <b>departure (SOSP)</b> report.")}</h2>
     ${sc.voyages.length? `
     <table class="scctable"><tr><th>Laden voyage</th><th class="num">Numerator WtW (mt)</th><th class="num">of which ballast</th><th class="num">of which port</th><th class="num">Transport work (×10⁶ t·nm)</th><th class="num">EEOI (gCO₂e/t·nm)</th>${S.sccReqMin?`<th class="num">Δ Min %</th>`:""}${S.sccReqStriving?`<th class="num">Δ Str %</th>`:""}</tr>
-    ${sc.voyages.map(v=>`<tr><td>${esc(v.label)}</td><td class="num">${fmt(v.numerator)}</td><td class="num">${v.ballast>0?fmt(v.ballast):"—"}</td><td class="num">${v.port>0?fmt(v.port):"—"}</td><td class="num">${fmtF(v.tw/1e6,2)}</td><td class="num">${fmtF(v.intensity,3)}</td>${S.sccReqMin?`<td class="num">${fmtF((v.intensity-S.sccReqMin)/S.sccReqMin*100,2)}</td>`:""}${S.sccReqStriving?`<td class="num">${fmtF((v.intensity-S.sccReqStriving)/S.sccReqStriving*100,2)}</td>`:""}</tr>`).join("")}
+    ${sc.voyages.map(v=>`<tr><td>${esc(v.label)}</td><td class="num">${fmt(v.numerator)}</td><td class="num">${v.ballast>0?fmt(v.ballast):"—"}</td><td class="num">${v.port>0?fmt(v.port):"—"}</td><td class="num">${fmtF(v.tw/1e6,2)}</td><td class="num">${fmtF(v.intensity,2)}</td>${S.sccReqMin?`<td class="num">${fmtF((v.intensity-S.sccReqMin)/S.sccReqMin*100,2)}</td>`:""}${S.sccReqStriving?`<td class="num">${fmtF((v.intensity-S.sccReqStriving)/S.sccReqStriving*100,2)}</td>`:""}</tr>`).join("")}
     </table>
-    <div class="kv"><span>Weighted annual intensity</span><b>${fmtF(sc.weighted,3)} gCO₂e/t·nm</b></div>
+    <div class="kv"><span>Weighted annual intensity</span><b>${fmtF(sc.weighted,2)} gCO₂e/t·nm</b></div>
     ${sc.trailingBallast>0?`<div class="note">A ballast leg at the end of ${R.year} (${fmt(sc.trailingBallast)} t WtW CO₂e) has no following laden voyage in this year — under ADR 2026 Appendix 3 it belongs to the voyage that loads next, so it is not in the figures above.</div>`:""}
     ${sc.missingFactors&&sc.missingFactors.length?`<div class="note">${sc.excluded} voyage(s) excluded — no SCC Appendix 6 well-to-wake factor for ${esc(sc.missingFactors.join(", "))}.</div>`:""}
     ${sc.deltaMin!=null?`<div class="kv"><span>Δ vs 'Minimum'</span><b style="color:${sc.deltaMin<=0?"var(--green)":"var(--red)"}">${fmtF(sc.deltaMin,2)}%</b></div>`:""}
@@ -1524,7 +1615,7 @@ function renderLive(){
   </div>
   ${R.warnings.length?`<div class="card"><h2>⚠ Assumptions &amp; items to verify</h2>${R.warnings.map(w=>`<div class="warn">${esc(w).replace(/CO2e/g,"CO₂e").replace(/CO2/g,"CO₂").replace(/CH4/g,"CH₄").replace(/N2O/g,"N₂O")}</div>`).join("")}</div>`:""}`;
   /* Order: strip → pointer → CII → EU ETS → UK ETS → FuelEU → Annual summary → SCC → P&L
-     (voyage & berth breakdown lives on the Calculations tab since 2026-07-16) */
+     (voyage & berth breakdown lives on the Leg-Wise tab since 2026-07-16) */
   const cards=[...el.querySelectorAll(":scope > .card")];
   const byH=t=>cards.find(cd=>{const h=cd.querySelector("h2");return h&&h.textContent.indexOf(t)>=0;});
   const anchor=byH("SCC commercial");
@@ -1535,7 +1626,7 @@ function renderLive(){
 /* ============ CALCULATIONS TAB (2026-07-16, Aurvin) ============
    Detailed calculation tables: the voyage & berth breakdown (moved out of the live
    panel) plus FuelEU allocation and EU ETS working. The report-level trace table
-   moved to its own Reports tab on 2026-07-19 (see renderTrace() below). All Excel
+   moved to its own Report-Wise tab on 2026-07-19 (see renderTrace() below). All Excel
    files are generated fully offline by the minimal writer below (stored-ZIP OOXML
    — no libraries, works in the standalone). */
 function crc32(u8){
@@ -1644,7 +1735,7 @@ function downloadBreakdownXlsx(){
 /* ---- Excel: OVD-format report-level download (diagnostics) ---- */
 function downloadReportsXlsx(){
   const all=S.mdaReports||[]; if(!all.length){ alert("No report-level data — import an MDA file first."); return; }
-  /* 2026-07-22 (Aurvin): follows the Reports table's tick selection — ticked events only, or
+  /* 2026-07-22 (Aurvin): follows the Report-Wise table's tick selection — ticked events only, or
      every event when nothing is ticked. A filtered file is named "…_selected" so a partial
      export can never be mistaken for the full OVD submission set. */
   const sub = ROWSEL.tr.sel.size>0 && TR_LAST && TR_LAST.length===all.length;
@@ -1706,7 +1797,7 @@ const TR_ACTS = {
    breakdown grid and the report-level trace table, so the two stay visually consistent */
 const ICON_VOYAGE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M12 4V18 M7 13l5 5 5-5"></path></svg>';
 const ICON_BERTH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="12" r="7"></circle></svg>';
-/* Reports-tab event-column circle, filled and coloured by role: red = ARRIVAL, green = DEPARTURE,
+/* Report-Wise tab event-column circle, filled and coloured by role: red = ARRIVAL, green = DEPARTURE,
    blue = plain in-port stay (role unset) — distinct from ICON_BERTH's fixed grey used elsewhere */
 const ROLE_ICON_COLOR = { ARRIVAL:"#b3261e", DEPARTURE:"#22c55e" };
 function berthIcon(r){
@@ -1741,9 +1832,9 @@ function trFuelLines(r){
     const total=(r.fuels||{})[n], m=r.mach, hasSplit=!!m && total!=null;
     const me=hasSplit?((m.ME||{})[n]||0):null, ae=hasSplit?((m.AE||{})[n]||0):null, blr=hasSplit?((m.BLR||{})[n]||0):null;
     return { name:n,
-      total: total!=null? total.toFixed(2):"—",
-      me: hasSplit? me.toFixed(2):"—", ae: hasSplit? ae.toFixed(2):"—", blr: hasSplit? blr.toFixed(2):"—",
-      oth: hasSplit? Math.max(0,total-me-ae-blr).toFixed(2):"—",
+      total: total!=null? total.toFixed(1):"—",
+      me: hasSplit? me.toFixed(1):"—", ae: hasSplit? ae.toFixed(1):"—", blr: hasSplit? blr.toFixed(1):"—",
+      oth: hasSplit? Math.max(0,total-me-ae-blr).toFixed(1):"—",
       rob: (r.rob||{})[n]!=null? r.rob[n].toFixed(1):"—",
       hasBunk: bunk[n]!=null, bunk: bunk[n]!=null? "+"+bunk[n].toFixed(1):"",
       bg: i%2===1? "#f1f5f9":"transparent" };
@@ -1811,7 +1902,7 @@ function trCoverage(r){
    correct even if the trace renders before any recompute of S. Idempotent and cheap. */
 function trAnnotate(){ if(typeof annotateVoyageContinuity==="function") annotateVoyageContinuity(S.rows); }
 
-/* ---- Reports total row (2026-07-22, Aurvin) -----------------------------------------
+/* ---- Report-Wise total row (2026-07-22, Aurvin) -----------------------------------------
    Sits as the FIRST row of the table, inside <thead>, so it stays pinned with the column
    headers while the events scroll under it. It sums the TICKED events (all events when
    none are ticked). Distance and the consumption columns are additive and are summed, one
@@ -1854,16 +1945,16 @@ function trTotalsHtml(){
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_SEL}z-index:13;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px"></td>
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_EVT}z-index:13;font-size:12px;font-weight:700;color:#0f172a;white-space:nowrap;border-right:1px solid #cbd5e1">TOTAL</td>
     <td colspan="4" style="padding:${pad};background:#eef2f7;font-size:11.5px;font-weight:600;color:#475569;white-space:nowrap">${esc(rowselLabel("tr",all.length,S.year).replace(/^Total — /,""))}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_MONO};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,2)}</td>
+    <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_MONO};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,0)}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;border-left:1px solid #cbd5e1">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#334155;font-family:${TR_MONO}`,esc(f.name))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,numStyle,fmtF(f.total,2))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.me,2))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.ae,2))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.blr,2))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.oth,2))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,numStyle,fmtF(f.total,1))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.me,1))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.ae,1))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.blr,1))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.oth,1))).join("")}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:right;border-right:1px solid #cbd5e1" title="ROB is a stock reading at each event, not a flow — it cannot be summed">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:right">${dash}</td>`;
 }
@@ -1928,12 +2019,12 @@ function reportTraceTable(reps){
       <td style="padding:${pad};vertical-align:top;white-space:nowrap">${actHtml}</td>
       <td style="padding:${pad};vertical-align:top">${portHtml}</td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,2):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,0):"—"}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.eu)}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.feu)}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.uk)}</td>
       ${fuelTds}
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qty?fmt(r.qty):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qty?fmtI(r.qty):"—"}</td>
     </tr>`;
   }).join("");
   return `
@@ -1985,7 +2076,14 @@ const JURIS_PAL = {
    header instead; everything from column 5 on shifted down by one vs. the old 16-column grid) */
 /* 2026-07-22c: 15 → 20 columns — the Sea Cargo Charter block (16–20) was added to the right
    of UK ETS: Cargo · Transport work · TtW CO₂e · WtW CO₂e · EEOI */
-const BR_GRID = "minmax(150px,2.6fr) minmax(64px,0.7fr) minmax(90px,0.9fr) minmax(54px,0.7fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr) minmax(68px,0.9fr) minmax(64px,0.85fr) minmax(58px,0.8fr) minmax(58px,0.8fr) minmax(62px,0.85fr)";
+/* 2026-07-22e (owner, Aurvin — DISPLAY ONLY, calculations unchanged): the Cargo column (16)
+   was widened (68→92px) because a 6-digit cargo tonnage was overflowing into the TW column
+   and the two figures ran together. Same session the owner asked to drop decimals from
+   crowded mass figures: Cargo shows whole tonnes everywhere (leg rows, totals, and the
+   Report-Wise "Cargo mt" cell); the breakdown TOTALS row shows CO₂/EUA/UKA/TtW/WtW as whole
+   numbers (leg rows keep their 2dp); and EEOI shows 2dp everywhere (was 3). Rounding is at
+   the fmtF() call only — the engine still computes and sums full-precision values. */
+const BR_GRID = "minmax(172px,3.05fr) minmax(64px,0.7fr) minmax(64px,0.6fr) minmax(58px,0.55fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr) minmax(92px,1fr) minmax(70px,0.9fr) minmax(58px,0.8fr) minmax(58px,0.8fr) minmax(62px,0.85fr)";
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
 /* jurisdiction of a berth port: OMR wins, else EU/UK zone, else null (no badge) */
@@ -2005,7 +2103,7 @@ const brDash = '<span style="color:#94a3b8">—</span>';
 /* SCC has no Appendix 6 factor for this fuel — shown distinctly from a plain "no obligation"
    dash, because it means "we will not guess", not "nothing to report" (2026-07-22c) */
 const brNoFactor = '<span style="color:#c2864a;cursor:help" title="No SCC Technical Guidance v5.2 Appendix 6 well-to-wake factor for this fuel in the knowledge base. Appendix 6 covers HSHFO, VLSFO and MGO (and FAME/HVO blends of them). Enter the certified WtW factor for this fuel to complete the calculation — the FuelEU factor is deliberately NOT substituted.">n/a</span>';
-function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp||2); }
+function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp??2); }
 
 /* build the {label,juris} ports for a leg from its aligned source row */
 function legPorts(det, row){
@@ -2121,11 +2219,11 @@ function breakdownGrid(R, tips){
       <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
       <div style="grid-column:3 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
       <div style="grid-column:5 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS</div>
-      <div style="grid-column:14 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS</div>
+      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:14 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
       <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:3;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;white-space:nowrap">Fuel type</div>
-      <div style="grid-column:4;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0" title="Fuel consumed (tonnes)">Cons. mt</div>
+      <div style="grid-column:3;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      <div style="grid-column:4;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">Cons. mt</div>
       <div style="grid-column:5;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
       <div style="grid-column:6;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">Elig. mt</div>
       <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Energy (10⁶ MJ)</div>
@@ -2133,15 +2231,15 @@ function breakdownGrid(R, tips){
       <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">CB</div>
       <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Penalty (€)</div>
       <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (mt) ${tips.cf}</div>
-      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e) ${tips.eua}</div>
+      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (mt)</div>
+      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e)</div>
       <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e) ${tips.uka}</div>
+      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e)</div>
       <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">Cargo (mt)</div>
       <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">TW (10⁶ t·nm)</div>
       <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">TtW (mt)</div>
       <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">WtW (mt)</div>
-      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Adapted EEOI, gCO₂e per tonne-mile (ADR 2026 Appendix 3)">EEOI ${tips.eeoi}</div>
+      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">EEOI</div>
     </div>`;
 
   let zi=0;
@@ -2167,7 +2265,7 @@ function breakdownGrid(R, tips){
     const cargoIcon = cargo ? `<span title="Port of call (cargo activity)" style="cursor:help;font-size:13px;line-height:1.35;flex:none">📦</span>` : "";
     const legTag = isBerth ? "@BERTH" : "VOYAGE";
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
-    const dist = d.kind==="voyage" ? brNum(d.dist) : brDash;
+    const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
     const covEU = d.covEU, covUK = d.covUK;
 
     /* one grid line per fuel (+ optional bold leg-total line), every column filled */
@@ -2179,14 +2277,14 @@ function breakdownGrid(R, tips){
                              : (covEU>0 ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8");
       const cell = (col,extra,val)=>`<div style="grid-column:${col};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
       return `
-        <div style="grid-column:3;grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};white-space:nowrap">${esc(fu.label)}</div>
-        ${cell(4,"border-right:1px solid #e2e8f0;", fmtF(fu.tonnes,2))}
+        <div style="grid-column:3;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
+        ${cell(4,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(fu.tonnes,1))}
         ${cell(5,"color:#475569;", fu.isTotal?brDash:brPct(covEU))}
-        ${cell(6,"", brNum(fu.eligibleEU))}
+        ${cell(6,"", brNum(fu.eligibleEU,1))}
         ${cell(7,"", brNum(fu.energy))}
         ${cell(8,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
         ${cell(9,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
-        ${cell(10,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,2) : brDash)}
+        ${cell(10,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}
         ${cell(11,"color:#475569;", fu.isTotal?brDash:brPct(covEU))}
         ${cell(12,"", brNum(fu.co2))}
         ${cell(13,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
@@ -2201,10 +2299,10 @@ function breakdownGrid(R, tips){
        would invite reading it as additive. Berth rows carry none of this: SCC measures the
        carriage of cargo over a distance. */
     const sccLeg = !isBerth ? `
-        <div style="grid-column:16;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.cargo>0? fmtF(d.cargo,2) : (d.dist>0? `<span style="color:#94a3b8" title="Ballast leg — no cargo on the departure (SOSP) report. Its WtW CO₂e is carried into the next laden voyage (ADR 2026 Appendix 3).">ballast</span>` : brDash)}</div>
+        <div style="grid-column:16;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.cargo>0? fmtF(d.cargo,0) : (d.dist>0? `<span style="color:#94a3b8" title="Ballast leg — no cargo on the departure (SOSP) report. Its WtW CO₂e is carried into the next laden voyage (ADR 2026 Appendix 3).">ballast</span>` : brDash)}</div>
         <div style="grid-column:17;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.tw>0? fmtF(d.tw/1e6,2) : brDash}</div>
         <div style="grid-column:20;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a6b1f">${
-          d.eeoi!=null ? fmtF(d.eeoi,3) + ((d.sccBallast>0||d.sccPort>0)? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(d.sccNumerator,2)} t WtW CO₂e = this leg's own ${fmtF(d.sccWtW,2)}${d.sccBallast>0?` + ${fmtF(d.sccBallast,2)} carried in from the preceding ballast leg (and its port stays)`:""}${d.sccPort>0?` + ${fmtF(d.sccPort,2)} from this voyage's own loading/discharge stays`:""}"> ⊕</span>` : "")
+          d.eeoi!=null ? fmtF(d.eeoi,2) + ((d.sccBallast>0||d.sccPort>0)? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(d.sccNumerator,2)} t WtW CO₂e = this leg's own ${fmtF(d.sccWtW,2)}${d.sccBallast>0?` + ${fmtF(d.sccBallast,2)} carried in from the preceding ballast leg (and its port stays)`:""}${d.sccPort>0?` + ${fmtF(d.sccPort,2)} from this voyage's own loading/discharge stays`:""}"> ⊕</span>` : "")
           : (d.sccNoFactor? brNoFactor : brDash)}</div>`
       /* berth rows: no cargo or transport work of their own, but their fuel IS counted —
          say where, so the attribution is auditable rather than invisible (2026-07-22d) */
@@ -2287,24 +2385,24 @@ function brTotalsHtml(){
   return `
     <div style="display:grid;grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px"><span style="width:${SELCOL_W-8}px;flex:none"></span>${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
-      ${cell(2,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),2))}
-      ${cell(4,"border-right:1px solid #e2e8f0;", fmtF(sumF("tonnes"),2))}
+      ${cell(2,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),0))}
+      ${cell(4,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(sumF("tonnes"),1))}
       <div style="grid-column:5;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(6,"", fmtF(sumF("eligibleEU"),2))}
+      ${cell(6,"", fmtF(sumF("eligibleEU"),1))}
       ${cell(7,"", fmtF(sumEnergy,2))}
       ${cell(8,"", fmtF(sum("E")/1e6,2))}
       ${cell(9,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
-      ${cell(10,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),2))}
+      ${cell(10,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
       <div style="grid-column:11;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(12,"", fmtF(sum("co2"),2))}
-      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
+      ${cell(12,"", fmtF(sum("co2"),0))}
+      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),0))}
       <div style="grid-column:14;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
-      ${cell(16,"color:#475569;", fmtF(sum("cargo"),2))}
+      ${cell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),0))}
+      ${cell(16,"color:#475569;", fmtF(sum("cargo"),0))}
       ${cell(17,"color:#475569;", fmtF(sum("tw")/1e6,2))}
-      ${cell(18,"color:#334155;", fmtF(sum("sccTtW"),2))}
-      ${cell(19,"color:#9a6b1f;", fmtF(sum("sccWtW"),2))}
-      ${cell(20,"color:#9a6b1f;", eeoiTot!=null? fmtF(eeoiTot,3) : brDash)}
+      ${cell(18,"color:#334155;", fmtF(sum("sccTtW"),0))}
+      ${cell(19,"color:#9a6b1f;", fmtF(sum("sccWtW"),0))}
+      ${cell(20,"color:#9a6b1f;", eeoiTot!=null? fmtF(eeoiTot,2) : brDash)}
     </div>`;
 }
 
@@ -2316,11 +2414,13 @@ function renderCalcs(){
   const el=document.getElementById("tab-calcs"); if(!el) return;
   const R=computeAll(S);
   const f=R.fueleu, e=R.ets, u=R.ukets;
-  const iCf=info("<b>CO₂ conversion factors (Cf, tCO₂/t fuel)</b> per FuelEU Annex II / MEPC.308(73): HFO 3.114 · LFO 3.151 · MGO 3.206 · LNG 2.750 · LPG(P) 3.000 · LPG(B) 3.030 · methanol 1.375. CII uses Cf only (CO₂); optional per-line Circ.905 override applies to CII.");
-  const iEUA=info("<b>EUA</b> = covered emissions × phase-in ("+(e.phase*100)+"% for "+R.year+", euets-art3gb). Basis "+esc(e.basisLabel)+(R.year>=2026?" with CH₄/N₂O at GWP "+e.gwp.ch4+"/"+e.gwp.n2o+" ("+esc(e.gwp.label)+", selectable in Settings — FILL-IN)":"")+". Coverage: EEA↔EEA & at-berth-EEA 100%, EEA↔other 50% (euets-art3ga); at-berth scope only for port-of-call stays.");
-  const iUKA=info("<b>UKA</b> = tCO₂e for UK-scope activity (UK→UK voyages + UK in-port, ukets-sch2a-p7) with GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35, prescribed). Obligation applies from scheme year 2026.");
+  /* 2026-07-22e — Cov./CO₂/EUAs and Cov./UKAs tooltips merged up from the sticky
+     header's 2nd row into one group-header icon per regime (owner request: keep the
+     2nd row clean, put the explanation where the group name already is). */
+  const iEUETS=info("<b>Cov.</b> — EU ETS coverage %: EEA↔EEA & at-berth-EEA 100%, EEA↔other 50% (euets-art3ga); at-berth scope = port-of-call stays only.<br><br><b>CO₂ (mt)</b> — Cf, tCO₂/t fuel (FuelEU Annex II / MEPC.308(73)): HFO 3.114 · LFO 3.151 · MGO 3.206 · LNG 2.750 · LPG(P) 3.000 · LPG(B) 3.030 · methanol 1.375.<br><br><b>EUAs</b> = covered × phase-in ("+(e.phase*100)+"% for "+R.year+", euets-art3gb). Basis "+esc(e.basisLabel)+(R.year>=2026?" · CH₄/N₂O at GWP "+e.gwp.ch4+"/"+e.gwp.n2o+" ("+esc(e.gwp.label)+", selectable in Settings — FILL-IN)":"")+".");
+  const iUKETS=info("<b>Cov.</b> — UK ETS scope: UK→UK voyages + UK in-port activity (ukets-sch2a-p7).<br><br><b>UKAs</b> = tCO₂e for that covered activity, GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35, prescribed). Obligation from scheme year 2026.");
   const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. Scope like EU ETS coverage. The annual balance/penalty is shared out by each row's in-scope energy — <b>indicative only</b>, FuelEU is period-based in law. Allocation method: "+(f.allocMethod==="optimal"?"optimal (cleanest-first, essf-ws1-2-5)":"proportional (comparison)")+".");
-  const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Formulas tab. Eligible energy = eligible mass × 10⁶ × LCV.");
+  const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Calculations tab. Eligible energy = eligible mass × 10⁶ × LCV.");
   /* 2026-07-22c — the owner asked for an info icon that names every factor used, so the
      numbers can be checked against the Technical Guidance without reading the code */
   const sc0 = R.scc||{};
@@ -2343,22 +2443,14 @@ function renderCalcs(){
     <b>Biogenic CO₂</b> is tracked separately for bio fuels and is <b>not</b> added into WtW, as in Table 8.<br><br>
     <b>Cargo</b> comes from the leg's <b>DEPARTURE (SOSP)</b> report. A leg whose SOSP report shows no cargo is marked <b>ballast</b>.<br><br>
     Fuels Table 8 does not list — the RFNBO e-fuels — show <b>n/a</b> rather than borrowing another regime's factor.<br><br>
-    <b>Transport work</b> is shown in <b>10⁶ tonne-miles</b> to keep the column narrow.`,"right");
-  const iEEOI=info(`<b>Adapted EEOI</b> (gCO₂e per tonne-mile) — Technical Guidance Equation 2, with the leg boundaries you specified on 2026-07-22:<br><br>
-    <b>numerator</b> = well-to-wake CO₂e of the <b>ballast leg + the laden leg, including all port consumption</b><br>
-    <b>denominator</b> = cargo (t) × <b>laden distance only</b> (nm)<br><br>
-    <b>Ballast leg</b> = departure from the previous discharge berth → arrival at the first loading berth (any bunkering, anchorage or waiting stay in that window rides with it).<br>
-    <b>Laden leg</b> = arrival at the first loading berth → departure from the final discharge berth, which absorbs the loading stay, the sea passage and the discharge stay.<br><br>
-    <b>No port consumption is ever missed</b>: every berth row is attributed to one leg or the other, and each berth row shows in this column where its fuel was counted.<br><br>
-    A ballast leg has no EEOI of its own — Appendix 3: "ballast legs are included in each voyage by accounting for the emissions from the preceding ballast leg while no transport work is carried out". A voyage carrying folded-in emissions is marked <b>⊕</b>; hover for the split.<br><br>
-    The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-leg values.<br><br>
-    Lower is better. Enter the year's required 'Minimum' / 'Striving' intensities on the Workspace SCC card to see the alignment Δ.`,"right");
-  const brInner=breakdownGrid(R,{lcv:iLCV,cf:iCf,eua:iEUA,uka:iUKA,feu:iFEU,scc:iSCC,eeoi:iEEOI});
+    <b>Transport work</b> is shown in <b>10⁶ tonne-miles</b> to keep the column narrow.<br><br>
+    <b>EEOI</b> (gCO₂e/t·nm, Technical Guidance Eq. 2) = WtW CO₂e of the ballast + laden legs, all port consumption included, ÷ (cargo × <b>laden distance only</b>). A ballast leg has no EEOI of its own — its emissions fold into the following laden voyage (Appendix 3); <b>⊕</b> marks a folded voyage, hover the row for the split. The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-leg values. Lower is better — enter the year's required 'Minimum'/'Striving' intensities on the Workspace SCC card to see the alignment Δ.`,"right");
+  const brInner=breakdownGrid(R,{lcv:iLCV,euets:iEUETS,ukets:iUKETS,feu:iFEU,scc:iSCC});
   const iBreakdown=info(`All figures rounded to 2 decimal places (LCV: 4).<br><br>— indicates no obligation (out of scope or OMR derogation until 2030).<br><br>CB = FuelEU compliance balance; negative values are deficits.<br><br>📦 = port of call (cargo activity).<br><br>OMR = outermost region.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).`,"right");
   const iPool=info(`Pool = all MRV-monitored fuel (incl. the uncovered half of 50% voyages), per fuel × consumer class. Optimal fills the scope cleanest-first by effective intensity (WtW ÷ RWD); grey rows stay unallocated. GHGIE = Σ allocated·WtW ÷ (Σ allocated·RWD + OPS)${f.fwind<1?" × f<sub>wind</sub> "+f.fwind:""}.`);
   el.innerHTML=`
   <div class="card panelA" onclick="closeWorkingsIfOpen()">
-    <h2>Voyage &amp; berth breakdown — ${R.year}
+    <h2>Leg-Wise breakdown - ${R.year}
       <button class="pill hbtn noprint" style="float:right" onclick="downloadBreakdownXlsx()">⬇ Excel</button>
       <span style="float:right;margin-right:8px">${iBreakdown}</span></h2>
     ${brInner}
@@ -2371,8 +2463,8 @@ function renderCalcs(){
         <div class="wlabel">FuelEU allocation ${iPool}</div>
         <div class="kv"><span>Method</span><b>${f.allocMethod==="optimal"?"Optimal — cleanest-first (essf-ws1-2-5)":"Proportional (comparison)"} — switch on the Workspace FuelEU card</b></div>
         <div class="kv"><span>Energy scope (fuel + OPS) / MRV pool</span><b>${fmt(f.E_total/1e6)} / ${fmt(f.E_pool/1e6)} ×10⁶ MJ</b></div>
-        <div class="kv"><span>GHGIE attained vs target</span><b>${fmtF(f.ghgie,5)} vs ${fmtF(f.target,5)} gCO₂eq/MJ</b></div>
-        ${f.ghgieAlt!=null?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method (comparison)</span><b>${fmtF(f.ghgieAlt,5)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
+        <div class="kv"><span>GHGIE attained vs target</span><b>${fmtF(f.ghgie,2)} vs ${fmtF(f.target,2)} gCO₂eq/MJ</b></div>
+        ${f.ghgieAlt!=null?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method (comparison)</span><b>${fmtF(f.ghgieAlt,2)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
         ${f.terms&&f.terms.length?`<table class="scctable"><tr><th>Fuel × consumer</th><th class="num">Pool mt</th><th class="num">Pool ×10⁶ MJ</th><th class="num">Allocated mt</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtT g/MJ</th><th class="num">TtW g/MJ (incl. slip)</th><th class="num">WtW g/MJ</th><th class="num">RWD</th></tr>
           ${f.terms.map(t=>`<tr${t.E<=0?' style="color:#999"':''}><td>${esc(t.name)}${t.m?` <span class="note">· ${t.m==="BLR"?"Boiler":t.m==="OTH"?"Other":esc(t.m)}${(t.m==="ME"||t.m==="AE")?" — "+esc(t.engine):""}</span>`:""}</td>
             <td class="num">${fmt(t.tonnesPool)}</td><td class="num">${fmtF(t.E_pool/1e6,3)}</td><td class="num">${fmt(t.tonnes)}</td><td class="num">${fmtF(t.E/1e6,3)}</td>
@@ -2479,7 +2571,7 @@ function renderVessel(){
 }
 
 /* ---------- FORMULAS / CONSTANTS / PROVENANCE TAB ---------- */
-/* Formulas tab: switch between per-regulation sub-tabs (in-memory show/hide, no persistence). */
+/* Calculations tab: switch between per-regulation sub-tabs (in-memory show/hide, no persistence). */
 function showFormulaSub(name){
   document.querySelectorAll("#tab-constants .fsub").forEach(d=>d.classList.toggle("on", d.id==="fsub-"+name));
   document.querySelectorAll("#tab-constants .fsubbar button").forEach(b=>b.classList.toggle("on", b.getAttribute("data-fsub")===name));
@@ -2487,7 +2579,7 @@ function showFormulaSub(name){
 
 /* ---------- LIVE WORKED EXAMPLE ("Your ship") — 2026-07-20 ----------
    Display-only: every value below is read from computeAll(S) (the SAME engine result the
-   Workspace cards and Calculations tab use). The only display-side arithmetic is regrouping
+   Workspace cards and Leg-Wise tab use). The only display-side arithmetic is regrouping
    (per-fuel CO2 lines, coverage counts, headroom) — each regrouped total is asserted against
    the engine total in runSelfTests(). No engine/derivation/coverage logic is touched. */
 const FEX_LIVE = { cii:false, euets:false, ukets:false, fueleu:false, scc:false };
@@ -2523,7 +2615,7 @@ function fexLiveCII(R){
   let rows="", sumT=0;
   for(const id of ids){
     const f = FUEL_BY_ID[id]||{}; const t = fbt[id]; const cf = Number(f.cf)||0; const co2 = t*cf; sumT += co2;
-    rows += `<tr><td>${esc(f.name||id)}</td><td class="num">${fmtF(t,2)}</td><td class="num">${fmtF(cf,3)}</td><td class="num">${fmtF(co2,2)}</td></tr>`;
+    rows += `<tr><td>${esc(f.name||id)}</td><td class="num">${fmtF(t,1)}</td><td class="num">${fmtF(cf,3)}</td><td class="num">${fmtF(co2,2)}</td></tr>`;
   }
   const override = (S.rows||[]).some(r=>(r.fuels||[]).some(fr=>fr.ciiCf!==undefined&&fr.ciiCf!==""&&fr.ciiCf!=null));
   const cap = Number((S.ship||{}).capacity)||0;
@@ -2537,18 +2629,18 @@ function fexLiveCII(R){
     ${(cap>0&&c.totalDist>0)?`<p>W = Capacity × Dt = ${fmtI(cap)} ${c.capUnit} × ${fmtI(c.totalDist)} nm = <b>${fmtI(cap*c.totalDist)} ${c.capUnit}·nm</b>.</p>`
     :`<p>${cap>0?`Sailed distance in ${R.year} is 0 nm — add voyages with distance on the Workspace tab`:`Capacity is not set — enter it on the Settings tab`} to complete the attained-CII calculation.</p>`}</div></div>`;
   out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Attained CII</span>
-    ${c.attained!=null?`<p>attained = M ÷ W = <b>${fmtF(c.attained,3)} gCO₂/${c.capUnit}·nm</b>.</p>`
+    ${c.attained!=null?`<p>attained = M ÷ W = <b>${fmtF(c.attained,2)} gCO₂/${c.capUnit}·nm</b>.</p>`
     :`<p>Needs both capacity and distance (above) before it can be computed.</p>`}</div></div>`;
   out += `<div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Reference line</span>
-    <p>For ${esc(c.type)}: a = ${fmtI(c.g2.a)}, c = ${c.g2.c}. CII_ref = a × ${fmtI(c.g2.cap)}⁻ᶜ = <b>${fmtF(c.ciiRef,3)}</b>.${c.g2.note?` <span class="note">${esc(c.g2.note)}</span>`:""}</p></div></div>`;
+    <p>For ${esc(c.type)}: a = ${fmtI(c.g2.a)}, c = ${c.g2.c}. CII_ref = a × ${fmtI(c.g2.cap)}⁻ᶜ = <b>${fmtF(c.ciiRef,2)}</b>.${c.g2.note?` <span class="note">${esc(c.g2.note)}</span>`:""}</p></div></div>`;
   out += `<div class="fstep"><div class="n">5</div><div class="body"><span class="sh">This year's requirement</span>
-    <p>Z for ${R.year} is ${c.Z}%. required = (1 − ${c.Z}/100) × ${fmtF(c.ciiRef,3)} = <b>${fmtF(c.ciiReq,3)}</b>. <span class="flag">FILL-IN</span> — the numeric Z is not in the KB.</p></div></div>`;
+    <p>Z for ${R.year} is ${c.Z}%. required = (1 − ${c.Z}/100) × ${fmtF(c.ciiRef,2)} = <b>${fmtF(c.ciiReq,2)}</b>. <span class="flag">FILL-IN</span> — the numeric Z is not in the KB.</p></div></div>`;
   out += `<div class="fstep"><div class="n">6</div><div class="body"><span class="sh">Rating</span>
-    ${c.rating?`<p>Boundaries: A ≤ ${fmtF(c.bounds.sup,3)} · B ≤ ${fmtF(c.bounds.low,3)} · C ≤ ${fmtF(c.bounds.up,3)} · D ≤ ${fmtF(c.bounds.inf,3)}. Attained ${fmtF(c.attained,3)} → <b style="color:${ratingColor(c.rating)}">rating ${c.rating}</b>.</p>`
+    ${c.rating?`<p>Boundaries: A ≤ ${fmtF(c.bounds.sup,2)} · B ≤ ${fmtF(c.bounds.low,2)} · C ≤ ${fmtF(c.bounds.up,2)} · D ≤ ${fmtF(c.bounds.inf,2)}. Attained ${fmtF(c.attained,2)} → <b style="color:${ratingColor(c.rating)}">rating ${c.rating}</b>.</p>`
     :`<p>Rating needs the attained value (capacity + distance) first.</p>`}</div></div>`;
   if(c.rating){
     const nextEdge = c.rating==="A"?c.bounds.sup:c.rating==="B"?c.bounds.low:c.rating==="C"?c.bounds.up:c.rating==="D"?c.bounds.inf:null;
-    out += `<div class="ftake"><b>Takeaway:</b> ${esc(S.ship.name||"the ship")} attains ${fmtF(c.attained,3)} against a ${R.year} requirement of ${fmtF(c.ciiReq,3)} — rating <b>${c.rating}</b>.${(nextEdge!=null&&c.rating!=="E")?` Next band boundary at ${fmtF(nextEdge,3)}.`:""}</div>`;
+    out += `<div class="ftake"><b>Takeaway:</b> ${esc(S.ship.name||"the ship")} attains ${fmtF(c.attained,2)} against a ${R.year} requirement of ${fmtF(c.ciiReq,2)} — rating <b>${c.rating}</b>.${(nextEdge!=null&&c.rating!=="E")?` Next band boundary at ${fmtF(nextEdge,2)}.`:""}</div>`;
   }
   return out;
 }
@@ -2612,14 +2704,14 @@ function fexLiveFuelEU(R){
     for(const t of al) tr += `<tr><td>${esc(t.name)}</td><td class="num">${fmtF(t.E/1e6,3)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td></tr>`;
     out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity of the allocated mix</span>
       <table class="scctable"><tr><th>Fuel × consumer</th><th class="num">Alloc ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>${tr}</table>
-      <p>Energy-weighted GHGIE = <b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b>${f.fwind<1?` (incl. wind factor ${f.fwind})`:""}. Full allocation table on the 🧮 Calculations tab.</p></div></div>`;
+      <p>Energy-weighted GHGIE = <b>${fmtF(f.ghgie,2)} gCO₂eq/MJ</b>${f.fwind<1?` (incl. wind factor ${f.fwind})`:""}. Full allocation table on the ⛵ Leg-Wise tab.</p></div></div>`;
   } else {
-    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity</span><p>GHGIE = <b>${fmtF(f.ghgie,5)} gCO₂eq/MJ</b>.</p></div></div>`;
+    out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Intensity</span><p>GHGIE = <b>${fmtF(f.ghgie,2)} gCO₂eq/MJ</b>.</p></div></div>`;
   }
   out += `<div class="fstep"><div class="n">4</div><div class="body"><span class="sh">Target</span>
-    <p>${R.year} target = 91.16 × (1 − ${f.targetPct}%) = <b>${fmtF(f.target,5)} gCO₂eq/MJ</b>.</p></div></div>`;
+    <p>${R.year} target = 91.16 × (1 − ${f.targetPct}%) = <b>${fmtF(f.target,2)} gCO₂eq/MJ</b>.</p></div></div>`;
   out += `<div class="fstep"><div class="n">5</div><div class="body"><span class="sh">Compliance balance</span>
-    <p>CB = (target − GHGIE) × E = (${fmtF(f.target,3)} − ${fmtF(f.ghgie,3)}) × ${fmtF(f.E_total/1e6,3)}×10⁶ = <b>${fmt(f.cb/1e6)} t CO₂eq</b> (${f.cb<0?"deficit":"surplus"}).</p></div></div>`;
+    <p>CB = (target − GHGIE) × E = (${fmtF(f.target,2)} − ${fmtF(f.ghgie,2)}) × ${fmtF(f.E_total/1e6,3)}×10⁶ = <b>${fmt(f.cb/1e6)} t CO₂eq</b> (${f.cb<0?"deficit":"surplus"}).</p></div></div>`;
   const flex=[];
   if(f.banked) flex.push(`banked in ${fmt(f.banked/1e6)} t`);
   if(f.poolCB) flex.push(`pool partner ${fmt(f.poolCB/1e6)} t`);
@@ -2628,9 +2720,9 @@ function fexLiveFuelEU(R){
   if(f.penalty>0){
     out += `<div class="fstep"><div class="n">${flex.length?7:6}</div><div class="body"><span class="sh">Penalty</span>
       <p>penalty = |CB| ÷ (GHGIE × 41,000) × 2,400${f.mult>1?` × ${f.mult} (consecutive deficit years)`:""} = <b>€${fmtI(f.penalty)}</b>.</p></div></div>`;
-    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU intensity ${fmtF(f.ghgie,3)} vs target ${fmtF(f.target,3)} → penalty <b>€${fmtI(f.penalty)}</b>.</div>`;
+    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU intensity ${fmtF(f.ghgie,2)} vs target ${fmtF(f.target,2)} → penalty <b>€${fmtI(f.penalty)}</b>.</div>`;
   } else if(f.surplusValue>0){
-    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU is compliant (intensity ${fmtF(f.ghgie,3)} ≤ target ${fmtF(f.target,3)}); surplus worth ≈ <b>€${fmtI(f.surplusValue)}</b> if banked or pooled.</div>`;
+    out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU is compliant (intensity ${fmtF(f.ghgie,2)} ≤ target ${fmtF(f.target,2)}); surplus worth ≈ <b>€${fmtI(f.surplusValue)}</b> if banked or pooled.</div>`;
   } else {
     out += `<div class="ftake"><b>Takeaway:</b> ${R.year} FuelEU balance is essentially zero — no penalty.</div>`;
   }
@@ -2647,19 +2739,19 @@ function fexLiveSCC(R){
   let out = fexContext(R);
   const show = v.slice(0,10);
   let tr="";
-  for(const x of show) tr += `<tr><td>${esc(x.label)}</td><td class="num">${fmtF(x.wtw,2)}</td><td class="num">${x.ballast>0?fmtF(x.ballast,2):"—"}</td><td class="num">${fmtF(x.numerator,2)}</td><td class="num">${fmtI(x.tw)}</td><td class="num">${fmtF(x.intensity,3)}</td></tr>`;
+  for(const x of show) tr += `<tr><td>${esc(x.label)}</td><td class="num">${fmtF(x.wtw,2)}</td><td class="num">${x.ballast>0?fmtF(x.ballast,2):"—"}</td><td class="num">${fmtF(x.numerator,2)}</td><td class="num">${fmtI(x.tw)}</td><td class="num">${fmtF(x.intensity,2)}</td></tr>`;
   out += `<div class="fstep"><div class="n">1</div><div class="body"><span class="sh">Each laden voyage's intensity</span>
     <table class="scctable"><tr><th>Laden voyage</th><th class="num">own WtW t CO₂e</th><th class="num">+ ballast leg</th><th class="num">numerator</th><th class="num">t·nm (laden)</th><th class="num">g/t·nm</th></tr>${tr}</table>
     <p class="note">Per ADR 2026 Appendix 3 the numerator is the well-to-wake CO₂e of the ballast leg <b>plus</b> the laden leg, while the denominator is cargo × <b>laden distance only</b>. Ballast legs have no row of their own — they are folded into the voyage that loads next.</p>
     ${v.length>10?`<p class="note">… and ${v.length-10} more voyage(s) — all counted in the weighted figure below.</p>`:""}</div></div>`;
   out += `<div class="fstep"><div class="n">2</div><div class="body"><span class="sh">Weighted intensity</span>
-    <p>weighted = Σ numerator ÷ Σ (cargo×laden distance) = ${fmtF(s.totCO2,2)} t ÷ ${fmtI(s.totTW)} t·nm = <b>${fmtF(s.weighted,3)} gCO₂e/t·nm</b>.</p></div></div>`;
+    <p>weighted = Σ numerator ÷ Σ (cargo×laden distance) = ${fmtF(s.totCO2,2)} t ÷ ${fmtI(s.totTW)} t·nm = <b>${fmtF(s.weighted,2)} gCO₂e/t·nm</b>.</p></div></div>`;
   const reqMin = Number(S.sccReqMin)||null, reqStr = Number(S.sccReqStriving)||null;
   if(reqMin||reqStr){
     out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span>
       <p>${reqMin?`vs Minimum ${reqMin}: Δ = <b>${fmtF(s.deltaMin,1)}%</b>`:""}${(reqMin&&reqStr)?" · ":""}${reqStr?`vs Striving ${reqStr}: Δ = <b>${fmtF(s.deltaStr,1)}%</b>`:""}. Negative = below the line (aligned).</p></div></div>`;
     const d = s.deltaMin!=null?s.deltaMin:s.deltaStr;
-    out += `<div class="ftake"><b>Takeaway:</b> the ${R.year} weighted intensity is ${fmtF(s.weighted,3)} g/t·nm, ${d<0?"below":"above"} the required line by ${fmtF(Math.abs(d),1)}%.</div>`;
+    out += `<div class="ftake"><b>Takeaway:</b> the ${R.year} weighted intensity is ${fmtF(s.weighted,2)} g/t·nm, ${d<0?"below":"above"} the required line by ${fmtF(Math.abs(d),1)}%.</div>`;
   } else {
     out += `<div class="fstep"><div class="n">3</div><div class="body"><span class="sh">Alignment</span><p>Enter the required 'Minimum' / 'Striving' intensities on the Workspace SCC card to see the alignment Δ.</p></div></div>`;
   }
@@ -2668,7 +2760,7 @@ function fexLiveSCC(R){
 
 function renderConstants(){
   const el = document.getElementById("tab-constants");
-  const R = computeAll(S);   // live "Your ship" walkthrough reads the SAME engine result as the Calculations tab
+  const R = computeAll(S);   // live "Your ship" walkthrough reads the SAME engine result as the Leg-Wise tab
   el.innerHTML = `
   <div class="fsubbar">
     <button class="on" data-fsub="cii" onclick="showFormulaSub('cii')">IMO CII</button>
@@ -3067,9 +3159,9 @@ function renderHelp(){
     <div class="helpstep"><div class="n">1</div><div><b>Set up the vessel once</b> — on the <i>Settings</i> tab: name, ship type, capacity (DWT/GT), <b>reporting year</b> (with multi-year imports it decides which rows are calculated — the rest grey out), the <b>Main-engine and Auxiliary-engine LNG consumer classes</b> (they drive CH₄ slip for the machinery split), market prices (EUA/UKA, fuel €/t), and the <b>EU ETS GWP basis (AR4/AR5)</b> — this selector affects only the EU ETS 2026+ CO₂e proxy; FuelEU (25/298) and UK ETS (28/265) GWPs are prescribed by regulation and locked. These rarely change.</div></div>
     <div class="helpstep"><div class="n">2</div><div><b>Enter the activity</b> — on the <i>Workspace</i> tab, add voyages and port stays with the fuel consumed. Type a <b>port name or LOCODE</b> (e.g. "Rotterdam" or NLRTM) and pick from the list — the EU/UK/other zone is set automatically from the port's country (19,782 ports embedded from the DNV UN/LOCODE list); outermost-region / overseas-territory ports get an ⚠ OMR badge and advisory. Ports are optional — you can also just set the zones directly. Or skip typing entirely: click <b>⬆ Import data</b> in the header and load a DNV OVD Log Abstract CSV, an MDA event-log export (.xlsx or .csv) or an EMSA THETIS-MRV GHG Emissions XML — legs, port names, zones, dates, consumption, cargo and shore power are built automatically (format auto-detected).</div></div>
     <div class="helpstep"><div class="n">3</div><div><b>Watch the right-hand panel</b> — every keystroke recalculates live: the annual summary (distance, time at sea, cargo, transport work, fuel by type, CO₂ at berth vs sea, intensity ratios) and all five pillar cards, including the <b>FuelEU allocation selector</b> (optimal cleanest-first per ESSF WS1 §2.5, or proportional for comparison) with the allocated-mix table. No page switching.</div></div>
-    <div class="helpstep"><div class="n">4</div><div><b>Dig into the numbers</b> — the <b>🧮 Calculations</b> tab holds the voyage &amp; berth breakdown (per-row EU ETS / UK ETS / FuelEU coverage %, EUA, UKA, eligible energy, compliance balance and penalty, with factor info icons) plus the FuelEU allocation and EU ETS workings — download the breakdown as <b>Excel</b> from that tab. The <b>📋 Reports</b> tab holds the full <b>report-level trace</b> at MDA granularity, where the derived <b>ARRIVAL</b>/<b>DEPARTURE</b> replace IN_PORT and every consumption, ROB, distance and per-regulation eligibility % is visible — download it in OVD format via the <b>⬇ OVD-format Excel</b> button in the header (generated fully offline).</div></div>
+    <div class="helpstep"><div class="n">4</div><div><b>Dig into the numbers</b> — the <b>⛵ Leg-Wise</b> tab holds the voyage &amp; berth breakdown (per-row EU ETS / UK ETS / FuelEU coverage %, EUA, UKA, eligible energy, compliance balance and penalty, with factor info icons) plus the FuelEU allocation and EU ETS workings — download the breakdown as <b>Excel</b> from that tab. The <b>📋 Report-Wise</b> tab holds the full <b>report-level trace</b> at MDA granularity, where the derived <b>ARRIVAL</b>/<b>DEPARTURE</b> replace IN_PORT and every consumption, ROB, distance and per-regulation eligibility % is visible — download it in OVD format via the <b>⬇ OVD-format Excel</b> button in the header (generated fully offline).</div></div>
     <div class="helpstep"><div class="n">5</div><div><b>Run what-ifs</b> — change a fuel to a biofuel (enter its certified E value from the BDN), toggle FuelEU banking/borrowing/pooling or the allocation method, adjust the substitute fuel for the breakeven KPI, edit the ⚙ machinery split, or move a voyage between zones and watch scope change.</div></div>
-    <div class="helpstep"><div class="n">6</div><div><b>Your work saves itself</b> — everything persists automatically in this browser (including the raw MDA reports behind the Calculations tab); <b>Reset</b> in the header returns to an empty workspace.</div></div>
+    <div class="helpstep"><div class="n">6</div><div><b>Your work saves itself</b> — everything persists automatically in this browser (including the raw MDA reports behind the Leg-Wise tab); <b>Reset</b> in the header returns to an empty workspace.</div></div>
   </div>
 
   <div class="card">
@@ -3113,14 +3205,14 @@ function renderHelp(){
       <tr><td>Fuel names in FUEL_CONSUMPTION</td><td>Every fuel-oil grade → HFO, except ULSFO → LFO; MGO/HSMGO/LSMGO/ULSMGO/HSD → MGO; MDO/DO → MDO; LNG, LPG, methanol, ethanol pass through. Unknown names are flagged as skipped, never guessed</td></tr>
       <tr><td>MAIN/AUXILIARY/BOILER _ENGINE_CONSUMPTION</td><td><b>Machinery split</b> per fuel grade (same mapping); the unassigned remainder per fuel type goes to <b>Other</b> (machines exceeding the total are scaled down and flagged). View/edit via the ⚙ toggle; for LNG the ME/AE shares take their slip class from the two consumer dropdowns in Settings — Boiler and Other are slip-free</td></tr>
       <tr><td>Rows crossing 31 Dec (multi-year file)</td><td>Split into per-year parts, <b>report-exactly</b> (a report period straddling midnight is pro-rated by time). POC derivation works across the boundary. The Settings reporting year decides which parts count in ALL KPIs; the other year's rows stay greyed in the list</td></tr>
-      <tr><td>FUEL_ROB · LATITUDE/LONGITUDE · CURRENT_PORT/COUNTRY/REGION</td><td>Retained per report (not used in calculations) — feed the report-level trace on the <b>📋 Reports</b> tab and the OVD-format Excel download (header)</td></tr>
+      <tr><td>FUEL_ROB · LATITUDE/LONGITUDE · CURRENT_PORT/COUNTRY/REGION</td><td>Retained per report (not used in calculations) — feed the report-level trace on the <b>📋 Report-Wise</b> tab and the OVD-format Excel download (header)</td></tr>
     </table>
     <p class="note">Files without an OPERATING_CONDITION column import with the legacy mapping (EOSP = arrival, SOSP = departure, POC column passthrough) and a note. Stays cut off by the file boundary are derived from the available side and flagged <b>incomplete</b> — upload ±1 month around year ends where possible.</p>
   </div>
 
   <div class="card">
     <h2>FuelEU fuel allocation (ESSF WS1 §2.5)</h2>
-    <p>FuelEU prescribes no method for allocating fuels to the energy scope: fuels reported under MRV in the period — <b>including the uncovered half of 50% voyages</b> — may be allocated freely (essf-ws1-2-5 and the extra-EEA worked examples). The calculator's default, <b>Optimal (cleanest-first)</b>, ranks every fuel × consumer entry by effective WtW intensity (incl. CH₄ slip per engine class; RFNBOs with their ×2 reward) and fills the scope from the cleanest entry down, pro-rating the marginal one — exactly reproducing the ESSF worked example. <b>Proportional</b> (each fuel pro-rata to coverage) is kept as a comparison toggle on the FuelEU card. The full allocation table — pool vs allocated mass and energy, WtT/TtW/WtW per entry — is on the Calculations tab.</p>
+    <p>FuelEU prescribes no method for allocating fuels to the energy scope: fuels reported under MRV in the period — <b>including the uncovered half of 50% voyages</b> — may be allocated freely (essf-ws1-2-5 and the extra-EEA worked examples). The calculator's default, <b>Optimal (cleanest-first)</b>, ranks every fuel × consumer entry by effective WtW intensity (incl. CH₄ slip per engine class; RFNBOs with their ×2 reward) and fills the scope from the cleanest entry down, pro-rating the marginal one — exactly reproducing the ESSF worked example. <b>Proportional</b> (each fuel pro-rata to coverage) is kept as a comparison toggle on the FuelEU card. The full allocation table — pool vs allocated mass and energy, WtT/TtW/WtW per entry — is on the Leg-Wise tab.</p>
   </div>
 
   <div class="card">
@@ -3140,7 +3232,7 @@ function renderHelp(){
   ${window.SUITE_PRESENT?`
   <div class="card">
     <h2>📖 Rulefinder &amp; 💬 Ask tabs (suite build)</h2>
-    <p>This build bundles the <b>Emissions Rulefinder</b> — the full searchable knowledge base of verbatim regulation text (EU ETS, EU MRV, FuelEU, UK ETS, IMO DCS/CII, SCC/PP) with plain-language explanations and the EmA Product Map — as the <i>Rulefinder</i> tab. Every chunk id cited on the Formulas tab can be opened there directly. Press <kbd>/</kbd> while on the Rulefinder tab to focus its search box.</p>
+    <p>This build bundles the <b>Emissions Rulefinder</b> — the full searchable knowledge base of verbatim regulation text (EU ETS, EU MRV, FuelEU, UK ETS, IMO DCS/CII, SCC/PP) with plain-language explanations and the EmA Product Map — as the <i>Rulefinder</i> tab. Every chunk id cited on the Calculations tab can be opened there directly. Press <kbd>/</kbd> while on the Rulefinder tab to focus its search box.</p>
     <p>The <b>Ask</b> tab answers questions from the same knowledge base: offline it retrieves and quotes the most relevant chunks with citations; optionally, paste an LLM API key (Anthropic or OpenAI) to get composed answers — the key is stored only in your browser and questions + retrieved extracts are sent to that provider <b>only when you use LLM mode</b>. Without a key the tool remains fully offline.</p>
   </div>`:""}`;
 }
@@ -3610,7 +3702,7 @@ function runSelfTests(){
     ckT("Raw reports retained: 3 rows with lat/lon, ROB and machine dicts (OVD-download foundation)",
         mm.reports.length===3 && mm.reports[0].lat===51.9 && mm.reports[0].rob.MGO===100 && mm.reports[2].mach.ME.HFO===8 && mm.reports[1].qty===0);
   }catch(e){ fail++; out.push("FAIL  Session-2 (allocation/split/multi-year) tests threw: "+e.message); }
-  /* ---- Session 3 (2026-07-16): Calculations tab, xlsx writer, report labels ---- */
+  /* ---- Session 3 (2026-07-16): Leg-Wise tab, xlsx writer, report labels ---- */
   try{
     ckT("CRC32 test vector '123456789' → 0xCBF43926", crc32(new TextEncoder().encode("123456789"))===0xCBF43926);
     ckT("report-type labels: EOSP / SOSP / derived ARRIVAL / BUNKER",
@@ -3682,7 +3774,7 @@ function runSelfTests(){
       ckT("DERIVE no-EOSP fallback: file opening AT BERTH still yields one berth row, no phantom leg",
           rAb.rows.filter(r=>r.kind==="port").length===1);
     }
-    /* Reports-tab UK ETS badge uses the engine's own scheme-window logic per REPORT (2026-07-20,
+    /* Report-Wise tab UK ETS badge uses the engine's own scheme-window logic per REPORT (2026-07-20,
        Aurvin): one UK↔UK stay straddling 1 Jul 2026 — a June report is dash (not applicable), a
        report straddling 1 Jul shows the time-pro-rated in-scope % (matching the totals), and a
        July report shows 100%. Guards the granularity bug where June days inside a straddling stay
@@ -3708,7 +3800,7 @@ function runSelfTests(){
         if(el2) el2.textContent += "\n"+(ok?"PASS":"FAIL")+"  xlsx writer round-trip through the app's own reader (async)";
       }catch(err){ if(el2) el2.textContent += "\nFAIL  xlsx round-trip threw: "+err.message; }
     })();
-  }catch(e){ fail++; out.push("FAIL  Session-3 (Calculations/xlsx) tests threw: "+e.message); }
+  }catch(e){ fail++; out.push("FAIL  Session-3 (Leg-Wise/xlsx) tests threw: "+e.message); }
   /* ---- UK ETS currency (checked 2026-07-16 vs SI 2026/392, in force 1 Jul 2026) ---- */
   try{
     const ukState = y => ({year:y, ship:{typeId:"bulk",capacity:45000}, rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"MDO",tonnes:10}]}]});
@@ -3754,8 +3846,9 @@ function runSelfTests(){
     for(const id of Object.keys(fbt)){ const f=FUEL_BY_ID[id]||{}; ciiSum += (fbt[id]||0)*(Number(f.cf)||0); }
     ck("Live CII: per-fuel CO2 lines sum = engine co2_t", ciiSum, Rx.cii.co2_t, 1e-6);
     const cii=fexLiveCII(Rx);
-    ckT("Live CII panel: contains attained value", cii.indexOf(fmtF(Rx.cii.attained,3))>=0);
-    ckT("Live CII panel: contains required value", cii.indexOf(fmtF(Rx.cii.ciiReq,3))>=0);
+    /* 2026-07-22f (owner, Aurvin): CII/GHGIE display moved to 2dp everywhere (was 3dp/5dp) */
+    ckT("Live CII panel: contains attained value", cii.indexOf(fmtF(Rx.cii.attained,2))>=0);
+    ckT("Live CII panel: contains required value", cii.indexOf(fmtF(Rx.cii.ciiReq,2))>=0);
     ckT("Live CII panel: no NaN", cii.indexOf("NaN")<0);
     ckT("Live CII panel: no undefined", cii.indexOf("undefined")<0);
     const ets=fexLiveETS(Rx);
@@ -3765,10 +3858,10 @@ function runSelfTests(){
     ckT("Live UK ETS panel: contains tCO2e figure", uke.indexOf(fmtF(Rx.ukets.tco2e,3))>=0);
     ckT("Live UK ETS panel: no NaN/undefined", uke.indexOf("NaN")<0 && uke.indexOf("undefined")<0);
     const feu=fexLiveFuelEU(Rx);
-    ckT("Live FuelEU panel: contains GHGIE (5dp)", feu.indexOf(fmtF(Rx.fueleu.ghgie,5))>=0);
+    ckT("Live FuelEU panel: contains GHGIE (2dp)", feu.indexOf(fmtF(Rx.fueleu.ghgie,2))>=0);
     ckT("Live FuelEU panel: no NaN/undefined", feu.indexOf("NaN")<0 && feu.indexOf("undefined")<0);
     const scc=fexLiveSCC(Rx);
-    ckT("Live SCC panel: contains weighted intensity", scc.indexOf(fmtF(Rx.scc.weighted,3))>=0);
+    ckT("Live SCC panel: contains weighted intensity", scc.indexOf(fmtF(Rx.scc.weighted,2))>=0);
     ckT("Live SCC panel: no NaN/undefined", scc.indexOf("NaN")<0 && scc.indexOf("undefined")<0);
     /* Empty-state: no rows → guidance message, never NaN */
     S = { year:2026, ship:{typeId:"bulk",capacity:60000}, rows:[] };
