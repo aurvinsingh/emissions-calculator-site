@@ -115,6 +115,84 @@ function ttwIntensity(fuel, engine){
   return ((1-s)*(fuel.cf + GWP_FUELEU.ch4*fuel.ch4 + GWP_FUELEU.n2o*fuel.n2o) + s*GWP_FUELEU.ch4) / fuel.lcv;
 }
 
+/* ---------- Sea Cargo Charter emission factors (2026-07-22c, owner instruction) ----------
+   SCC uses its OWN factor set, not FuelEU's, so these are kept separate on purpose.
+
+   WELL-TO-WAKE (WtW), gCO2e per gram of fuel = tCO2e per tonne of fuel. These are the
+   conventional-fuel base factors printed in SCC Technical Guidance v5.2, Appendix 6 /
+   Table 15 (chunk scc-tg52-appendix6-biofuel-blend-equations), i.e. the value each blend
+   equation returns at blend fraction 0:
+       HSHFO 3.73145 · VLSFO 3.84 · MGO 4.01242
+   Appendix 6 covers those three conventional fuels (and FAME/HVO blends of them). Any other
+   fuel — LNG, LPG, methanol, ammonia, hydrogen, neat bio or RFNBO — has NO Appendix 6 value
+   in this knowledge base, so it returns null and the UI shows a dash. It is deliberately NOT
+   substituted with the FuelEU WtT+TtW number: mixing factor sets would produce a figure that
+   looks official and is not. Supply the SCC table for those fuels to complete this.
+
+   TANK-TO-WAKE (TtW): Appendix 6 publishes WtW only. TtW here is the fuel's own carbon
+   factor plus CH4 and N2O at AR5 100-year GWP (28 / 265) — the same prescribed AR5 set the
+   UK ETS calculation uses — including methane slip for LNG consumers. Flagged FILL-IN in the
+   UI: confirm against TG v5.2 before it goes into a disclosure. */
+const SCC_GWP = { ch4:29.8, ch4bio:27.2, n2o:273, label:"AR6 (2023): fossil CH₄ 29.8 · biogenic CH₄ 27.2 · N₂O 273" };
+/* Table 8, verbatim. wtt and ttw are gCO2e per gram of fuel = tCO2e per tonne of fuel;
+   WtW = wtt + ttw ("the well-to-wake emission factor is the sum of the well-to-tank and
+   tank-to-wake values", p.66). bio = biogenic CO2 (gCO2/g), reported SEPARATELY by SCC and
+   deliberately NOT added into WtW. The published WtW column is 2-dp rounded; summing the
+   components is both what the guidance prescribes and what reproduces its worked examples.
+   `def:true` marks the row to use when the exact grade / machinery is unknown. */
+const SCC_FACTORS = {
+  HFO:  { def:{ wtt:0.675, ttw:3.165, label:"HFO — default" },
+          grades:{ VLSFO:{ wtt:0.675, ttw:3.165, label:"HFO (VLSFO), sulphur ≤0.5%" },
+                   HSHFO:{ wtt:0.567, ttw:3.165, label:"HFO (HSHFO), sulphur >0.5%" } } },
+  LFO:  { def:{ wtt:0.544, ttw:3.202, label:"Light fuel oil (LFO), ISO 8217 RMA–RMD" } },
+  MDO:  { def:{ wtt:0.756, ttw:3.257, label:"MDO/MGO — default" },
+          grades:{ ULSFO:{ wtt:0.756, ttw:3.257, label:"MDO/MGO (ULSFO), sulphur <0.1%" },
+                   VLSFO:{ wtt:0.615, ttw:3.257, label:"MDO/MGO (VLSFO), sulphur 0.1–0.5%" } } },
+  LPGP: { def:{ wtt:0.361, ttw:3.051, label:"LPG (propane)" } },
+  LPGB: { def:{ wtt:0.361, ttw:3.081, label:"LPG (butane)" } },
+  /* LNG: granular by propulsion plant — the methane-slip driven rows of Table 8 */
+  LNG:     { def:{ wtt:0.888, ttw:3.726, label:"LNG — Otto dual fuel (medium speed)" }, lng:true },
+  LNGOS:   { def:{ wtt:0.888, ttw:3.239, label:"LNG — Otto dual fuel (slow speed)" },   lng:true },
+  LNGDS:   { def:{ wtt:0.888, ttw:2.821, label:"LNG — LNG diesel" },                    lng:true },
+  LNGBSI:  { def:{ wtt:0.888, ttw:3.483, label:"LNG — LBSI" },                          lng:true },
+  BLNG:    { def:{ wtt:1.445, ttw:0.981, label:"Bio-LNG — Otto dual fuel (medium speed)" }, bio:2.86, lng:true,
+             slowSpeed:{ wtt:1.445, ttw:0.492 }, diesel:{ wtt:1.445, ttw:0.071 },
+             lbsi:{ wtt:1.445, ttw:0.736 }, boiler:{ wtt:1.445, ttw:0.033 } },
+  BDSL: { def:{ wtt:0.774, ttw:0.051, label:"100% bio-diesel (FAME)" }, bio:2.83 },
+  HVO:  { def:{ wtt:0.656, ttw:0.051, label:"100% HVO" },               bio:3.12 },
+  BMET: { def:{ wtt:0.322, ttw:0.005, label:"100% bio-methanol" },      bio:1.38 },
+  ETOH: { def:{ wtt:1.284, ttw:0.005, label:"100% bio-ethanol (1st generation)" }, bio:1.91 },
+  METH: { def:{ wtt:0.623, ttw:1.380, label:"Methanol (natural-gas feedstock)" } },
+  NH3:  { def:{ wtt:2.251, ttw:0.001, label:"Ammonia (natural-gas feedstock)" } },
+  H2:   { def:{ wtt:15.84, ttw:0,     label:"Hydrogen (natural-gas feedstock)" } }
+};
+/* LNG burned in a boiler / steam plant takes Table 8's "steam turbine & boilers" row */
+const SCC_LNG_BOILER = { wtt:0.888, ttw:2.783, label:"LNG — steam turbine & boilers" };
+const SCC_BLNG_BOILER = { wtt:1.445, ttw:0.033, label:"Bio-LNG — steam turbine & boilers" };
+/* Table 8 row for one fuel in one consumer. `machine` is ME/AE/BLR/OTH, `engine` the app's
+   engine-class string. Granular where the data exists (the guidance's cascade: use the
+   granular factor if you have the information, the default row if you do not), default
+   otherwise. Returns null only for fuels Table 8 does not list at all — the RFNBO e-fuels,
+   which SCC has not published factors for. Never substitutes another regime's factor. */
+function sccFactor(fuel, engine, machine){
+  if(!fuel) return null;
+  if(fuel.sccWtt!=null && fuel.sccWtt!=="" && fuel.sccTtw!=null && fuel.sccTtw!=="")
+    return { wtt:Number(fuel.sccWtt), ttw:Number(fuel.sccTtw), bio:Number(fuel.sccBio)||0, label:"user-entered factor", granular:true };
+  const e = SCC_FACTORS[fuel.id];
+  if(!e) return null;
+  let row = e.def, granular = false;
+  if(e.lng){
+    if(machine==="BLR"){ row = (fuel.id==="BLNG")? SCC_BLNG_BOILER : SCC_LNG_BOILER; granular = true; }
+    else if(fuel.id==="BLNG" && engine){
+      const g = /slow speed/i.test(engine) && /otto/i.test(engine) ? e.slowSpeed
+              : /diesel/i.test(engine) ? e.diesel
+              : /lbsi/i.test(engine) ? e.lbsi : null;
+      if(g){ row = Object.assign({ label:e.def.label.replace(/—.*/,"— "+engine) }, g); granular = true; }
+    } else granular = true;      // the LNG ids already encode the propulsion plant
+  }
+  return { wtt:row.wtt, ttw:row.ttw, bio:e.bio||0, label:row.label, granular };
+}
+
 /* ---------- scope coverage ----------
    EU ETS (euets-art3ga) & FuelEU: EEA→EEA 100%, EEA↔other 50%, at berth EEA 100%.
    UK ETS (ukets-sch2a-p7): UK→UK voyages + UK in-port activity only.
@@ -275,6 +353,7 @@ function computeAll(state){
   const feuPool = [];              // FuelEU allocation pool (essf-ws1-2-5): one entry per fuel × consumer
   let E_scope = 0;                 // FuelEU energy scope, MJ (Σ row energy × coverage)
   const sccVoyages = [];
+  const sccMissing = new Set();            // fuels with no SCC Appendix 6 WtW factor
   const rowDetails = [];
   const sum = { hoursSea:0, hoursPort:0, cargo:0, tw:0, co2Sea:0, co2Berth:0, fuelByType:{}, fuelTotal:0, tMin:null, tMax:null };
 
@@ -290,7 +369,10 @@ function computeAll(state){
     if(y===2026 && ukCoverage(row)>0 && ukFrac<1) nUkPartial++;
     const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
-                  fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0 };
+                  cargoSOSP: !!row.cargoSOSP, fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0,
+                  /* SCC (2026-07-22c) — see SCC_WTW / sccTtWFactor above */
+                  sccTtW:0, sccWtW:0, sccBio:0, sccNoFactor:false, tw:0,
+                  sccNumerator:null, sccBallast:0, sccPort:0, sccGoesTo:null, eeoi:null };
     if(row.kind==="voyage"){ totalDist += det.dist; sum.hoursSea += det.hours; sum.cargo += det.cargo; }
     else sum.hoursPort += det.hours;
     if(row.tStart && (!sum.tMin || row.tStart<sum.tMin)) sum.tMin = row.tStart;
@@ -301,14 +383,35 @@ function computeAll(state){
       const t = Number(fr.tonnes)||0; if(t<=0) continue;
       const price = Number(fr.price)||0; fuelCostAll += t*price;
       sum.fuelByType[f.id] = (sum.fuelByType[f.id]||0)+t; sum.fuelTotal += t;
-      det.fuels.push({ id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleUK: t*covUK });
+      /* 2026-07-22 (Aurvin — per-fuel breakdown rows): the per-fuel entry now also carries its
+         OWN co2 / ETS / UK ETS / FuelEU-energy accumulators, filled by exactly the same
+         expressions that feed the row-level (det.*) accumulators just below. Purely ADDITIVE —
+         no existing figure changes; it lets the Calculations tab show every column per fuel
+         instead of only Fuel type / Cons. mt / Elig. mt / Energy. */
+      const fe = { id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleUK: t*covUK,
+                   co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0,
+                   /* SCC (2026-07-22c): sccWtW stays null when Appendix 6 has no factor for
+                      this fuel, so the UI can show a dash instead of a wrong number */
+                   sccTtW:0, sccWtW:null, sccBio:0, sccNoFactor:false, sccLabel:null, sccGranular:false };
+      det.fuels.push(fe);
       /* CII: all fuel, CO2 only (imo-g1-s4) — slip/consumer independent. Optional Circ.905 override via fr.ciiCf. */
       const cfCII = (fr.ciiCf!==undefined && fr.ciiCf!=="" && fr.ciiCf!=null) ? Number(fr.ciiCf) : f.cf;
       cii_g += t*1e6*cfCII;
       det.co2 += t*cfCII;
+      fe.co2 = t*cfCII;                                  // 2026-07-22: per-fuel mirror of det.co2
       /* per-machine parts: slip (and hence ETS CO2e / UK CH4 / FuelEU TtW) differs per consumer */
       for(const p of machineParts(fr, f, t, state)){
         const s = slipPct(f, p.engine)/100;
+        /* SCC (2026-07-22d): factors read from Table 8 per consumer, so LNG methane slip and
+           boiler/steam plants take their own published rows rather than a computed slip. */
+        const sf = sccFactor(f, p.engine, p.m);
+        if(sf){
+          fe.sccTtW += p.t*sf.ttw;  det.sccTtW += p.t*sf.ttw;
+          fe.sccWtW  = (fe.sccWtW||0) + p.t*(sf.wtt+sf.ttw);
+          det.sccWtW += p.t*(sf.wtt+sf.ttw);
+          fe.sccBio += p.t*(sf.bio||0); det.sccBio += p.t*(sf.bio||0);
+          fe.sccLabel = sf.label; fe.sccGranular = sf.granular;
+        } else { fe.sccNoFactor = true; det.sccNoFactor = true; sccMissing.add(f.name||f.id); }
         /* EU ETS */
         if(covEU>0){
           const mt = p.t*covEU;
@@ -318,12 +421,15 @@ function computeAll(state){
           const co2e = (mt-mNC)*efCO2 + GWP_EUETS.ch4*((mt-mNC)*efCH4 + (zero?0:mNC)) + GWP_EUETS.n2o*(mt-mNC)*efN2O;
           ets_t_co2 += mt*efCO2; ets_t_co2e += co2e;
           det.etsCO2 += mt*efCO2; det.etsCO2e += co2e;
+          fe.etsCO2 += mt*efCO2; fe.etsCO2e += co2e;     // 2026-07-22: per-fuel mirror
         }
         /* UK ETS (ukets-sch2a-p35) */
         if(covUK>0){
           const m = p.t*covUK, mNC = m*s;
           uk_co2 += (m-mNC)*f.cf; uk_ch4 += (m-mNC)*f.ch4 + mNC; uk_n2o += (m-mNC)*f.n2o;
-          det.ukCO2e += (m-mNC)*f.cf + GWP_UKETS.ch4*((m-mNC)*f.ch4 + mNC) + GWP_UKETS.n2o*(m-mNC)*f.n2o;
+          const ukPart = (m-mNC)*f.cf + GWP_UKETS.ch4*((m-mNC)*f.ch4 + mNC) + GWP_UKETS.n2o*(m-mNC)*f.n2o;
+          det.ukCO2e += ukPart;
+          fe.ukCO2e += ukPart;                           // 2026-07-22: per-fuel mirror
         }
         /* FuelEU (fueleu-annexi + essf-ws1-2-5 allocation):
            the row's FULL fuel is allocatable (it is MRV-monitored); only E × coverage
@@ -339,15 +445,15 @@ function computeAll(state){
                          tonnes:p.t, price, bio:f.bio||false, rfnbo:f.rfnbo||false });
           E_scope += E*covEU;
           det.E += E*covEU;
+          fe.E += E*covEU;                               // 2026-07-22: per-fuel mirror
         }
       }
     }
     if(row.kind==="voyage") sum.co2Sea += det.co2; else sum.co2Berth += det.co2;
-    if(row.kind==="voyage" && det.cargo>0 && det.dist>0){
-      const tw = det.cargo*det.dist;
-      sum.tw += tw;
-      sccVoyages.push({ label:det.label||("Voyage "+(sccVoyages.length+1)), co2:det.co2, tw, intensity: det.co2*1e6/tw });
-    }
+    /* transport work is a property of the leg itself: cargo × the distance sailed WHILE
+       LADEN. A ballast leg (cargo 0) therefore has tw 0 — its emissions are folded into the
+       next laden leg below, not into its own denominator (ADR 2026 Appendix 3). */
+    if(row.kind==="voyage" && det.cargo>0 && det.dist>0){ det.tw = det.cargo*det.dist; sum.tw += det.tw; }
     rowDetails.push(det);
   }
   if(nOutOfYear) warn.push(nOutOfYear+" row(s) dated outside the "+y+" reporting year are EXCLUDED from ALL KPIs (multi-year import) — switch the reporting year in Settings to compute the other year. Rows are split at the year boundary at import, so nothing is double-counted.");
@@ -469,11 +575,92 @@ function computeAll(state){
     const share = E_total>0? det.E/E_total : 0;        // OPS energy share stays unattributed
     det.feuCB = cb!=null? cb*share : null;             // gCO2eq, pre-flexibility
     det.feuPenalty = penalty>0? penalty*share : 0;     // € share of the final annual penalty
+    /* 2026-07-22 (Aurvin — per-fuel breakdown rows): same attribution one level deeper, so a
+       row's indicative CB / penalty / EUAs split across its fuels by each fuel's in-scope
+       energy share. Σ over a row's fuels === the row value (energy shares sum to 1), so no
+       total anywhere changes. Display-only and, like the row level, INDICATIVE — FuelEU and
+       ETS are period-based in law. */
+    for(const fe of det.fuels){
+      fe.euas = (y>=2026? fe.etsCO2e : fe.etsCO2)*phase;
+      const fShare = E_total>0? fe.E/E_total : 0;
+      fe.feuCB = cb!=null? cb*fShare : null;
+      fe.feuPenalty = penalty>0? penalty*fShare : 0;
+    }
   }
 
-  /* ---- SCC ---- */
+  /* ---- SCC (rewritten 2026-07-22c on the owner's explicit instruction) ----
+     Adapted EEOI, ADR 2026 Appendix 3:
+
+         voyage EEOI  =   WtW CO2e of (ballast leg + laden leg)   [grams]
+                        ------------------------------------------------
+                           cargo (t) × LADEN distance (nm)
+
+     So a ballast leg's WtW CO2e is carried forward and added to the numerator of the NEXT
+     laden leg, while the denominator uses that laden leg's own cargo × distance. This is
+     the charterer-attribution rule: a ballast leg is allocated to the charterer for whom it
+     occurs immediately before loading. Ballast legs therefore have no EEOI of their own —
+     they contribute, they are not measured. Previously (before this session) each laden leg
+     used ONLY its own fuel and ballast legs were ignored entirely, which understated the
+     intensity; the Formulas tab flagged this as an open decision, now taken.
+
+     The numerator is WELL-TO-WAKE per SCC TG v5.2 Appendix 6 (see SCC_WTW). A leg burning a
+     fuel with no Appendix 6 factor is marked and excluded from the fleet weighted average —
+     it cannot be part of a WtW total that is missing part of its WtW. */
+  /* PORT CONSUMPTION IS INCLUDED (2026-07-22d, owner's definition of the legs):
+       ballast leg = departure from the previous DISCHARGE berth → arrival at the first
+                     LOADING berth  (so any stay in that window — bunkering, anchorage,
+                     waiting — belongs to the ballast leg);
+       laden leg   = arrival at the first LOADING berth → departure from the final DISCHARGE
+                     berth, which absorbs the loading port stay, the laden sea passage and
+                     the final discharge stay.
+     So every berth row is attributed, never dropped:
+       • a stay AFTER a laden leg with no laden leg following  → the final discharge stay of
+         that laden leg → counted in it;
+       • a stay BEFORE a laden leg                              → the loading (or intermediate)
+         stay of that laden leg → counted in it;
+       • a stay between two ballast legs                        → rides the ballast carry.
+     `sccGoesTo` records the destination on each berth row so the attribution is auditable
+     in the UI instead of being invisible arithmetic. */
+  const vIdx = rowDetails.map((d,i)=>d.kind==="voyage"?i:-1).filter(i=>i>=0);
+  const prevVoyage = i => { for(let k=vIdx.length-1;k>=0;k--) if(vIdx[k]<i) return vIdx[k]; return -1; };
+  const nextVoyage = i => { for(let k=0;k<vIdx.length;k++) if(vIdx[k]>i) return vIdx[k]; return -1; };
+  const extra = new Array(rowDetails.length).fill(0);   // port CO2e folded into each leg
+  const ballastStream = new Array(rowDetails.length).fill(false);
+  for(let i=0;i<rowDetails.length;i++){
+    const d = rowDetails[i];
+    if(d.kind==="voyage"){ if(!(d.tw>0)) ballastStream[i] = d.dist>0 || d.sccWtW>0; continue; }
+    const p = prevVoyage(i), n = nextVoyage(i);
+    const pLaden = p>=0 && rowDetails[p].tw>0, nLaden = n>=0 && rowDetails[n].tw>0;
+    if(pLaden && !nLaden){ extra[p] += d.sccWtW; d.sccGoesTo = { idx:p, label:rowDetails[p].label, role:"discharge stay" }; }
+    else if(nLaden){       extra[n] += d.sccWtW; d.sccGoesTo = { idx:n, label:rowDetails[n].label, role:"loading stay" }; }
+    else { ballastStream[i] = true; d.sccGoesTo = { idx:-1, label:null, role:"ballast leg" }; }
+  }
+  let ballastCarry = 0, ballastLegs = 0, sccExcluded = 0, sccPortTotal = 0;
+  for(let i=0;i<rowDetails.length;i++){
+    const det = rowDetails[i];
+    if(ballastStream[i]){ ballastCarry += det.sccWtW + extra[i]; if(det.kind==="voyage") ballastLegs++; continue; }
+    if(det.kind!=="voyage" || !(det.tw>0)) continue;
+    det.sccBallast = ballastCarry;
+    det.sccPort = extra[i];
+    sccPortTotal += extra[i];
+    det.sccNumerator = det.sccWtW + ballastCarry + extra[i];
+    det.eeoi = det.sccNoFactor ? null : det.sccNumerator*1e6/det.tw;
+    ballastCarry = 0; ballastLegs = 0;
+    if(det.sccNoFactor) sccExcluded++;
+    else sccVoyages.push({ label:det.label||("Voyage "+(sccVoyages.length+1)),
+                           co2:det.co2, wtw:det.sccWtW, ttw:det.sccTtW, ballast:det.sccBallast,
+                           port:det.sccPort, numerator:det.sccNumerator, cargo:det.cargo,
+                           dist:det.dist, tw:det.tw, intensity:det.eeoi });
+  }
+  /* a ballast leg at the very end of the year has no laden leg to attach to — say so rather
+     than dropping its emissions silently */
+  const sccTrailingBallast = ballastCarry;
+  if(sccTrailingBallast>0) warn.push("SCC: "+ballastLegs+" ballast leg(s) at the end of "+y+" carry "+
+    (Math.round(sccTrailingBallast*100)/100)+" t WtW CO₂e with no following laden leg in this reporting year — under ADR 2026 Appendix 3 they belong to the voyage that loads next, which falls outside "+y+". They are NOT in the SCC intensity above.");
+  if(sccExcluded) warn.push("SCC: "+sccExcluded+" laden voyage(s) burned a fuel that is not listed in the Sea Cargo Charter 2025 Technical Guidance Table 8 ("+
+    [...sccMissing].join(", ")+") — Table 8 does not publish factors for RFNBO e-fuels. Those voyages show a dash and are excluded from the fleet intensity; enter a certified WtT/TtW pair on the fuel row to include them.");
   const sccTotTW = sccVoyages.reduce((s,v)=>s+v.tw,0);
-  const sccTotCO2 = sccVoyages.reduce((s,v)=>s+v.co2,0);
+  const sccTotCO2 = sccVoyages.reduce((s,v)=>s+v.numerator,0);
   const sccWeighted = sccTotTW>0? sccTotCO2*1e6/sccTotTW : null;
   const reqMin = Number(state.sccReqMin)||null, reqStr = Number(state.sccReqStriving)||null;
   const sccDeltaMin = (sccWeighted!=null&&reqMin)? (sccWeighted-reqMin)/reqMin*100 : null;
@@ -533,7 +720,9 @@ function computeAll(state){
     ukets:{ active:ukActive, tco2e:ukets_t, co2:uk_co2, ch4:uk_ch4, n2o:uk_n2o, cost:ukCost },
     fueleu:{ target:T, targetPct:fueleuTargetPct(y), ghgie, E_total, E_fuel:feu.E_plain, opsMJ, cb, banked, poolCB, borrowUsed, borrowDebt, borrowLimit, cbFinal, penalty, penaltyBase, mult, surplusValue, fwind, terms:feu.terms,
              allocMethod, ghgieAlt, cbAlt, E_pool: pool.reduce((s,e)=>s+e.E,0) },
-    scc:{ voyages:sccVoyages, weighted:sccWeighted, totTW:sccTotTW, totCO2:sccTotCO2, deltaMin:sccDeltaMin, deltaStr:sccDeltaStr },
+    scc:{ voyages:sccVoyages, weighted:sccWeighted, totTW:sccTotTW, totCO2:sccTotCO2, deltaMin:sccDeltaMin, deltaStr:sccDeltaStr,
+          missingFactors:[...sccMissing], excluded:sccExcluded, trailingBallast:sccTrailingBallast,
+          portTotal:sccPortTotal, gwp:SCC_GWP, factors:SCC_FACTORS },
     econ:{ fuelCostAll, etsCost, ukCost, fueleuPenalty:penalty, surplusValue, total: fuelCostAll+etsCost+ukCost+penalty-surplusValue, breakeven }
   };
 }
