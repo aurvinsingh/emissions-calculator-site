@@ -45,7 +45,7 @@ function save(){ try{ localStorage.setItem("emcalc_state", JSON.stringify(S)); }
 function resetScenario(){ if(confirm("Clear all entries and start fresh? (Settings reset too.)")){ S = JSON.parse(JSON.stringify(DEFAULT_STATE)); save(); renderAll(); } }
 /* Scenario JSON export/import removed 2026-07-15 (Aurvin) — work auto-saves in localStorage; Reset restores the sample. */
 
-const TAB_IDS = ["work","trace","calcs","vessel","constants","help"];   // suite build appends "rules","ask"
+const TAB_IDS = ["work","trace","calcs","voy","vessel","constants","help"];   // suite build appends "rules","ask"
 function showTab(t){
   for(const x of TAB_IDS){
     document.getElementById("tab-"+x).style.display = x===t?"":"none";
@@ -54,9 +54,11 @@ function showTab(t){
   /* fixed app-shell (pinned header/nav, independently scrolling tab content) applies to
      Leg-Wise/Report-Wise/Settings only — Workspace, Calculations and Help keep plain whole-page
      scroll (2026-07-19: Calculations/Help shell disabled at Aurvin's request pending a later look) */
+  /* 2026-07-23c: Voyage-Wise is a wide scrolling table like Leg-Wise, so it takes the shell too */
   document.body.classList.toggle("shell", t!=="work" && t!=="constants" && t!=="help");
   if(t==="work") renderWorkspace();
   if(t==="calcs") renderCalcs();
+  if(t==="voy") renderVoyage();
   if(t==="trace") renderTrace();
   if(t==="vessel") renderVessel();
   if(t==="constants") renderConstants();
@@ -522,6 +524,15 @@ function parseOVD(text){
         if(F.indexOf("QTY")>=0) target.pocQty=true;
         if(F.indexOf("MISMATCH")>=0) target.pocMismatch=true;
         if(F.indexOf("INCOMPLETE")>=0) target.incomplete=true;
+        /* 2026-07-23 (Aurvin, owner instruction): which cargo operation happened at this
+           stay, carried through from the MDA ASSOCIATED_ACTIVITY column so the 📦 icon in
+           the Leg-Wise breakdown can say "Loading" / "Discharging" instead of just "cargo
+           activity". Passed as ADDITIVE flags on the existing POC_Flag column — no new CSV
+           column, no index shift, and the derivation of arrival/departure/POC itself is
+           untouched. Display only: nothing here feeds a calculation. */
+        if(F.indexOf("LOAD")>=0) target.cargoLoad=true;
+        if(F.indexOf("DISCH")>=0) target.cargoDisch=true;
+        if(F.indexOf("STS")>=0) target.cargoSTS=true;
       }
     }
     stamp(target, ts); if(ts) prevTs = ts;
@@ -822,6 +833,14 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         const oplHit = M.some(m=> m.rt!=="FUEL_STOCK" && m.opl && m.tStart>=arr && m.tEnd<=dep);
         poc = cargoTest && !oplHit;
         if(poc && qtyTrig){ flags.push("QTY"); nQty++; }
+        /* 2026-07-23 (Aurvin, owner instruction): record WHICH cargo operation was seen at
+           this stay (ASSOCIATED_ACTIVITY), for the breakdown's 📦 tooltip. Read-only — it
+           does not take part in the arrival/departure ladder or the POC decision above. */
+        if(poc && ops.length){
+          if(ops.some(m=>m.aa==="CARGO_LOADING"||m.aa==="CARGO_LOADING_STS"))       flags.push("LOAD");
+          if(ops.some(m=>m.aa==="CARGO_DISCHARGING"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("DISCH");
+          if(ops.some(m=>m.aa==="CARGO_LOADING_STS"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("STS");
+        }
         if(oplHit && cargoTest) nOPL++;
         if("POC" in col){
           const filePoc = M.some(m=>m.pocFile==="YES");
@@ -2083,7 +2102,19 @@ const JURIS_PAL = {
    Report-Wise "Cargo mt" cell); the breakdown TOTALS row shows CO₂/EUA/UKA/TtW/WtW as whole
    numbers (leg rows keep their 2dp); and EEOI shows 2dp everywhere (was 3). Rounding is at
    the fmtF() call only — the engine still computes and sums full-precision values. */
-const BR_GRID = "minmax(172px,3.05fr) minmax(64px,0.7fr) minmax(64px,0.6fr) minmax(58px,0.55fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(54px,0.8fr) minmax(54px,0.75fr) minmax(62px,0.9fr) minmax(48px,0.55fr) minmax(54px,0.7fr) minmax(54px,0.8fr) minmax(48px,0.55fr) minmax(54px,0.8fr) minmax(92px,1fr) minmax(70px,0.9fr) minmax(58px,0.8fr) minmax(58px,0.8fr) minmax(62px,0.85fr)";
+/* 2026-07-23d (Aurvin, owner instruction — DISPLAY ONLY, no calculation touched):
+   the column MINIMUMS were far too small. A grid track can shrink all the way to its
+   minmax() minimum before the container is allowed to scroll, so on a real workspace the
+   6-to-9-digit figures (Cargo 1,199,560 · CO₂ 18,839.33 · WtW 23,277.20) were being squeezed
+   into 48–92px tracks and ran into the neighbouring column — the numbers in the sticky
+   header/TOTAL row visibly merged. The fr ratios are kept, so on a wide screen the table
+   still stretches to fill the panel; the minimums are now sized for the widest realistic
+   figure in each column (~7.2px per digit at 12.5px tabular-nums, plus 20px cell padding),
+   and below that width the table scrolls sideways instead of overlapping itself.
+   Total minimum ≈ 1958px vs the 1500px main column — so horizontal scroll is the normal
+   state on a laptop, which is what the owner asked for. */
+const BR_GRID = "minmax(300px,3.05fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(62px,0.55fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr) minmax(62px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr)";
+const BR_BOX = gridBox(BR_GRID);          // every Leg-Wise row resolves to this same width
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
 /* jurisdiction of a berth port: OMR wins, else EU/UK zone, else null (no badge) */
@@ -2106,16 +2137,39 @@ const brNoFactor = '<span style="color:#c2864a;cursor:help" title="No SCC Techni
 function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp??2); }
 
 /* build the {label,juris} ports for a leg from its aligned source row */
+/* 2026-07-23 (Aurvin, owner instruction): each entry now also carries the port NAME and the
+   UN/LOCODE separately, so the breakdown's activity cell can truncate a long name with an
+   ellipsis while ALWAYS showing the LOCODE in full. `label` is unchanged (name + code) and
+   is still what every other caller and the hover title use. */
+function legPortEntry(p, fallbackLabel, juris){
+  if(p && p.c) return { label: portDisp(p), name: (p.n && p.n!==p.c) ? p.n : "", code: p.c, juris: juris||null };
+  return { label: fallbackLabel||"", name: fallbackLabel||"", code: "", juris: juris||null };
+}
 function legPorts(det, row){
   if(det.kind==="voyage"){
-    const a = row && row.fromPort ? portDisp(row.fromPort) : (row ? zoneName(row.from) : "");
-    const b = row && row.toPort   ? portDisp(row.toPort)   : (row ? zoneName(row.to)   : "");
-    if(!a && !b && det.label){ const parts=det.label.split("→"); return [{label:(parts[0]||"").trim(),juris:null},{label:(parts[1]||"").trim(),juris:null}]; }
-    return [{label:a, juris:null},{label:b, juris:null}];      // voyages: never badged (SPEC §2)
+    const pa = row && row.fromPort ? row.fromPort : null;
+    const pb = row && row.toPort   ? row.toPort   : null;
+    const a = pa ? portDisp(pa) : (row ? zoneName(row.from) : "");
+    const b = pb ? portDisp(pb) : (row ? zoneName(row.to)   : "");
+    if(!a && !b && det.label){ const parts=det.label.split("→");
+      return [ legPortEntry(null,(parts[0]||"").trim()), legPortEntry(null,(parts[1]||"").trim()) ]; }
+    // voyages: never badged (SPEC §2)
+    return [ legPortEntry(pa, a), legPortEntry(pb, b) ];
   }
   const p = row && row.port;
-  const label = p ? portDisp(p) : (row ? zoneName(row.zone) : (det.label||"").replace(/^At berth\s*/,""));
-  return [{ label, juris: jurisOfPort(p, row?row.zone:null) }];
+  const fb = row ? zoneName(row.zone) : (det.label||"").replace(/^At berth\s*/,"");
+  return [ legPortEntry(p, fb, jurisOfPort(p, row?row.zone:null)) ];
+}
+/* 2026-07-23: 📦 tooltip text. The cargo operation type comes from the MDA
+   ASSOCIATED_ACTIVITY column (see the LOAD/DISCH/STS flags in mdaToOVD); rows typed by hand,
+   or imported from an OVD without that column, fall back to the plain wording. */
+function cargoTipText(row){
+  if(!row) return "Port of Call (Cargo Activity)";
+  const acts=[];
+  if(row.cargoLoad)  acts.push("Loading");
+  if(row.cargoDisch) acts.push("Discharging");
+  if(!acts.length) return "Port of Call (Cargo Activity)";
+  return "Port of Call (Cargo Activity) — "+acts.join(" & ")+(row.cargoSTS? " (STS)":"");
 }
 
 /* replicate the engine's reporting-year filter so source rows align 1:1 with rowDetails */
@@ -2141,7 +2195,9 @@ function inYearRows(){
      • the master box in the header ticks/unticks all, and shows the half-tick
        ("indeterminate") state when only some rows are ticked.
    kind is "br" (voyage & berth breakdown) or "tr" (report-level trace). */
-const ROWSEL = { br:{ sel:new Set(), anchor:null, n:0 }, tr:{ sel:new Set(), anchor:null, n:0 } };
+/* 2026-07-23c: "vw" added for the Voyage-Wise table (one entry per voyage number) */
+const ROWSEL = { br:{ sel:new Set(), anchor:null, n:0 }, tr:{ sel:new Set(), anchor:null, n:0 },
+                 vw:{ sel:new Set(), anchor:null, n:0 } };
 /* called on every render: if the table's row count changed, the old indexes are meaningless */
 function rowselReset(kind, n){ const s=ROWSEL[kind]; if(s.n!==n){ s.sel.clear(); s.anchor=null; } s.n=n; }
 /* indexes the totals (and Excel) must aggregate — the ticked ones, or ALL when none ticked */
@@ -2175,7 +2231,7 @@ function rowselSync(kind){
   const m=document.getElementById(kind+"SelAll");
   if(m){ m.checked = s.n>0 && s.sel.size===s.n; m.indeterminate = s.sel.size>0 && s.sel.size<s.n; }
   const host=document.getElementById(kind+"Totals");
-  if(host) host.innerHTML = kind==="br" ? brTotalsHtml() : trTotalsHtml();
+  if(host) host.innerHTML = kind==="br" ? brTotalsHtml() : kind==="vw" ? vwTotalsHtml() : trTotalsHtml();
 }
 const SELBOX_CSS = "width:14px;height:14px;margin:0;cursor:pointer;accent-color:#3652a3;flex:none";
 function selBox(kind, idx){
@@ -2193,6 +2249,9 @@ function rowselLabel(kind, n, year){
   return k ? `Total — ${k} of ${n} row${n===1?"":"s"} selected` : `Total — all ${n} row${n===1?"":"s"} · ${year}`;
 }
 const SELCOL_W = 30;                      // checkbox lane width, both tables
+/* activity-column icon gutter width. Hoisted out of breakdownGrid() on 2026-07-23d so the
+   Voyage-Wise activity cell can use the same gutter and line up with Leg-Wise. */
+const GUTTER_W = 36;
 /* 2026-07-22b (owner): the first column of each table is FROZEN horizontally — the leg's
    "Activity & timeframe" (breakdown) and the "Event" column (reports) stay in place while
    the regulation columns scroll sideways, so a number is never orphaned from its row.
@@ -2200,6 +2259,36 @@ const SELCOL_W = 30;                      // checkbox lane width, both tables
    container. Frozen cells MUST carry their own background (otherwise the scrolling columns
    show through) and a z-index above the ordinary cells. */
 const BR_FREEZE = "position:sticky;left:0;";
+/* 2026-07-23e (Aurvin, owner instruction — DISPLAY ONLY) ---------------------------------
+   Every row of these tables is its own CSS grid, and each one is a block-level child of the
+   scrolling container. A block box takes the width of its PARENT (the ~1500px visible area),
+   not the width of its own tracks — so once the column minimums totalled more than the panel
+   (1958px Leg-Wise / 1856px Voyage-Wise, since 2026-07-23d) the tracks overflowed the box
+   while the box's BACKGROUND still stopped at 1500px. That is the "horizontal band stops
+   midway through Sea Cargo Charter" the owner reported: the TOTAL row's pale band, and the
+   sticky header's white backdrop, both ran out mid-table — and because the sticky header had
+   no backdrop past that point, the body rows scrolled UP THROUGH it and the numbers appeared
+   printed on top of each other.
+
+   FIRST ATTEMPT (2026-07-23e) USED width:max-content AND WAS WRONG — do not go back to it.
+   max-content sizes each grid to ITS OWN content, so the header row (long labels such as
+   "Elig. energy (10⁶ MJ)") resolved to a wider box than the body rows (short numbers), and
+   the columns drifted apart down the table: the owner's screenshot showed the body rows
+   ending ~285px short of the header, with every figure sitting left of its heading.
+
+   The invariant that actually guarantees alignment is that EVERY row resolves to the SAME
+   width. So each table computes the sum of its own track minimums once, and every row gets
+   `width:100%;min-width:<that sum>px`:
+     • narrow screen  → width:100% (the ~1500px panel) loses to min-width, so every row is
+       exactly the track total and they all line up; the container scrolls sideways.
+     • wide screen    → width:100% wins for every row equally, and the fr ratios share out
+       the extra space identically on each row, so they still line up.
+   Computed from the grid string itself so the two can never drift apart by hand-editing. */
+function gridMinWidth(g){
+  return (String(g).match(/minmax\((\d+)px/g)||[])
+    .reduce((s,m)=>s+parseInt(m.replace(/\D+/,""),10),0);
+}
+function gridBox(g){ return "width:100%;min-width:"+gridMinWidth(g)+"px;"; }
 const TR_SELCOL_W = 34;                   // reports: fixed width of the checkbox column,
                                           // so the frozen Event column knows where to sit
 const TR_FREEZE_SEL = "position:sticky;left:0;";
@@ -2209,12 +2298,11 @@ const TR_FREEZE_EVT = "position:sticky;left:"+TR_SELCOL_W+"px;";
 let BR_LAST = null;                       // {R, cellPad} — for re-rendering totals on tick
 function breakdownGrid(R, tips){
   const cellPad = "7px 10px";
-  const GUTTER_W = 36;                    // activity-column icon gutter width
   const src = inYearRows();
   BR_LAST = { R, cellPad };
   rowselReset("br", R.rowDetails.length);
   const header = `
-    <div style="display:grid;grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("br")}</span>Activity &amp; timeframe</div>
       <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
       <div style="grid-column:3 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
@@ -2254,15 +2342,34 @@ function breakdownGrid(R, tips){
     const lines = brFuelLines(d);
     const span = Math.max(1, lines.length);
     const bg = (zi++ % 2 === 1) ? "#fafcfd" : "#ffffff";
+    /* 2026-07-23 (Aurvin, owner instruction): ONE LINE PER PORT. A voyage gets two lines —
+       origin (with a trailing →) above destination; a berth stay gets one. The port NAME
+       truncates with an ellipsis when the column is narrow, while the UN/LOCODE, the
+       jurisdiction badge and the arrow are never clipped (they are flex:none); hovering any
+       port line shows the untruncated "Name (LOCODE)". This replaces the old single
+       wrapping line, which broke names mid-word and made the two ports hard to tell apart. */
     const ports = legPorts(d, row);
     const portHtml = ports.map((p,pi)=>{
       const j = (isBerth && p.juris) ? JURIS_PAL[p.juris] : null;
-      const badge = j ? `<span style="display:inline-block;margin-left:5px;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:700;letter-spacing:0.03em;vertical-align:1px;background:${j.bg};color:${j.fg}">${p.juris}</span>` : "";
-      const arrow = pi < ports.length-1 ? `<span style="color:#94a3b8;margin:0 6px">→</span>` : "";
-      return esc(p.label)+badge+arrow;
+      const badge = j ? `<span style="flex:none;margin-left:5px;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:700;letter-spacing:0.03em;background:${j.bg};color:${j.fg}">${p.juris}</span>` : "";
+      const arrow = pi < ports.length-1 ? `<span style="flex:none;color:#94a3b8;margin-left:6px">→</span>` : "";
+      const nameSpan = p.name
+        ? `<span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>`
+        : "";
+      /* brackets only make sense AFTER a name — a port we know only by its UN/LOCODE shows
+         the bare code, not "(UAPIV)" (2026-07-23) */
+      const codeSpan = p.code
+        ? (p.name ? `<span style="flex:none;margin-left:4px">(${esc(p.code)})</span>`
+                  : `<span style="flex:none">${esc(p.code)}</span>`)
+        : (p.name ? "" : `<span style="flex:none">${esc(p.label)}</span>`);
+      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameSpan}${codeSpan}${badge}${arrow}</div>`;
     }).join("");
     const cargo = isBerth && (!row || row.poc!==false);
-    const cargoIcon = cargo ? `<span title="Port of call (cargo activity)" style="cursor:help;font-size:13px;line-height:1.35;flex:none">📦</span>` : "";
+    /* 2026-07-23c: the icon now lives in the badge lane beside the timestamps, so it is a
+       fixed-height line box (1.45em of the 0.85em time font = exactly one time line) with
+       the glyph centred in it — that keeps 📦 and the leg tag on one vertical line and stops
+       the taller emoji from pushing the arrival timestamp out of alignment. */
+    const cargoIcon = cargo ? `<div title="${esc(cargoTipText(row))}" style="cursor:help;height:1.45em;display:flex;align-items:center;font-size:13px;line-height:1">📦</div>` : "";
     const legTag = isBerth ? "@BERTH" : "VOYAGE";
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
     const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
@@ -2312,7 +2419,7 @@ function breakdownGrid(R, tips){
            d.sccGoesTo ? `<span style="cursor:help" title="This port stay's ${fmtF(d.sccWtW,2)} t WtW CO₂e is counted as the ${esc(d.sccGoesTo.role)} of ${d.sccGoesTo.label? esc(d.sccGoesTo.label) : "the following ballast leg"} — SCC port consumption is never dropped.">→ ${esc(d.sccGoesTo.role)}</span>` : brDash}</div>`;
 
     return `
-      <div style="display:grid;grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+      <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
         <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="width:${SELCOL_W}px;flex:none;display:flex;align-items:center;justify-content:center">${selBox("br",i)}</div>
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
@@ -2320,11 +2427,26 @@ function breakdownGrid(R, tips){
             <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${isBerth?ICON_BERTH:ICON_VOYAGE}</div>
           </div>
           <div style="flex:1 1 auto;min-width:0;padding:10px 12px 10px 0">
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-              <span style="flex:1 1 auto;min-width:0;font-weight:600;color:#0f172a;line-height:1.5;overflow-wrap:anywhere">${portHtml}</span>
-              ${cargoIcon}
+            <!-- 2026-07-23c (Aurvin, owner instruction): the port lines now get the FULL width
+                 of the cell. The 📦 icon moved down out of this block — sharing the line with
+                 the port name was costing a berth row ~20px of name before the ellipsis, so a
+                 berth port name truncated much earlier than the same name on a voyage line. -->
+            <div>${portHtml}</div>
+            <!-- The two timestamps are stacked one above the other, mirroring the two port
+                 lines above (start over end, arrow trailing the first). To their right is a
+                 badge lane of the SAME two line heights: 📦 on the first (arrival) line,
+                 the VOYAGE / @BERTH tag on the second — so both sit on one vertical line and
+                 neither steals width from the port name. -->
+            <div style="display:flex;align-items:flex-end;gap:8px;font-size:0.85em;color:#64748b;margin-top:5px;line-height:1.45">
+              <div style="flex:1 1 auto;min-width:0;font-variant-numeric:tabular-nums">
+                <div style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></div>
+                <div style="white-space:nowrap">${toS}</div>
+              </div>
+              <div style="flex:none;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end">
+                ${cargoIcon}
+                <div style="height:1.45em;display:flex;align-items:center;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</div>
+              </div>
             </div>
-            <div style="display:flex;flex-wrap:wrap;column-gap:8px;font-size:0.85em;color:#64748b;margin-top:4px;line-height:1.5"><span style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></span><span style="white-space:nowrap">${toS}</span><span style="margin-left:auto;align-self:flex-end;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</span></div>
           </div>
         </div>
         <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
@@ -2343,7 +2465,7 @@ function breakdownGrid(R, tips){
      header + totals are wrapped in one sticky block so both stay pinned while the legs
      scroll underneath. The totals row aggregates the TICKED rows (all rows when none are
      ticked) — see ROWSEL above. */
-  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff">${header}<div id="brTotals">${brTotalsHtml()}</div></div>`;
+  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${BR_BOX}">${header}<div id="brTotals">${brTotalsHtml()}</div></div>`;
   return `<div class="tablescroll" style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${stuck}${bodyWrapped}${empty}</div>`;
 }
 
@@ -2383,7 +2505,7 @@ function brTotalsHtml(){
   const eeoiTot = twTot>0? numTot*1e6/twTot : null;
   const cell=(col,extra,val)=>`<div style="grid-column:${col};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   return `
-    <div style="display:grid;grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px"><span style="width:${SELCOL_W-8}px;flex:none"></span>${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
       ${cell(2,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),0))}
       ${cell(4,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(sumF("tonnes"),1))}
@@ -2394,14 +2516,19 @@ function brTotalsHtml(){
       ${cell(9,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
       ${cell(10,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
       <div style="grid-column:11;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(12,"", fmtF(sum("co2"),0))}
-      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),0))}
+      ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
+           the SAME number of decimal places as the leg rows underneath it in every column.
+           It previously rounded CO₂, EUAs, UKAs, TtW and WtW to whole tonnes while the legs
+           below showed 2 dp, so the decimal point in the total sat two characters left of
+           the column it was heading. Display only — the summed value is unchanged. */""}
+      ${cell(12,"", fmtF(sum("co2"),2))}
+      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
       <div style="grid-column:14;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),0))}
+      ${cell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
       ${cell(16,"color:#475569;", fmtF(sum("cargo"),0))}
       ${cell(17,"color:#475569;", fmtF(sum("tw")/1e6,2))}
-      ${cell(18,"color:#334155;", fmtF(sum("sccTtW"),0))}
-      ${cell(19,"color:#9a6b1f;", fmtF(sum("sccWtW"),0))}
+      ${cell(18,"color:#334155;", fmtF(sum("sccTtW"),2))}
+      ${cell(19,"color:#9a6b1f;", fmtF(sum("sccWtW"),2))}
       ${cell(20,"color:#9a6b1f;", eeoiTot!=null? fmtF(eeoiTot,2) : brDash)}
     </div>`;
 }
@@ -2410,6 +2537,557 @@ function brTotalsHtml(){
    clicking anywhere on the shrunk table is a shortcut back, since the <summary> toggle itself is
    easy to lose track of once the table above it has shrunk (2026-07-19, Aurvin) */
 function closeWorkingsIfOpen(){ const d=document.getElementById("workingsDetails"); if(d&&d.open) d.open=false; }
+
+/* ======================= VOYAGE-WISE TAB (2026-07-23c) ==================================
+   Added on Aurvin's explicit instruction. Aggregates the SAME engine output the Leg-Wise
+   tab shows, but grouped by the MDA VOYAGE_NUMBER instead of by leg/berth. Four owner
+   decisions were taken before writing this (recorded here so a later session does not
+   silently reverse them):
+
+     1. ONE ROW PER VOYAGE, its legs revealed on click (not a permanent leg list).
+     2. An ABRUPT mid-sea voyage-number change SPLITS the sea leg at that report.
+     3. SCC EEOI is RECOMPUTED per voyage number (not summed from the per-leg figures).
+     4. Columns kept: SCC block, fuel metrics, EU/UK ETS allowance figures, FuelEU CB and
+        penalty. Dropped per Task 4: the three "Cov." eligibility-% columns and the cargo
+        port-of-call icon.
+
+   IMPORTANT — this code does NOT touch the frozen arrival/departure/POC derivation in
+   mdaToOVD, nor js/engine.js. It reads S.mdaReports (which already retains VOYAGE_NUMBER as
+   `voy`) and S.rows, builds a SPLIT COPY of the rows, and runs the ordinary computeAll() on
+   that copy. Every regulatory number therefore comes from the same engine as everywhere
+   else — nothing is re-derived or pro-rated by hand except the split weighting below. */
+
+/* ---- Task 2: where does a voyage number really change? --------------------------------
+   The vessel's staff type VOYAGE_NUMBER by hand, so the number often flips a report or two
+   AFTER the departure it actually belongs to (sometimes on an SOSP report). Rule agreed
+   with the owner:
+     • Walk the reports in time order, IGNORING blank voyage numbers. This matters: in the
+       real MDA files FUEL_STOCK and FUEL_OIL_BUNKER rows carry an EMPTY VOYAGE_NUMBER, so
+       treating blanks as values would invent ~14 phantom voyage changes in a file that has
+       exactly one (verified against tools/Else- MDA-split year- blumenthal.xlsx).
+     • When the number changes on report k, look BACK for a derived DEPARTURE on the same
+       calendar day as report k or the day before. If there is one, the change really
+       happened at that departure — use the departure's time.
+     • If there is no such departure, the charterer genuinely changed mid-passage. That is a
+       legitimate new voyage starting at report k's own time.
+     • Boundary semantics follow the 2026-07-20 owner decision that a report's consumption
+       covers the period ENDING at its timestamp. So the report AT the boundary keeps its
+       consumption on the OLD voyage, and the new voyage accumulates from the next report
+       on — which is exactly what the owner asked for in Task 2.
+   Returns [{voy, tStart, tEnd, retimed, atReport, viaDeparture}] in time order. */
+/* The DERIVED departure (role) is the regulatory one and is what forms a workspace row
+   boundary; DEPARTURE-SOSP is only the sea-passage marker and normally sits a few hours
+   LATER, already inside the sea leg. Snapping to the SOSP would therefore drop the boundary
+   in the middle of a leg and force a pointless split, so the derived departure always wins
+   and the SOSP is only a fallback for files that have no derived role. */
+function vwIsDeparture(r){ return /DEPARTURE/.test(String(r.role||"")); }
+function vwIsSosp(r){ return r.rt==="DEPARTURE-SOSP"; }
+
+/* ---- Task 2 (2026-07-23e, owner instruction): normalise how the crew WROTE the number ----
+   Vessel staff type VOYAGE_NUMBER by hand and are inconsistent about two things: leading
+   zeros, and a "V" for voyage in front. The owner's rule: 6, 06, 006, V6, V06 and V006 are
+   all the SAME voyage. So the number is reduced to a canonical key before it is compared:
+
+     • trim, upper-case
+     • drop a leading voyage marker — V / VOY / VOYAGE, with any of space . _ - / after it —
+       but ONLY when a digit follows, so a genuinely alphabetic voyage code is left alone
+       ("VESSEL1" is not treated as voyage "ESSEL1")
+     • drop leading zeros from the numeric part, keeping any suffix ("V05A" → "5A")
+
+   CONTINUITY STILL DECIDES. Matching keys are only merged when they are ADJACENT in time.
+   If another voyage number appears in between — 5, 6, 5 — that is three voyages, and the two
+   "5" groups stay separate, exactly as the owner specified. This is why segments are
+   identified downstream by their INDEX, never by their number: two different segments can
+   legitimately carry the same key. */
+function vwVoyKey(v){
+  const raw=String(v==null?"":v).trim().toUpperCase();
+  if(!raw) return "";
+  const s=raw.replace(/^V(?:OYAGE|OY)?[\s._\-\/]*(?=\d)/,"");
+  const m=/^0*(\d+)(.*)$/.exec(s);
+  return m ? (m[1]+m[2].trim()) : s;
+}
+function vwDay(t){ return String(t||"").slice(0,10); }
+function vwPrevDay(d){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const x=new Date(d+"T00:00:00Z"); x.setUTCDate(x.getUTCDate()-1);
+  return x.toISOString().slice(0,10);
+}
+function vwVoyageSegments(reps){
+  const list=(reps||[]).filter(r=>r&&r.t).slice().sort((a,b)=>a.t<b.t?-1:a.t>b.t?1:0);
+  const segs=[];
+  let cur=null, prevKey=null;
+  for(let i=0;i<list.length;i++){
+    const r=list[i], v=String(r.voy||"").trim(), key=vwVoyKey(v);
+    if(!key) continue;                                   // blank = bunker/stock row, carry on
+    if(prevKey===null){
+      /* The FIRST voyage starts open-ended (tStart null = "since the beginning of time").
+         Anchoring it to the first report's timestamp instead would put a boundary just
+         inside any row that began before that report — e.g. a file opening mid-voyage —
+         and split it for no reason. */
+      cur={ voy:key, raws:[v], tStart:null, tEnd:null, retimed:false, atReport:r.t, viaDeparture:null };
+      segs.push(cur); prevKey=key; continue;
+    }
+    /* same voyage, however the crew spelled it this time — just record the spelling */
+    if(key===prevKey){ if(cur && cur.raws.indexOf(v)<0) cur.raws.push(v); continue; }
+    /* --- a change: try to re-time it back to a departure --- */
+    const dToday=vwDay(r.t), dYest=vwPrevDay(dToday);
+    let dep=null, sosp=null;
+    for(let j=i;j>=0;j--){
+      const q=list[j], dq=vwDay(q.t);
+      if(dq!==dToday && dq!==dYest) break;               // walked past "yesterday" — stop
+      if(!dep  && vwIsDeparture(q)) dep=q;               // nearest preceding derived departure
+      if(!sosp && vwIsSosp(q))      sosp=q;
+      if(dep) break;                                     // derived departure always wins
+    }
+    const anchor = dep || sosp;
+    const bT = anchor ? (anchor.te||anchor.t) : (r.te||r.t);
+    if(cur) cur.tEnd=bT;
+    cur={ voy:key, raws:[v], tStart:bT, tEnd:null, retimed:!!anchor && bT!==(r.te||r.t),
+          atReport:r.t, viaDeparture: anchor? bT : null, viaSosp: !dep && !!sosp };
+    segs.push(cur); prevKey=key;
+  }
+  if(cur) cur.tEnd = (list.length? (list[list.length-1].te||list[list.length-1].t) : null);
+  /* merge consecutive segments carrying the SAME number (a number that flips away and back
+     across a blank run is one voyage, not three) */
+  /* safety net: fold any adjacent pair that ended up with the same key (the loop above
+     already prevents it, but a future edit to the change detection might not) */
+  const merged=[];
+  for(const s of segs){
+    const last=merged[merged.length-1];
+    if(last && last.voy===s.voy){
+      last.tEnd=s.tEnd;
+      for(const rw of s.raws) if(last.raws.indexOf(rw)<0) last.raws.push(rw);
+      continue;
+    }
+    merged.push(s);
+  }
+  return merged;
+}
+/* which voyage owns an instant — segment start INCLUSIVE, so a sea leg beginning exactly at
+   the departure boundary belongs to the NEW voyage while the berth stay ending there keeps
+   the old one.
+   Returns the segment INDEX, not the voyage number: after the 2026-07-23e normalisation two
+   separate segments can legitimately share a number (5 → 6 → 5 is three voyages, two of them
+   called "5"), so the index is the only safe identity. */
+function vwSegAt(segs, t){
+  if(!t || !segs.length) return null;
+  /* tStart null on the first segment = open-ended start, so it matches anything before the
+     first real boundary */
+  for(let i=0;i<segs.length;i++){
+    const s=segs[i];
+    if((!s.tStart || t>=s.tStart) && (!s.tEnd || t<s.tEnd)) return i;
+  }
+  const last=segs[segs.length-1];
+  if(last.tEnd && t>=last.tEnd) return segs.length-1;
+  return 0;
+}
+
+/* ---- Task 2 (second half): split a row that a voyage boundary falls inside --------------
+   Only an ABRUPT mid-sea change can do this — a re-timed change lands on a departure, which
+   is already a row boundary, so nothing splits. The split weight comes from the MDA reports
+   inside each part (per fuel, and separately for distance), then that weight is applied to
+   the ROW's own totals. Weighting the row rather than just summing the reports is deliberate:
+   the derivation moves fuel across the arrival/departure boundaries, so report sums do not
+   equal row totals — scaling the row keeps the fuel- and distance-conservation invariants
+   that verify_workspace_rows.js asserts. Rows with no report backing (hand-entered, or an
+   OVD import with no MDA behind it) fall back to a time-proportional split. */
+function vwPartWeight(reps, row, a, b){
+  const inWin=(t,x,y)=>t && t>x && t<=y;
+  const all=(reps||[]).filter(r=>inWin(r.t,row.tStart,row.tEnd));
+  const part=all.filter(r=>inWin(r.t,a,b));
+  const sumD=l=>l.reduce((s,r)=>s+(Number(r.dist)||0),0);
+  const sumF=(l,id)=>l.reduce((s,r)=>s+(Number((r.fuels||{})[id])||0),0);
+  const tf=()=>{ const t0=Date.parse(row.tStart), t1=Date.parse(row.tEnd), pa=Date.parse(a), pb=Date.parse(b);
+                 return (isFinite(t0)&&isFinite(t1)&&t1>t0)? Math.max(0,Math.min(1,(pb-pa)/(t1-t0))) : 0.5; };
+  if(!all.length) return { dist:tf(), fuel:()=>tf(), fallback:true };
+  const dAll=sumD(all);
+  return { dist: dAll>0? sumD(part)/dAll : tf(),
+           fuel: id => { const t=sumF(all,id); return t>0? sumF(part,id)/t : tf(); },
+           fallback:false };
+}
+function vwCloneRow(row){
+  const c=Object.assign({},row);
+  c.fuels=(row.fuels||[]).map(f=>Object.assign({},f));
+  return c;
+}
+function vwSplitRows(rows, segs, reps){
+  const out=[], owner=[];
+  for(const row of rows||[]){
+    const cuts=segs.map(s=>s.tStart)
+      .filter(t=>t && row.tStart && row.tEnd && t>row.tStart && t<row.tEnd)
+      .sort().filter((t,i,a)=>i===0||t!==a[i-1]);
+    if(!cuts.length){ out.push(vwCloneRow(row)); owner.push(vwSegAt(segs,row.tStart)); continue; }
+    const bounds=[row.tStart,...cuts,row.tEnd];
+    for(let k=0;k<bounds.length-1;k++){
+      const a=bounds[k], b=bounds[k+1];
+      const w=vwPartWeight(reps,row,a,b);
+      const c=vwCloneRow(row);
+      c.tStart=a; c.tEnd=b;
+      c.dist=(Number(row.dist)||0)*w.dist;
+      c.hours=(Number(row.hours)||0)*w.dist;
+      c.fuels=(row.fuels||[]).map(f=>Object.assign({},f,{ tonnes:(Number(f.tonnes)||0)*w.fuel(f.fuelId||f.id) }));
+      c.vwSplitPart=k+1; c.vwSplitOf=bounds.length-1;
+      /* ukInFrac is a per-report ratio for the WHOLE row; it is only approximately valid for
+         a time slice of it, so drop it on split parts and let the engine fall back to its own
+         time-proration (ukSchemeFraction) over the part's own window */
+      delete c.ukInFrac;
+      out.push(c); owner.push(vwSegAt(segs,a));
+    }
+  }
+  return { rows:out, owner };
+}
+
+/* ---- assemble the voyage groups -------------------------------------------------------- */
+function vwInYear(row,y){
+  if(row.yearPart) return Number(row.yearPart)===y;
+  const a=row.tStart? String(row.tStart).slice(0,4):null;
+  const b=row.tEnd?   String(row.tEnd).slice(0,4)  :null;
+  if(!a&&!b) return true;
+  return a===String(y)||b===String(y);
+}
+/* per-fuel roll-up across a whole voyage group, same shape brFuelLines gives a leg */
+function vwFuelLines(g){
+  const acc=new Map();
+  for(const d of g.dets) for(const fu of d.fuels){
+    let a=acc.get(fu.id);
+    if(!a){ a={ id:fu.id, label:cleanFuelName(FUEL_BY_ID[fu.id]||{id:fu.id,name:fu.name}),
+                tonnes:0, eligibleEU:0, energy:0, E:0, feuCB:0, feuPenalty:0,
+                co2:0, euas:0, ukCO2e:0, sccTtW:0, sccWtW:0, noFactor:false }; acc.set(fu.id,a); }
+    const fb=FUEL_BY_ID[fu.id]||{};
+    a.tonnes+=Number(fu.tonnes)||0; a.eligibleEU+=Number(fu.eligibleEU)||0;
+    a.energy += (fb.lcv&&fu.eligibleEU)? fu.eligibleEU*fb.lcv : 0;
+    a.E+=Number(fu.E)||0; a.feuCB+=Number(fu.feuCB)||0; a.feuPenalty+=Number(fu.feuPenalty)||0;
+    a.co2+=Number(fu.co2)||0; a.euas+=Number(fu.euas)||0; a.ukCO2e+=Number(fu.ukCO2e)||0;
+    a.sccTtW+=Number(fu.sccTtW)||0;
+    if(fu.sccWtW==null) a.noFactor=true; else a.sccWtW+=Number(fu.sccWtW)||0;
+  }
+  return Array.from(acc.values())
+    .sort((x,y2)=>((TR_FUEL_ORDER.indexOf(x.id)+1||99)-(TR_FUEL_ORDER.indexOf(y2.id)+1||99))||(x.label<y2.label?-1:1));
+}
+/* Task 5 — SCC per voyage number, RECOMPUTED (owner decision 3).
+     numerator   = every gram of WtW CO₂e inside the voyage group: its sea legs AND its port
+                   stays (loading, discharging, bunkering, waiting) — SCC counts the lot.
+     denominator = Σ (cargo × distance) over the group's LADEN legs only, i.e. the group's own
+                   transport work. Ballast distance never enters the denominator.
+   A group that carries no cargo at all (a wholly ballast voyage) has no EEOI of its own —
+   under SCC 2025 Technical Guidance Appendix 3 its emissions belong to the voyage that loads
+   NEXT, so they are carried forward into the next group that has transport work. This is the
+   same rule js/engine.js applies per leg, lifted to voyage granularity. A group burning a fuel
+   with no Table 8 factor is dashed and excluded rather than silently counted as zero. */
+function vwGroups(state){
+  const S0 = state||S;
+  const y  = Number(S0.year)||2026;
+  const reps = S0.mdaReports||[];
+  const segs = vwVoyageSegments(reps);
+  const split = vwSplitRows(S0.rows||[], segs, reps);
+  const R = computeAll(Object.assign({}, S0, { rows: split.rows }));
+  /* rowDetails is the in-year subset of split.rows, in order — rebuild that index map so a
+     detail can be traced back to the voyage number its source row belongs to */
+  const keep=[]; split.rows.forEach((row,i)=>{ if(vwInYear(row,y)) keep.push(i); });
+  const order=[], byVoy=new Map();
+  R.rowDetails.forEach((d,j)=>{
+    const src = split.rows[keep[j]];
+    /* keyed on the SEGMENT INDEX, never on the voyage number - after the 2026-07-23e
+       normalisation two non-adjacent segments can share a number (5 -> 6 -> 5 is three
+       voyages, two of them called "5"), and keying by number would wrongly weld those two
+       "5"s back into one voyage. */
+    const si  = split.owner[keep[j]];
+    const seg = (si!=null && segs[si]) ? segs[si] : null;
+    const key = (si==null) ? "none" : ("#"+si);
+    let g=byVoy.get(key);
+    if(!g){ g={ voy: seg? seg.voy : "", raws: seg? seg.raws : [], dets:[], srcs:[],
+                tStart:null, tEnd:null, seg:seg }; byVoy.set(key,g); order.push(g); }
+    /* carry the split marker from the source row onto the detail so the table can flag it */
+    if(src && src.vwSplitOf>1){ d.vwSplit=src.vwSplitPart; d.vwSplitOf=src.vwSplitOf; }
+    g.dets.push(d); g.srcs.push(src);
+    if(d.tStart && (!g.tStart || d.tStart<g.tStart)) g.tStart=d.tStart;
+    if(d.tEnd   && (!g.tEnd   || d.tEnd  >g.tEnd  )) g.tEnd  =d.tEnd;
+  });
+  order.sort((a,b)=>(a.tStart||"")<(b.tStart||"")?-1:(a.tStart||"")>(b.tStart||"")?1:0);
+  const sumOf=(g,k)=>g.dets.reduce((s,d)=>s+(Number(d[k])||0),0);
+  let carry=0, carryLegs=0;
+  for(const g of order){
+    g.dist=sumOf(g,"dist"); g.cargo=sumOf(g,"cargo"); g.hours=sumOf(g,"hours");
+    g.E=sumOf(g,"E"); g.feuCB=sumOf(g,"feuCB"); g.feuPenalty=sumOf(g,"feuPenalty");
+    g.co2=sumOf(g,"co2"); g.euas=sumOf(g,"euas"); g.ukCO2e=sumOf(g,"ukCO2e");
+    g.sccTtW=sumOf(g,"sccTtW"); g.sccWtW=sumOf(g,"sccWtW");
+    g.tw=g.dets.reduce((s,d)=>s+(d.kind==="voyage"?(Number(d.tw)||0):0),0);
+    g.sccNoFactor=g.dets.some(d=>d.sccNoFactor);
+    g.fuels=vwFuelLines(g);
+    g.sccBallastIn=carry; g.sccBallastLegs=carryLegs;
+    const num=g.sccWtW+carry;
+    if(g.tw>0 && !g.sccNoFactor){ g.sccNumerator=num; g.eeoi=num*1e6/g.tw; carry=0; carryLegs=0; }
+    else { g.sccNumerator=null; g.eeoi=null; carry=num; carryLegs+=g.dets.filter(d=>d.kind==="voyage").length; }
+  }
+  return { groups:order, segs, R, trailingBallast:carry, split };
+}
+
+/* ---- Voyage-Wise table ------------------------------------------------------------------
+   18 columns. Leg-Wise has 20: this drops the three "Cov." eligibility-% cells (Task 4) and
+   adds "Voyage No" (Task 3). The cargo port-of-call icon is likewise not rendered here.
+   Column map:  1 Activity  2 Voyage No  3 Dist  |  4 Fuel  5 Cons.
+                6 Elig. mt  7 Energy  8 Elig. energy  9 CB  10 Penalty      (FuelEU)
+                11 CO₂  12 EUAs                                            (EU ETS)
+                13 UKAs                                                    (UK ETS)
+                14 Cargo  15 TW  16 TtW  17 WtW  18 EEOI                   (SCC) */
+/* Same widening as BR_GRID (see the note there). 18 tracks, total minimum ≈ 1856px. */
+const VW_GRID = "minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr)";
+const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
+let VW_LAST = null;
+
+/* the ports a whole voyage group ran between: first leg's origin → last leg's destination */
+function vwGroupPorts(g){
+  const legs=g.dets.map((d,i)=>({d,src:g.srcs[i]})).filter(x=>x.d.kind==="voyage");
+  if(!legs.length){
+    const p=legPorts(g.dets[0],g.srcs[0]);
+    return [p[0], p[0]];
+  }
+  const a=legPorts(legs[0].d, legs[0].src);
+  const b=legPorts(legs[legs.length-1].d, legs[legs.length-1].src);
+  return [a[0], b[b.length-1]];
+}
+function vwTimeSpan(a,b){
+  const f=t=>t? String(t).replace("T"," ") : "—";
+  return f(a)+" → "+f(b);
+}
+/* The Voyage No cell shows the CANONICAL number (see vwVoyKey). When the crew spelled it
+   more than one way inside the same voyage — "V05" one day, "5" the next — a small ✎ marker
+   appears and the tooltip lists exactly what was in the file, so the merge is never silent
+   and can always be checked against the source. */
+function vwVoyCell(g){
+  const raws=(g.raws||[]).filter(Boolean);
+  const variants=raws.filter((v,i,a)=>a.indexOf(v)===i);
+  if(variants.length<=1) return esc(g.voy);
+  return esc(g.voy)+`<span style="color:#9a6b1f;font-weight:400;cursor:help;margin-left:3px" title="Written ${variants.length} different ways in the MDA file — ${variants.map(esc).join(" · ")} — all treated as voyage ${esc(g.voy)}. Leading zeros and a leading V/VOY are ignored when they are next to each other in time; a different voyage number in between would keep them apart.">✎</span>`;
+}
+function voyageGrid(R, tips){
+  const cellPad="7px 10px";
+  const G=R.groups;
+  VW_LAST={ R, cellPad };
+  rowselReset("vw", G.length);
+  const th=(col,txt,extra,title)=>`<div style="grid-column:${col};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
+  const header=`
+    <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
+      <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("vw")}</span>Voyage &amp; timeframe</div>
+      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
+      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
+      <div style="grid-column:4 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:6 / span 5;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:11 / span 2;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:13;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:14 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
+      <div style="grid-column:4;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      ${th(5,"Cons. mt","border-right:1px solid #e2e8f0;padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
+      ${th(6,"Elig. mt","","Eligible mass under regulation scope (tonnes)")}
+      ${th(7,"Energy (10⁶ MJ)")}
+      ${th(8,"Elig. energy (10⁶ MJ)")}
+      ${th(9,"CB","","Compliance balance (tCO₂eq)")}
+      ${th(10,"Penalty (€)","border-right:1px solid #e2e8f0;")}
+      ${th(11,"CO₂ (mt)","","white-space:nowrap")}
+      ${th(12,"EUAs (tCO₂e)","border-right:1px solid #e2e8f0;")}
+      ${th(13,"UKAs (tCO₂e)","border-right:1px solid #e2e8f0;")}
+      ${th(14,"Cargo (mt)","","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
+      ${th(15,"TW (10⁶ t·nm)","","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
+      ${th(16,"TtW (mt)","","Tank-to-wake CO₂e (tonnes) — what comes out of the funnel")}
+      ${th(17,"WtW (mt)","","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
+      ${th(18,"EEOI")}
+    </div>`;
+
+  let zi=0;
+  const body=G.map((g,i)=>{
+    const lines=g.fuels.length?g.fuels:[{label:"—",tonnes:0,eligibleEU:0,energy:0,E:0,feuCB:0,feuPenalty:0,co2:0,euas:0,ukCO2e:0,sccTtW:0,sccWtW:0}];
+    const span=Math.max(1,lines.length);
+    const bg=(zi++%2===1)?"#fafcfd":"#ffffff";
+    const [pa,pb]=vwGroupPorts(g);
+    const nLegs=g.dets.filter(d=>d.kind==="voyage").length, nBerth=g.dets.length-nLegs;
+    const cell=(col,row,extra,val)=>`<div style="grid-column:${col};grid-row:${row};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+    const fl=(col,get,extra)=>lines.map((f,k)=>`<div style="grid-column:${col};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${get(f)}</div>`).join("");
+    /* the SCC ⊕ marker: this voyage absorbed a preceding wholly-ballast voyage's emissions */
+    const eeoiCell = g.sccNoFactor ? brNoFactor
+      : g.eeoi!=null ? fmtF(g.eeoi,2)+(g.sccBallastIn>0?`<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(g.sccNumerator,2)} t WtW CO₂e = this voyage's own ${fmtF(g.sccWtW,2)} + ${fmtF(g.sccBallastIn,2)} carried in from ${g.sccBallastLegs} preceding ballast leg(s) with no cargo of their own (SCC 2025 Technical Guidance Appendix 3)."> ⊕</span>`:"")
+      : `<span style="color:#94a3b8;cursor:help" title="No transport work on this voyage (no cargo carried) — under SCC Appendix 3 its ${fmtF(g.sccWtW,2)} t WtW CO₂e is carried into the next voyage that loads.">ballast</span>`;
+    /* 2026-07-23d (Aurvin, owner instruction): the activity cell now mirrors the Leg-Wise
+       one exactly — ONE LINE PER PORT (origin with a trailing arrow above, destination
+       below), then the two timestamps stacked the same way, with a badge lane on the right.
+       The previous single-line "A → B" layout truncated both port names to "Sin… → Fan…"
+       because the two names, two codes and an arrow all fought for one line's width. */
+    const portLine=(p,arrow)=>{
+      const nameSpan = p.name
+        ? `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(p.name)}</span>`
+        : (p.code? "" : `<span style="flex:none">${esc(p.label||"")}</span>`);
+      const codeSpan = p.code
+        ? (p.name ? `<span style="flex:none;margin-left:4px;color:#94a3b8;font-weight:500">(${esc(p.code)})</span>`
+                  : `<span style="flex:none;color:#94a3b8;font-weight:500">${esc(p.code)}</span>`)
+        : "";
+      const arr = arrow? `<span style="flex:none;margin-left:5px;color:#94a3b8">→</span>` : "";
+      return `<div title="${esc(p.label||"")}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameSpan}${codeSpan}${arr}</div>`;
+    };
+    const fromS = esc(fmtTs(g.tStart))||"…", toS = esc(fmtTs(g.tEnd))||"…";
+    const flags=[];
+    if(g.seg&&g.seg.retimed) flags.push(`<span style="color:#9a6b1f;cursor:help" title="The MDA file first showed this voyage number on the report at ${esc(g.seg.atReport)}, which is the same day or the day after a departure — so the change was re-timed back to that departure (${esc(g.seg.viaDeparture)}).">re-timed</span>`);
+    if(g.dets.some(d=>d.vwSplit)) flags.push(`<span style="color:#9a6b1f;cursor:help" title="A sea leg in this voyage was split because the voyage number changed mid-passage with no departure on the same or the previous day (an abrupt charterer change).">leg split</span>`);
+    const head=`
+      <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
+          <div style="width:${SELCOL_W}px;flex:none;display:flex;align-items:center;justify-content:center">${selBox("vw",i)}</div>
+          <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
+            <div style="position:absolute;top:0;bottom:0;left:50%;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
+            <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${ICON_VOYAGE}</div>
+          </div>
+          <div style="flex:1 1 auto;min-width:0;padding:10px 12px 10px 0">
+            <div>${portLine(pa,true)}${portLine(pb,false)}</div>
+            <div style="display:flex;align-items:flex-end;gap:8px;font-size:0.85em;color:#64748b;margin-top:5px;line-height:1.45">
+              <div style="flex:1 1 auto;min-width:0;font-variant-numeric:tabular-nums">
+                <div style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></div>
+                <div style="white-space:nowrap">${toS}</div>
+              </div>
+              <div style="flex:none;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;text-align:right">
+                <div style="height:1.45em;display:flex;align-items:center;font-size:9.5px;color:#94a3b8;white-space:nowrap">${nLegs} leg${nLegs===1?"":"s"} · ${nBerth} stay${nBerth===1?"":"s"}</div>
+                <div style="height:1.45em;display:flex;align-items:center;gap:6px;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8;white-space:nowrap">${flags.length?flags.join(' <span style="color:#cbd5e1">·</span> '):"VOYAGE"}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
+        ${cell(3,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#475569;",brNum(g.dist,0))}
+        ${fl(4,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
+        ${fl(5,f=>brNum(f.tonnes,1),"border-right:1px solid #e2e8f0;padding-left:4px;color:#334155;")}
+        ${fl(6,f=>brNum(f.eligibleEU,1))}
+        ${fl(7,f=>brNum(f.energy,2))}
+        ${fl(8,f=>brNum(f.E/1e6,2))}
+        ${fl(9,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
+        ${fl(10,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${fl(11,f=>brNum(f.co2,2))}
+        ${fl(12,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${fl(13,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${cell(14,"1 / span "+span,"color:#475569;",g.cargo>0?fmtF(g.cargo,0):`<span style="color:#94a3b8" title="No cargo on any leg of this voyage — a ballast voyage. Its WtW CO₂e carries into the next voyage that loads (SCC Appendix 3).">ballast</span>`)}
+        ${cell(15,"1 / span "+span,"color:#475569;",g.tw>0?fmtF(g.tw/1e6,2):brDash)}
+        ${fl(16,f=>brNum(f.sccTtW,2),"color:#334155;")}
+        ${fl(17,f=>f.noFactor?brNoFactor:brNum(f.sccWtW,2),"color:#9a6b1f;")}
+        ${cell(18,"1 / span "+span,"color:#9a6b1f;font-weight:600;",eeoiCell)}
+      </div>`;
+    return head;
+  }).join("");
+
+  const bodyWrapped = G.length? `<div style="position:relative">${body}</div>` : "";
+  const empty = !G.length? `<div style="padding:22px;text-align:center;color:#64748b">No activity rows for ${R.year}.</div>` : "";
+  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${VW_BOX}">${header}<div id="vwTotals">${vwTotalsHtml()}</div></div>`;
+  return `<div class="tablescroll" style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${stuck}${bodyWrapped}${empty}</div>`;
+}
+/* 2026-07-23d (Aurvin, owner instruction): the expandable per-leg list that used to sit
+   under each voyage was REMOVED — the owner revoked the "legs on hover/expand" half of
+   the original decision because it cluttered the table. Voyage-Wise is now strictly one
+   row per voyage number. The per-leg detail lives on the ⛵ Leg-Wise tab, which is the
+   right place for it. vwLegRows(), vwToggle(), VW_OPEN and the chevron icons went with
+   it; g.dets/g.srcs are still carried on each group because the SCC roll-up and the
+   leg/stay counts in the activity cell read them. */
+/* sticky TOTAL row — sums the ticked voyages (all of them when none are ticked).
+   SCC intensity is the WEIGHTED fleet figure (Σ numerator ÷ Σ transport work), never a mean
+   of the per-voyage EEOIs; ballast voyages contribute their numerator but no transport work,
+   exactly as they do inside the per-voyage calculation. */
+function vwTotalsHtml(){
+  if(!VW_LAST) return "";
+  const R=VW_LAST.R, cellPad=VW_LAST.cellPad;
+  const G=R.groups;
+  if(!G.length) return "";
+  const sel=rowselActive("vw",G.length).map(i=>G[i]);
+  const sum=k=>sel.reduce((a,g)=>a+(Number(g[k])||0),0);
+  const sumFu=k=>sel.reduce((a,g)=>a+g.fuels.reduce((b,f)=>b+(Number(f[k])||0),0),0);
+  const good=sel.filter(g=>!g.sccNoFactor);
+  const twTot=good.reduce((a,g)=>a+(Number(g.tw)||0),0);
+  const numTot=good.reduce((a,g)=>a+(Number(g.sccWtW)||0),0);
+  const eeoiTot=twTot>0? numTot*1e6/twTot : null;
+  const cell=(col,extra,val)=>`<div style="grid-column:${col};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  const k=ROWSEL.vw.sel.size;
+  const label=k? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
+                : `Total — all ${G.length} voyage${G.length===1?"":"s"} · ${R.year}`;
+  return `
+    <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
+      <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px"><span style="width:${SELCOL_W-8}px;flex:none"></span>${esc(label)}</div>
+      <div style="grid-column:2;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
+      ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;",fmtF(sumFu("tonnes"),1))}
+      ${cell(6,"",fmtF(sumFu("eligibleEU"),1))}
+      ${cell(7,"",fmtF(sumFu("energy"),2))}
+      ${cell(8,"",fmtF(sum("E")/1e6,2))}
+      ${cell(9,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
+      ${cell(10,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
+      ${cell(11,"",fmtF(sum("co2"),2))}
+      ${cell(12,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
+      ${cell(13,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
+      ${cell(14,"color:#475569;",fmtF(sum("cargo"),0))}
+      ${cell(15,"color:#475569;",fmtF(sum("tw")/1e6,2))}
+      ${cell(16,"color:#334155;",fmtF(sum("sccTtW"),2))}
+      ${cell(17,"color:#9a6b1f;",fmtF(sum("sccWtW"),2))}
+      ${cell(18,"color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
+    </div>`;
+}
+function downloadVoyageXlsx(){
+  const vg=vwGroups(S);
+  if(!vg.groups.length){ alert("No voyages to export — import an MDA file first."); return; }
+  const sel=rowselActive("vw",vg.groups.length).map(i=>vg.groups[i]);
+  const rows=[["Voyage No","From","To","Start (GMT)","End (GMT)","Legs","Port stays","Distance nm",
+               "Fuel","Consumption mt","Eligible mt","Energy 10^6 MJ","Eligible energy 10^6 MJ",
+               "FuelEU CB tCO2eq","FuelEU penalty EUR","CO2 mt","EUAs tCO2e","UKAs tCO2e",
+               "Cargo mt","Transport work t.nm","TtW CO2e mt","WtW CO2e mt","SCC numerator mt","EEOI gCO2e/t.nm","Notes"]];
+  for(const g of sel){
+    const [pa,pb]=vwGroupPorts(g);
+    const nLegs=g.dets.filter(d=>d.kind==="voyage").length;
+    const note=[ g.seg&&g.seg.retimed? "voyage-number change re-timed to departure "+g.seg.viaDeparture : "",
+                 g.dets.some(d=>d.vwSplit)? "contains a leg split at an abrupt mid-sea voyage change" : "",
+                 g.sccNoFactor? "SCC excluded — fuel without a Table 8 factor" : "",
+                 g.sccBallastIn>0? "includes "+Math.round(g.sccBallastIn*100)/100+" t WtW carried in from preceding ballast leg(s)" : ""
+               ].filter(Boolean).join("; ");
+    g.fuels.forEach((f,i)=>{
+      rows.push([ i?"":(g.voy||"n/a"), i?"":(pa.label||""), i?"":(pb.label||""), i?"":(g.tStart||""), i?"":(g.tEnd||""),
+                  i?"":nLegs, i?"":(g.dets.length-nLegs), i?"":round2(g.dist),
+                  f.label, round2(f.tonnes), round2(f.eligibleEU), round2(f.energy), round2(f.E/1e6),
+                  round2(f.feuCB/1e6), round2(f.feuPenalty), round2(f.co2), round2(f.euas), round2(f.ukCO2e),
+                  i?"":round2(g.cargo), i?"":round2(g.tw), round2(f.sccTtW), f.noFactor?"n/a":round2(f.sccWtW),
+                  i?"":(g.sccNumerator==null?"":round2(g.sccNumerator)),
+                  i?"":(g.eeoi==null?"":round2(g.eeoi)), i?"":note ]);
+    });
+  }
+  downloadXlsx("voyage_wise_breakdown_"+S.year+".xlsx","Voyage-Wise",rows);
+}
+function round2(v){ return (v==null||isNaN(v))? "" : Math.round(Number(v)*100)/100; }
+
+function renderVoyage(){
+  const el=document.getElementById("tab-voy"); if(!el) return;
+  const vg=vwGroups(S);
+  const R={ groups:vg.groups, year:Number(S.year)||2026 };
+  const iVoy=info(`The <b>VOYAGE_NUMBER</b> from the MDA file, with the change point corrected.<br><br>Vessel staff type this by hand, so the number often flips a report or two <b>after</b> the departure it belongs to — sometimes on an SOSP report. Rule applied here (owner instruction, 2026-07-23):<br><br>• When the number changes, the calculator looks back for a derived <b>DEPARTURE</b> on the <b>same day or the day before</b>. If it finds one, the change is re-timed to that departure and the row is marked <i>re-timed to departure</i>.<br><br>• If there is no such departure, the charterer genuinely changed mid-passage — that is accepted as a new voyage starting at that report, and the sea leg is <b>split</b> at that point (marked <i>leg split</i>).<br><br>• Either way the report at the boundary keeps its own consumption on the <b>old</b> voyage; the new voyage accumulates from the next report onward.<br><br>Blank voyage numbers (bunkering and fuel-stock reports carry none) are ignored rather than treated as a change.`);
+  const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Calculations tab. Eligible energy = eligible mass × 10⁶ × LCV.");
+  const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. The annual balance/penalty is shared out by each row's in-scope energy and then summed to the voyage — <b>indicative only</b>, FuelEU is period-based in law.<br><br>Per Task 4 the coverage-% columns are not shown on this tab; they remain on the ⛵ Leg-Wise and 📋 Report-Wise tabs.");
+  const iEUETS=info("<b>EUAs</b> = covered CO₂e × phase-in (euets-art3gb), summed over the voyage's legs and port stays. Coverage is applied per leg by the engine — EEA↔EEA and at-berth EEA 100%, EEA↔other 50% — and the resulting allowances are what you see here.<br><br>Per Task 4 the coverage-% column is not shown on this tab.");
+  const iUKETS=info("<b>UKAs</b> = tCO₂e for UK→UK voyages and UK in-port activity (ukets-sch2a-p7), GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35). Obligation from scheme year 2026.<br><br>Per Task 4 the coverage-% column is not shown on this tab.");
+  const iSCC=info(`<b>Sea Cargo Charter — computed per voyage number</b> (owner decision, 2026-07-23), not by summing the per-leg figures.<br><br>
+    <b>Numerator</b> = all well-to-wake CO₂e inside the voyage: its sea legs <b>and</b> its port stays (loading, discharging, bunkering, waiting). SCC counts the lot.<br><br>
+    <b>Denominator</b> = the voyage's own transport work, Σ (cargo × laden distance). Ballast distance never enters it.<br><br>
+    <b>EEOI</b> = numerator × 10⁶ ÷ transport work, in gCO₂e per tonne-mile (Technical Guidance Eq. 2). Lower is better.<br><br>
+    A voyage that carries <b>no cargo at all</b> has no EEOI of its own — under Appendix 3 its emissions belong to the voyage that loads next, so they are carried forward. <b>⊕</b> marks a voyage that absorbed one; hover it for the split.<br><br>
+    Factors are SCC 2025 Technical Guidance <b>Table 8</b> (Appendix 4), WtW = WtT + TtW, with granular rows where the machinery is known. GWP ${esc((vg.R.scc&&vg.R.scc.gwp)?vg.R.scc.gwp.label:"AR6")} — SCC's own set, deliberately different from FuelEU's AR4 and UK ETS's AR5.<br><br>
+    Fuels Table 8 does not list (the RFNBO e-fuels) show <b>n/a</b> rather than borrowing another regime's factor, and their voyage is left out of the TOTAL intensity.<br><br>
+    The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-voyage values.`,"right");
+  const nSplit=vg.split.rows.filter(r=>r.vwSplitOf>1).length;
+  const nRetimed=vg.segs.filter(s=>s.retimed).length;
+  const iTable=info(`Exactly one line per <b>voyage number</b>. Every figure is rolled up from the <b>same engine values</b> the ⛵ Leg-Wise tab renders, so the two tabs can never disagree — open ⛵ Leg-Wise to see the individual legs and port stays inside a voyage.<br><br>All figures rounded to 2 decimal places. — indicates no obligation (out of scope, or the OMR derogation until 2030). CB = FuelEU compliance balance; negative values are deficits.<br><br>Per Task 4 this tab omits the regulation eligibility-% columns and the cargo port-of-call icon — both remain on ⛵ Leg-Wise and 📋 Report-Wise.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU and ETS surrender are period-based in law; the per-voyage balance and penalty are the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded.`,"right");
+  /* 2026-07-23d (Aurvin, owner instruction): this summary note used to sit ABOVE the table,
+     pushing it down the screen. It is context, not a headline, so it now sits UNDERNEATH —
+     the table starts immediately under the heading and gets the vertical space instead.
+     flex:0 0 auto keeps it from stealing height from the scrolling table in the shell layout. */
+  const banner = (!S.mdaReports||!S.mdaReports.length)
+    ? `<div class="note" style="flex:0 0 auto;margin:10px 0 0">No MDA reports in this workspace, so there are no voyage numbers to group by — everything is shown as a single <b>n/a</b> voyage. Import an MDA event-log export to see real voyage numbers.</div>`
+    : `<div class="note" style="flex:0 0 auto;margin:10px 0 0">${vg.segs.length} voyage number(s) found in the imported reports${nRetimed?` · <b>${nRetimed}</b> change(s) re-timed back to a departure`:""}${nSplit?` · <b>${nSplit}</b> leg part(s) created by an abrupt mid-voyage change`:""}${vg.trailingBallast>0?` · ${fmtF(vg.trailingBallast,2)} t WtW CO₂e on a trailing ballast voyage with no following laden voyage in ${R.year} — carried out of these figures per SCC Appendix 3`:""}. Each row is one voyage number; the legs and port stays inside it are on the <b>⛵ Leg-Wise</b> tab.</div>`;
+  el.innerHTML=`
+  <div class="card panelA">
+    <h2>Voyage-Wise breakdown - ${R.year}
+      <button class="pill hbtn noprint" style="float:right" onclick="downloadVoyageXlsx()">⬇ Excel</button>
+      <span style="float:right;margin-right:8px">${iTable}</span></h2>
+    ${voyageGrid(R,{voy:iVoy,lcv:iLCV,feu:iFEU,euets:iEUETS,ukets:iUKETS,scc:iSCC})}
+    ${banner}
+  </div>`;
+}
 function renderCalcs(){
   const el=document.getElementById("tab-calcs"); if(!el) return;
   const R=computeAll(S);
@@ -2446,7 +3124,7 @@ function renderCalcs(){
     <b>Transport work</b> is shown in <b>10⁶ tonne-miles</b> to keep the column narrow.<br><br>
     <b>EEOI</b> (gCO₂e/t·nm, Technical Guidance Eq. 2) = WtW CO₂e of the ballast + laden legs, all port consumption included, ÷ (cargo × <b>laden distance only</b>). A ballast leg has no EEOI of its own — its emissions fold into the following laden voyage (Appendix 3); <b>⊕</b> marks a folded voyage, hover the row for the split. The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-leg values. Lower is better — enter the year's required 'Minimum'/'Striving' intensities on the Workspace SCC card to see the alignment Δ.`,"right");
   const brInner=breakdownGrid(R,{lcv:iLCV,euets:iEUETS,ukets:iUKETS,feu:iFEU,scc:iSCC});
-  const iBreakdown=info(`All figures rounded to 2 decimal places (LCV: 4).<br><br>— indicates no obligation (out of scope or OMR derogation until 2030).<br><br>CB = FuelEU compliance balance; negative values are deficits.<br><br>📦 = port of call (cargo activity).<br><br>OMR = outermost region.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).`,"right");
+  const iBreakdown=info(`All figures rounded to 2 decimal places (LCV: 4).<br><br>— indicates no obligation (out of scope or OMR derogation until 2030).<br><br>CB = FuelEU compliance balance; negative values are deficits.<br><br>📦 = Port of Call (Cargo Activity) — hover it for the loading / discharging operation recorded in the MDA file.<br><br>OMR = outermost region.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).`,"right");
   const iPool=info(`Pool = all MRV-monitored fuel (incl. the uncovered half of 50% voyages), per fuel × consumer class. Optimal fills the scope cleanest-first by effective intensity (WtW ÷ RWD); grey rows stay unallocated. GHGIE = Σ allocated·WtW ÷ (Σ allocated·RWD + OPS)${f.fwind<1?" × f<sub>wind</sub> "+f.fwind:""}.`);
   el.innerHTML=`
   <div class="card panelA" onclick="closeWorkingsIfOpen()">
@@ -3801,6 +4479,242 @@ function runSelfTests(){
       }catch(err){ if(el2) el2.textContent += "\nFAIL  xlsx round-trip threw: "+err.message; }
     })();
   }catch(e){ fail++; out.push("FAIL  Session-3 (Leg-Wise/xlsx) tests threw: "+e.message); }
+
+  /* ---- Session 2026-07-23c: VOYAGE-WISE tab (voyage-number aggregation) ----------------
+     Covers the Task 2 re-timing rule, the abrupt-change leg split, and the guarantee that
+     the new tab can never disagree with Leg-Wise on the totals. */
+  try{
+    const rep=(t,voy,extra)=>Object.assign({t:t,te:t,ts:t,voy:voy,rt:"AT_SEA",role:"",dist:0,fuels:{}},extra||{});
+
+    /* (a) a change one day AFTER a departure is re-timed back to that departure */
+    const segA=vwVoyageSegments([
+      rep("2026-03-01T06:00","10",{rt:"IN_PORT"}),
+      rep("2026-03-02T08:00","10",{rt:"IN_PORT",role:"DEPARTURE"}),
+      rep("2026-03-02T12:00","10",{rt:"DEPARTURE-SOSP"}),
+      rep("2026-03-03T09:00","11"),
+      rep("2026-03-04T09:00","11")]);
+    ckT("Voyage-Wise: voyage-no change the day after a departure is re-timed to that departure",
+        segA.length===2 && segA[1].voy==="11" && segA[1].tStart==="2026-03-02T08:00" && segA[1].retimed===true);
+    /* the DERIVED departure (08:00) must win over the DEPARTURE-SOSP marker (12:00) — the
+       SOSP sits inside the sea leg, so snapping to it would split the leg for no reason */
+    ckT("Voyage-Wise: derived DEPARTURE wins over the DEPARTURE-SOSP sea-passage marker",
+        segA[1].tStart==="2026-03-02T08:00" && segA[1].tStart!=="2026-03-02T12:00");
+
+    /* (b) same-day change also snaps back */
+    const segSame=vwVoyageSegments([
+      rep("2026-04-01T06:00","20",{rt:"IN_PORT",role:"DEPARTURE"}),
+      rep("2026-04-01T18:00","21"),
+      rep("2026-04-02T18:00","21")]);
+    ckT("Voyage-Wise: voyage-no change on the SAME day as the departure snaps to it",
+        segSame.length===2 && segSame[1].tStart==="2026-04-01T06:00" && segSame[1].retimed===true);
+
+    /* (c) an abrupt mid-sea change (no departure within a day) is a genuine new voyage */
+    const segB=vwVoyageSegments([
+      rep("2026-03-01T09:00","10",{rt:"IN_PORT",role:"DEPARTURE"}),
+      rep("2026-03-02T09:00","10"),
+      rep("2026-03-05T09:00","10"),
+      rep("2026-03-06T09:00","12"),
+      rep("2026-03-07T09:00","12")]);
+    ckT("Voyage-Wise: abrupt mid-sea voyage-no change is kept at its own report (charterer change)",
+        segB.length===2 && segB[1].voy==="12" && segB[1].tStart==="2026-03-06T09:00" && segB[1].retimed===false);
+
+    /* (d) blank voyage numbers (bunker / fuel-stock reports) must NOT count as changes */
+    ckT("Voyage-Wise: blank VOYAGE_NUMBER on bunker/stock reports is ignored, not a change",
+        vwVoyageSegments([ rep("2026-03-01T09:00","10"),
+                           rep("2026-03-02T09:00","",{rt:"FUEL_STOCK"}),
+                           rep("2026-03-03T09:00","",{rt:"FUEL_OIL_BUNKER"}),
+                           rep("2026-03-04T09:00","10") ]).length===1);
+
+    /* (e) the split conserves fuel and distance exactly, and cuts at the change report so
+           that report's own consumption stays with the OLD voyage (2026-07-20 convention) */
+    const splRow={kind:"voyage",label:"L",from:"EEA",to:"EEA",dist:1000,cargo:50000,hours:240,
+                  tStart:"2026-03-01T00:00",tEnd:"2026-03-11T00:00",
+                  fuels:[{fuelId:"HFO",tonnes:300,price:0}]};
+    const splReps=[]; for(let d=1;d<=10;d++){
+      const ts="2026-03-"+String(d).padStart(2,"0")+"T12:00";
+      splReps.push(rep(ts, d<6?"20":"21", {dist:100,fuels:{HFO:30}}));
+    }
+    const spl=vwSplitRows([splRow], vwVoyageSegments(splReps), splReps);
+    const splDist=spl.rows.reduce((s,r)=>s+r.dist,0);
+    const splFuel=spl.rows.reduce((s,r)=>s+r.fuels.reduce((a,f)=>a+f.tonnes,0),0);
+    /* owner[] holds SEGMENT INDEXES since 2026-07-23e, not voyage numbers */
+    ckT("Voyage-Wise: an abrupt change splits the leg into exactly 2 parts",
+        spl.rows.length===2 && spl.owner[0]===0 && spl.owner[1]===1);
+    ckT("Voyage-Wise: the split conserves distance and fuel exactly",
+        Math.abs(splDist-1000)<1e-6 && Math.abs(splFuel-300)<1e-6);
+    ckT("Voyage-Wise: the boundary report's consumption stays with the OLD voyage",
+        Math.abs(spl.rows[0].dist-600)<1e-6 && Math.abs(spl.rows[1].dist-400)<1e-6);
+
+    /* (f) a leg with no voyage boundary inside it is never split */
+    ckT("Voyage-Wise: a leg with no voyage change inside it is left whole",
+        vwSplitRows([splRow], vwVoyageSegments([rep("2026-03-05T12:00","20",{dist:100})]), []).rows.length===1);
+
+    /* (g) end-to-end: voyage groups must reconcile with the Leg-Wise engine output.
+           Same rows, same year, so every additive figure has to match to the cent. */
+    const vwState={ year:2026, ship:{typeId:"bulk",capacity:45000}, euaPrice:80, mdaReports:[
+        rep("2026-02-01T00:00","70",{rt:"IN_PORT",role:"DEPARTURE"}),
+        rep("2026-02-10T00:00","70"),
+        rep("2026-03-01T00:00","71",{rt:"IN_PORT",role:"DEPARTURE"}),
+        rep("2026-03-10T00:00","71") ],
+      rows:[
+        {kind:"voyage",label:"A",from:"EEA",to:"EEA",dist:1200,cargo:40000,
+         tStart:"2026-02-01T00:00",tEnd:"2026-02-20T00:00",fuels:[{fuelId:"HFO",tonnes:120}]},
+        {kind:"port",label:"P",zone:"EEA",poc:true,hours:48,
+         tStart:"2026-02-20T00:00",tEnd:"2026-03-01T00:00",fuels:[{fuelId:"MDO",tonnes:8}]},
+        {kind:"voyage",label:"B",from:"EEA",to:"EEA",dist:900,cargo:35000,
+         tStart:"2026-03-01T00:00",tEnd:"2026-03-15T00:00",fuels:[{fuelId:"HFO",tonnes:90}]}]};
+    const vg=vwGroups(vwState), legR=computeAll(vwState);
+    const near=(a,b)=>Math.abs(a-b)<0.01;
+    const gSum=k=>vg.groups.reduce((s,g)=>s+(Number(g[k])||0),0);
+    const lSum=k=>legR.rowDetails.reduce((s,d)=>s+(Number(d[k])||0),0);
+    ckT("Voyage-Wise: two voyage numbers produce two voyage groups",
+        vg.groups.length===2 && vg.groups[0].voy==="70" && vg.groups[1].voy==="71");
+    ckT("Voyage-Wise: every workspace row lands in exactly one voyage group",
+        vg.groups.reduce((s,g)=>s+g.dets.length,0)===legR.rowDetails.length);
+    ckT("Voyage-Wise totals reconcile with Leg-Wise: distance, CO₂, EUAs, WtW",
+        near(gSum("dist"),lSum("dist")) && near(gSum("co2"),lSum("co2")) &&
+        near(gSum("euas"),lSum("euas")) && near(gSum("sccWtW"),lSum("sccWtW")));
+    ckT("Voyage-Wise totals reconcile with Leg-Wise: FuelEU CB and penalty",
+        near(gSum("feuCB"),lSum("feuCB")) && near(gSum("feuPenalty"),lSum("feuPenalty")));
+    /* the port stay sits between the two departures, so it belongs to voyage 70 */
+    ckT("Voyage-Wise: a port stay before the next departure belongs to the OLD voyage",
+        vg.groups[0].dets.length===2 && vg.groups[1].dets.length===1);
+
+    /* (h) SCC per voyage number: EEOI = numerator × 1e6 ÷ the group's OWN transport work,
+           with all of the group's port consumption inside the numerator (Task 5) */
+    const g0=vg.groups[0];
+    ckT("Voyage-Wise SCC: transport work is the group's own Σ(cargo × laden distance)",
+        near(g0.tw, 40000*1200));
+    ckT("Voyage-Wise SCC: EEOI = numerator × 1e6 ÷ transport work",
+        g0.eeoi!=null && near(g0.eeoi, g0.sccNumerator*1e6/g0.tw));
+    ckT("Voyage-Wise SCC: the voyage's port-stay emissions are inside its numerator",
+        near(g0.sccNumerator, g0.dets.reduce((s,d)=>s+(Number(d.sccWtW)||0),0)) &&
+        g0.sccNumerator > g0.dets[0].sccWtW);
+
+    /* (i) a wholly ballast voyage carries its WtW forward to the next voyage that loads
+           (SCC 2025 Technical Guidance Appendix 3), rather than showing an EEOI of its own */
+    const balState={ year:2026, ship:{typeId:"bulk",capacity:45000}, mdaReports:[
+        rep("2026-02-01T00:00","80",{rt:"IN_PORT",role:"DEPARTURE"}),
+        rep("2026-03-01T00:00","81",{rt:"IN_PORT",role:"DEPARTURE"}) ],
+      rows:[
+        {kind:"voyage",label:"ballast",from:"EEA",to:"EEA",dist:800,cargo:0,
+         tStart:"2026-02-01T00:00",tEnd:"2026-02-25T00:00",fuels:[{fuelId:"HFO",tonnes:60}]},
+        {kind:"voyage",label:"laden",from:"EEA",to:"EEA",dist:1000,cargo:30000,
+         tStart:"2026-03-01T00:00",tEnd:"2026-03-20T00:00",fuels:[{fuelId:"HFO",tonnes:100}]}]};
+    const bg2=vwGroups(balState);
+    ckT("Voyage-Wise SCC: a wholly ballast voyage has no EEOI of its own",
+        bg2.groups.length===2 && bg2.groups[0].eeoi===null && bg2.groups[0].tw===0);
+    ckT("Voyage-Wise SCC: the ballast voyage's WtW is carried into the next laden voyage",
+        bg2.groups[1].sccBallastIn>0 &&
+        Math.abs(bg2.groups[1].sccNumerator-(bg2.groups[1].sccWtW+bg2.groups[0].sccWtW))<0.01);
+
+    /* (i2) 2026-07-23e — voyage-number spelling is normalised, but only across CONTINUITY.
+       Owner's rule: 6, 06, 006, V6, V06, V006 are one and the same voyage. */
+    ckT("Voyage-Wise: leading zeros are ignored (6 = 06 = 006)",
+        vwVoyKey("6")==="6" && vwVoyKey("06")==="6" && vwVoyKey("006")==="6");
+    ckT("Voyage-Wise: a leading V / v / VOY is ignored (V6 = v06 = VOY 006 = 6)",
+        vwVoyKey("V6")==="6" && vwVoyKey("v06")==="6" && vwVoyKey("VOY 006")==="6" &&
+        vwVoyKey("V-06")==="6" && vwVoyKey("V.6")==="6");
+    ckT("Voyage-Wise: a suffix survives normalisation (V05A → 5A)",
+        vwVoyKey("V05A")==="5A" && vwVoyKey("5a")==="5A");
+    ckT("Voyage-Wise: zero itself and non-numeric codes are left alone",
+        vwVoyKey("0")==="0" && vwVoyKey("ABC")==="ABC" && vwVoyKey("V")==="V" &&
+        vwVoyKey("VESSEL1")==="VESSEL1" && vwVoyKey("")==="" && vwVoyKey("  ")==="");
+    ckT("Voyage-Wise: differently-spelled but ADJACENT numbers collapse to one voyage",
+        vwVoyageSegments([ rep("2026-05-01T00:00","5"),   rep("2026-05-02T00:00","05"),
+                           rep("2026-05-03T00:00","V05"), rep("2026-05-04T00:00","v5"),
+                           rep("2026-05-05T00:00","005") ]).length===1);
+    /* the continuity caveat the owner was explicit about */
+    const segCycle=vwVoyageSegments([
+      rep("2026-06-01T00:00","5"),  rep("2026-06-02T00:00","05"),
+      rep("2026-06-05T00:00","6"),
+      rep("2026-06-09T00:00","V05"), rep("2026-06-10T00:00","5")]);
+    ckT("Voyage-Wise: 5 → 6 → 5 stays THREE voyages (continuity decides, not the number)",
+        segCycle.length===3 && segCycle[0].voy==="5" && segCycle[1].voy==="6" && segCycle[2].voy==="5");
+    ckT("Voyage-Wise: the two separate '5' voyages are NOT merged into one group",
+        (function(){
+          const st={ year:2026, ship:{typeId:"bulk",capacity:45000}, mdaReports:segCycle._r||[
+              rep("2026-06-01T00:00","5"), rep("2026-06-05T00:00","6"), rep("2026-06-09T00:00","V05")],
+            rows:[
+              {kind:"voyage",label:"a",from:"EEA",to:"EEA",dist:100,cargo:1000,
+               tStart:"2026-06-01T00:00",tEnd:"2026-06-04T00:00",fuels:[{fuelId:"HFO",tonnes:10}]},
+              {kind:"voyage",label:"b",from:"EEA",to:"EEA",dist:100,cargo:1000,
+               tStart:"2026-06-05T00:00",tEnd:"2026-06-08T00:00",fuels:[{fuelId:"HFO",tonnes:10}]},
+              {kind:"voyage",label:"c",from:"EEA",to:"EEA",dist:100,cargo:1000,
+               tStart:"2026-06-09T00:00",tEnd:"2026-06-12T00:00",fuels:[{fuelId:"HFO",tonnes:10}]}]};
+          const gg=vwGroups(st).groups;
+          return gg.length===3 && gg[0].voy==="5" && gg[2].voy==="5" && gg[0]!==gg[2];
+        })());
+    ckT("Voyage-Wise: every spelling used is recorded on the voyage for the audit tooltip",
+        (function(){
+          const sg=vwVoyageSegments([ rep("2026-07-01T00:00","V05"), rep("2026-07-02T00:00","5"),
+                                      rep("2026-07-03T00:00","005") ]);
+          return sg.length===1 && sg[0].raws.length===3 && sg[0].raws.indexOf("V05")>=0;
+        })());
+
+    /* (i3) the same half-band fix must be on LEG-WISE too — the owner reported it on both */
+    ckT("Leg-Wise: row backgrounds also span the full scrolled width (same fix)",
+        (function(){
+          const el2=document.getElementById("tab-calcs");
+          if(!el2) return true;
+          const kR=S.rows, kM=S.mdaReports, kY=S.year;
+          S.rows=[{kind:"voyage",label:"A",from:"EEA",to:"EEA",dist:100,cargo:1000,
+                   tStart:"2026-02-01T00:00",tEnd:"2026-02-05T00:00",fuels:[{fuelId:"HFO",tonnes:10}]}];
+          S.mdaReports=[]; S.year=2026;
+          renderCalcs();
+          const hh=el2.innerHTML;
+          S.rows=kR; S.mdaReports=kM; S.year=kY;
+          const boxes=hh.match(/min-width:\d+px/g)||[];
+          return !/max-content/.test(hh) && boxes.length>=4 &&
+                 boxes.every(b=>b===boxes[0]) &&
+                 boxes[0]==="min-width:"+gridMinWidth(BR_GRID)+"px" &&
+                 hh.indexOf("position:sticky;top:0;z-index:12;background:#ffffff;"+BR_BOX)>=0;
+        })());
+
+    /* (j) the tab exists and renders without the Task-4 columns */
+    ckT("Voyage-Wise: the tab is registered in TAB_IDS", TAB_IDS.indexOf("voy")>=0);
+    const vwEl=document.getElementById("tab-voy");
+    if(vwEl){
+      const keepS=S.rows, keepR=S.mdaReports, keepY=S.year;
+      S.rows=vwState.rows; S.mdaReports=vwState.mdaReports; S.year=2026;
+      renderVoyage();
+      const h=vwEl.innerHTML;
+      ckT("Voyage-Wise: the table renders a Voyage No column and the SCC block",
+          /Voyage No/.test(h) && /EEOI/.test(h) && /Sea Cargo Charter/.test(h));
+      ckT("Voyage-Wise: the eligibility % (Cov.) columns are NOT shown (Task 4)",
+          !/>Cov\.</.test(h));
+      /* 2026-07-23d: the owner revoked the expandable leg list — one row per voyage, full
+         stop. Two voyages must therefore produce exactly two @BERTH/VOYAGE-tagged bodies
+         and no per-leg rows, however many legs sit inside them. */
+      ckT("Voyage-Wise: no per-leg rows are rendered — one row per voyage only",
+          (h.match(/@BERTH/g)||[]).length===0 && typeof window.vwLegRows==="undefined");
+      ckT("Voyage-Wise: the table scrolls sideways rather than crushing its columns",
+          /overflow-x:auto/.test(h) && /minmax\(300px/.test(VW_GRID));
+      ckT("Voyage-Wise: numeric columns are wide enough for 9-digit figures",
+          /minmax\(104px/.test(VW_GRID) && /minmax\(100px/.test(VW_GRID));
+      /* 2026-07-23e — the row backgrounds must span the FULL scroll width, not just the
+         visible panel, or the TOTAL row's band stops mid-table and the sticky header loses
+         its backdrop (body rows then show through it). Every grid row, and the sticky
+         wrapper, must carry width:max-content. */
+      /* 2026-07-23f — ALIGNMENT INVARIANT. Every grid in the table (header, TOTAL row and
+         each voyage row) plus the sticky wrapper must resolve to the SAME width, or the
+         columns drift apart down the table. width:max-content — the 23e attempt — breaks
+         this, because each grid then sizes to its own content and the header's long labels
+         make it wider than the numeric body rows. Assert the shared box instead. */
+      ckT("Voyage-Wise: no grid uses max-content (it sizes each row differently)",
+          !/max-content/.test(h));
+      ckT("Voyage-Wise: header, TOTAL and every voyage row share one identical width",
+          (function(){
+            const boxes=h.match(/min-width:\d+px/g)||[];
+            return boxes.length>=5 && boxes.every(b=>b===boxes[0]) &&
+                   boxes[0]==="min-width:"+gridMinWidth(VW_GRID)+"px";
+          })());
+      ckT("Voyage-Wise: the sticky header carries the same full-width backdrop",
+          h.indexOf("position:sticky;top:0;z-index:12;background:#ffffff;"+VW_BOX)>=0);
+      S.rows=keepS; S.mdaReports=keepR; S.year=keepY;
+    }
+  }catch(e){ fail++; out.push("FAIL  Voyage-Wise tests threw: "+e.message); }
+
   /* ---- UK ETS currency (checked 2026-07-16 vs SI 2026/392, in force 1 Jul 2026) ---- */
   try{
     const ukState = y => ({year:y, ship:{typeId:"bulk",capacity:45000}, rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"MDO",tonnes:10}]}]});
