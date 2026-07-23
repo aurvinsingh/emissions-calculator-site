@@ -23,6 +23,12 @@ nav button.on{background:var(--blue);border-color:var(--blue);color:#fff;font-we
 main{max-width:1500px;margin:0 auto;padding:16px 20px 60px}
 .panelA,.panelB{display:flex;flex-direction:column}
 .panelA .tablescroll,.panelB .tablescroll{overflow-y:auto}
+/* 2026-07-23 (Task 1, Aurvin): close the 1px seam under the Report-Wise sticky header.
+   With border-collapse:collapse the header's bottom divider is a COLLAPSED border owned by the
+   first body row, so it scrolled away with the body and the row beneath peeked through the gap.
+   Drawing the divider as a box-shadow on the sticky TOTAL cells pins it to the header instead
+   (box-shadow travels with the sticky cell). Applies to the Report-Wise table only. */
+#trTotals>td{box-shadow:0 2px 0 #cbd5e1}
 details.workings summary{cursor:pointer;font-size:14px;font-weight:600;color:#123c47;padding:2px 0}
 /* compact column label — replaces a full h2 (which just repeated the summary's own wording) */
 .wlabel{font-size:12px;font-weight:700;color:#123c47;text-transform:uppercase;letter-spacing:.3px;margin:0 0 8px;display:flex;align-items:center;gap:6px}

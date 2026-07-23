@@ -647,6 +647,32 @@ function mdaFuel(name){
   if(["ETHANOL","ETOH","E"].indexOf(u)>=0) return "E";
   return null;
 }
+/* Map a free-text MDA VESSEL_TYPE (e.g. "BULK CARRIER", "Bulk_Carrier", "container")
+   to one of engine.js SHIP_TYPES ids (2026-07-23, owner-specified). Case-insensitive and
+   punctuation/underscore-insensitive: everything but letters+digits is stripped, then
+   keyword substrings are matched. Order matters — most specific first. Returns a SHIP_TYPES
+   id, or null when nothing matches (caller leaves the current selection unchanged).
+   Ro-ro rule (owner 2026-07-23): a ro-ro cargo ship is the VEHICLE-carrier variant only when
+   the text says "vehicle"/"pctc"/"pcc"; a ro-ro passenger ship is the HIGH-SPEED variant only
+   when it says "highspeed"/"hsc". "cruise" wins over the bare word "passenger". */
+function mdaShipType(raw){
+  const u=String(raw==null?"":raw).toLowerCase().replace(/[^a-z0-9]/g,"");
+  if(!u) return null;
+  if(u.includes("cruise")) return "cruise";
+  if(u.includes("roro")){
+    if(u.includes("passenger")) return (u.includes("highspeed")||u.includes("hsc")) ? "ropaxhsc" : "ropax";
+    return (u.includes("vehicle")||u.includes("pctc")||u.includes("pcc")) ? "rorovc" : "roro";
+  }
+  if(u.includes("lng")) return "lng";
+  if(u.includes("gas")) return "gas";
+  if(u.includes("combination")||u.includes("combo")) return "combo";
+  if(u.includes("refrigerated")||u.includes("reefer")) return "reefer";
+  if(u.includes("container")) return "container";
+  if(u.includes("generalcargo")||u.includes("general")) return "gencargo";
+  if(u.includes("tanker")) return "tanker";
+  if(u.includes("bulk")) return "bulk";
+  return null;
+}
 function mdaDate(v){ /* Excel serial number (days since 1899-12-30, xlsx) or date string (csv) -> ["YYYY-MM-DD","HH:MM"] */
   let d;
   if(typeof v==="number" || /^\d+(\.\d+)?$/.test(String(v).trim())){
@@ -672,6 +698,20 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   const missing=MDA_REQUIRED.filter(c=>!(c in col));
   if(missing.length) throw new Error("MDA file is missing required column(s): "+missing.join(", "));
   const G=(r,f)=>{ const v=(f in col)? r[col[f]] : null; return v==null?"":v; };
+  /* ---- vessel particulars (2026-07-23, owner-specified) ----
+     Read Name / IMO / DWT / Ship type from the file to auto-fill the Settings tab. This is a
+     READ-ONLY passthrough — it does NOT feed the frozen arrival/departure/POC derivation or
+     the DWT used there (that still comes from Settings / MDA_DEFAULT_DWT, unchanged). Each
+     column is optional: we take the first non-empty value seen in any data row, so a blank
+     bunker row can't wipe it. Anything absent/unreadable is left null → caller leaves that
+     Settings field blank (guiding value only, no warning). */
+  const firstVal=(f)=>{ if(!(f in col)) return ""; for(let i=hi+1;i<rows.length;i++){ const r=rows[i]; if(!r) continue; const v=String(r[col[f]]==null?"":r[col[f]]).trim(); if(v!=="") return v; } return ""; };
+  const vName=firstVal("VESSEL_NAME");
+  const vImo=firstVal("IMO");
+  const vDwtRaw=firstVal("DWT");
+  const vDwt=(vDwtRaw!=="" && isFinite(parseFloat(vDwtRaw))) ? parseFloat(vDwtRaw) : null;
+  const vTypeId=mdaShipType(firstVal("VESSEL_TYPE"));
+  const vessel={ name:vName||null, imo:vImo||null, dwt:vDwt, typeId:vTypeId };
   const EV={"DEPARTURE-SOSP":"Departure","ARRIVAL-EOSP":"Arrival","AT_SEA":"Noon","IN_PORT":"Port"};
   const iso = dt => dt? dt[0]+"T"+dt[1] : null;
   const truthy = v => { const s=String(v).trim().toUpperCase(); return s==="TRUE"||s==="1"||s==="YES"; };
@@ -733,8 +773,14 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     }
     const startRaw=String(G(r,"REPORT_START_GMT")).trim(), endRaw=String(G(r,"REPORT_END_GMT")).trim();
     const oc=String(G(r,"OPERATING_CONDITION")).trim().toUpperCase();
+    /* 2026-07-23 (Task 3, Aurvin): keep whether CARGO_QTY was actually REPORTED, separately
+       from the numeric value. `qty` stays numeric-with-||0 exactly as before — the frozen POC
+       derivation (qtyE/qtyS/qtyTrig) still reads it unchanged. `qtyHas` is DISPLAY/EXPORT only:
+       true when the cell held a real number (INCLUDING a genuine 0), false when it was blank.
+       A blank cargo must show as a dash, not be confused with a reported 0. */
+    const cargoRaw=String(G(r,"CARGO_QTY")).trim();
     recs.push({ rt, dt, vFrom, vTo, ev:EV[rt]||"Noon",
-                dist:parseFloat(G(r,"DISTANCE"))||0, qty:parseFloat(G(r,"CARGO_QTY"))||0, fuels, mach, rob,
+                dist:parseFloat(G(r,"DISTANCE"))||0, qty:parseFloat(cargoRaw)||0, qtyHas:(cargoRaw!=="" && !isNaN(parseFloat(cargoRaw))), fuels, mach, rob,
                 lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon, org, cur, dst,
                 portN:String(G(r,"CURRENT_PORT")).trim(), ctry:String(G(r,"CURRENT_COUNTRY")).trim(), regn:String(G(r,"CURRENT_REGION")).trim(),
                 oc, aa:String(G(r,"ASSOCIATED_ACTIVITY")).trim().toUpperCase(),
@@ -1016,7 +1062,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   /* raw per-report retention (2026-07-16): foundation for the future OVD-format download.
      Not used by any calculation; saved with the workspace state at import. */
   const reports = recs.map(c=>({ rt:c.rt, role:c.role||"", t:c.dt? iso(c.dt):c.tEnd, ts:c.tStart||null, te:c.tEnd||null,
-    oc:c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, dist:c.dist||0,
+    oc:c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, qtyHas:!!c.qtyHas, dist:c.dist||0,
     voy:c.voy||"",
     lat:c.lat??null, lon:c.lon??null, org:c.org||"", cur:c.cur||"", dst:c.dst||"",
     portN:c.portN||"", ctry:c.ctry||"", regn:c.regn||"",
@@ -1034,7 +1080,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   } else {
     notes.push("OPERATING_CONDITION column not found — arrival/departure/POC derivation skipped; EOSP/SOSP used as arrival/departure and the file's POC column (if present) applied (legacy import).");
   }
-  return { csv: lines.join("\n"), notes, reports };
+  return { csv: lines.join("\n"), notes, reports, vessel };
 }
 
 /* ---- minimal .xlsx reader (ZIP + worksheet XML), no external libraries ----
@@ -1233,7 +1279,7 @@ function importOVDFile(ev){
   if(/\.xlsx$/i.test(f.name)){                            // MDA event-log workbook
     const fr=new FileReader();
     fr.onload=()=>{ xlsxToRows(fr.result)
-      .then(rows=>{ const m=mdaToOVD(rows); applyImport(parseOVD(m.csv), "MDA xlsx", m.notes, m.reports); })
+      .then(rows=>{ const m=mdaToOVD(rows); applyImport(parseOVD(m.csv), "MDA xlsx", m.notes, m.reports, m.vessel); })
       .catch(fail); };
     fr.readAsArrayBuffer(f);
     return;
@@ -1245,14 +1291,14 @@ function importOVDFile(ev){
       if(/^\s*(<\?xml|<emissions[\s>])/i.test(txt)){ applyImport(parseTHETIS(txt), "THETIS XML"); return; }
       if(/DATE_?TIME_GMT/.test(txt.slice(0,5000))){       // MDA saved as CSV (DATE_TIME_GMT or DATETIME_GMT header)
         const m=mdaToOVD(parseCSV(txt));
-        applyImport(parseOVD(m.csv), "MDA CSV", m.notes, m.reports); return;
+        applyImport(parseOVD(m.csv), "MDA CSV", m.notes, m.reports, m.vessel); return;
       }
       applyImport(parseOVD(txt), "OVD");
     }catch(e){ fail(e); }
   };
   r.readAsText(f);
 }
-function applyImport(res, label, extraNotes, reports){
+function applyImport(res, label, extraNotes, reports, vessel){
       if(!res.rows.length) throw new Error("No voyages/port stays could be built from the file");
       const replace = confirm("Imported "+res.rows.length+" activity rows from "+label+".\n\nOK = REPLACE current activity  ·  Cancel = APPEND to current activity");
       const notes=(extraNotes||[]).concat(res.notes||[]);
@@ -1264,6 +1310,19 @@ function applyImport(res, label, extraNotes, reports){
         S.rows = S.rows.concat(res.rows); S.opsMJ = (Number(S.opsMJ)||0) + res.opsMJ;
         if(reports && reports.length) S.mdaReports = (S.mdaReports||[]).concat(reports);
         if(res.year && res.year!==S.year) notes.push("File reporting period "+res.year+" differs from calculator year "+S.year+" — targets/phase-in follow the calculator year.");
+      }
+      /* vessel particulars auto-fill (2026-07-23, owner-specified): the MDA file is the
+         source of truth, so ALWAYS overwrite Name / IMO / DWT from it (blank when the column
+         was absent/empty — a guiding value, no warning). Ship type is overwritten only when
+         the VESSEL_TYPE keyword matched a known type; an unrecognised/absent type leaves the
+         current dropdown selection unchanged (the selector has no blank state, and CII needs
+         a valid type). Applies to both REPLACE and APPEND — same physical ship either way. */
+      if(vessel){
+        S.ship = S.ship || {};
+        S.ship.name = vessel.name || "";
+        S.ship.imo  = vessel.imo  || "";
+        S.ship.capacity = (vessel.dwt!=null) ? vessel.dwt : "";
+        if(vessel.typeId && TYPE_BY_ID[vessel.typeId]) S.ship.typeId = vessel.typeId;
       }
       /* multi-year awareness (2026-07-16): the displayed year stays user-driven */
       const yearsIn = [...new Set(res.rows.map(r=>String(r.tStart||r.tEnd||"").slice(0,4)).filter(x=>/^\d{4}$/.test(x)))].sort();
@@ -1772,7 +1831,7 @@ function downloadReportsXlsx(){
   const rows=[hdr];
   for(const r of reps){
     rows.push([r.t||"", r.ts||"", r.te||"", reportTypeLabel(r), r.oc||"", r.aa||"", r.opl?"TRUE":"", r.poc||"",
-               r.portN||"", r.ctry||"", r.regn||"", r.org||"", r.dst||r.cur||"", r.dist||"", r.qty||""]
+               r.portN||"", r.ctry||"", r.regn||"", r.org||"", r.dst||r.cur||"", r.dist||"", (r.qtyHas?r.qty:"")]/* 2026-07-23 Task 3: export a reported 0 as 0, a blank cargo as blank (was: r.qty||"" turned a real 0 into blank) */
       .concat(codes.map(c=>(r.fuels||{})[c]||""))
       .concat(G.flatMap(([g])=>codes.map(c=>((r.mach||{})[g]||{})[c]||"")))
       .concat(robCodes.map(c=>(r.rob||{})[c]||""))
@@ -2043,7 +2102,7 @@ function reportTraceTable(reps){
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.feu)}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.uk)}</td>
       ${fuelTds}
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qty?fmtI(r.qty):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- 2026-07-23 Task 3: a reported 0 shows 0; a BLANK cargo cell shows a dash (was: any 0 showed a dash) -->
     </tr>`;
   }).join("");
   return `
@@ -2074,7 +2133,7 @@ function reportTraceTable(reps){
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Others</th>
           <th style="text-align:right;${thSub};font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB (Bunker)</th>
         </tr>
-        <tr id="trTotals" style="border-top:1px solid #cbd5e1;border-bottom:2px solid #cbd5e1">${trTotalsHtml()}</tr>
+        <tr id="trTotals" style="border-top:1px solid #cbd5e1">${trTotalsHtml()}</tr><!-- 2026-07-23 Task 1: bottom divider now a box-shadow on #trTotals>td (styles.css) so it pins to the sticky header and no longer leaves a seam -->
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -2123,7 +2182,10 @@ const JURIS_PAL = {
    RIGHT of UK ETS, so the ETS blocks now sit between Fuel metrics and FuelEU. New Leg-Wise
    order: Activity | Voyage No | Dist | Fuel metrics | EU ETS | UK ETS | FuelEU | SCC. The grid
    tracks were reordered to match so each column keeps its own width; SCC (17–21) is unchanged. */
-const BR_GRID = "minmax(300px,3.05fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(62px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr)";
+/* 2026-07-23 (Task 2, Aurvin): a dedicated frozen CHECKBOX column was added as track 1 (matching
+   the Report-Wise table), so every data column shifted right by one and this grid gained a leading
+   fixed 34px track. gridMinWidth counts it automatically. */
+const BR_GRID = "minmax(34px,34px) minmax(300px,3.05fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(62px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr)";
 const BR_BOX = gridBox(BR_GRID);          // every Leg-Wise row resolves to this same width
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
@@ -2269,6 +2331,12 @@ const GUTTER_W = 36;
    container. Frozen cells MUST carry their own background (otherwise the scrolling columns
    show through) and a z-index above the ordinary cells. */
 const BR_FREEZE = "position:sticky;left:0;";
+/* 2026-07-23 (Task 2, Aurvin): the Leg-Wise / Voyage-Wise tables now have a dedicated frozen
+   checkbox column (track 1, BR_SELCOL_W wide, frozen at left:0 via BR_FREEZE) exactly like the
+   Report-Wise table. The Activity / Voyage column (track 2) is frozen immediately to its right
+   at left:BR_SELCOL_W via BR_FREEZE2, so both stay put while the regulation columns scroll. */
+const BR_SELCOL_W = 34;
+const BR_FREEZE2 = "position:sticky;left:"+BR_SELCOL_W+"px;";
 /* 2026-07-23e (Aurvin, owner instruction — DISPLAY ONLY) ---------------------------------
    Every row of these tables is its own CSS grid, and each one is a block-level child of the
    scrolling container. A block box takes the width of its PARENT (the ~1500px visible area),
@@ -2352,32 +2420,33 @@ function breakdownGrid(R, tips){
   const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
   const header = `
     <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
-      <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("br")}</span>Activity &amp; timeframe</div>
-      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
-      <div style="grid-column:4 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:6 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:9 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:11 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:17 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:4;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
-      <div style="grid-column:5;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
-      <div style="grid-column:6;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">${colHdr("CO₂","mt")}</div>
-      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
-      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
-      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
-      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
-      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
-      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
-      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
-      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">${colHdr("Cargo","mt")}</div>
-      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">${colHdr("T-Work","10⁶ t·nm")}</div>
-      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">${colHdr("TtW","mt (AR6)")}</div>
-      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">${colHdr("WtW","mt (AR6)")}</div>
-      <div style="grid-column:21;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EEOI","gCO₂e/t·nm")}</div>
+      <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("br")}</div>
+      <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
+      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
+      <div style="grid-column:4;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
+      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:10 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:12 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:18 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
+      <div style="grid-column:5;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      <div style="grid-column:6;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
+      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">${colHdr("CO₂","mt")}</div>
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
+      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
+      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
+      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
+      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
+      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
+      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
+      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">${colHdr("Cargo","mt")}</div>
+      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">${colHdr("T-Work","10⁶ t·nm")}</div>
+      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">${colHdr("TtW","mt (AR6)")}</div>
+      <div style="grid-column:21;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">${colHdr("WtW","mt (AR6)")}</div>
+      <div style="grid-column:22;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EEOI","gCO₂e/t·nm")}</div>
     </div>`;
 
   let zi=0;
@@ -2433,9 +2502,9 @@ function breakdownGrid(R, tips){
       const tw = fu.isTotal ? "font-weight:700;" : "";
       const cbC = fu.isTotal ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d")
                              : (covEU>0 ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8");
-      const cell = (col,extra,val)=>`<div style="grid-column:${col};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
+      const cell = (col,extra,val)=>`<div style="grid-column:${col+1};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
       return `
-        <div style="grid-column:4;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
+        <div style="grid-column:5;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
         ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(fu.tonnes,1))}
         ${cell(6,"color:#475569;", fu.isTotal?brDash:brPct(covEU))}
         ${cell(7,"", brNum(fu.co2))}
@@ -2457,22 +2526,22 @@ function breakdownGrid(R, tips){
        would invite reading it as additive. Berth rows carry none of this: SCC measures the
        carriage of cargo over a distance. */
     const sccLeg = !isBerth ? `
-        <div style="grid-column:17;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.cargo>0? fmtF(d.cargo,0) : (d.dist>0? `<span style="color:#94a3b8" title="Ballast leg — no cargo on the departure (SOSP) report. Its WtW CO₂e is carried into the next laden voyage (ADR 2026 Appendix 3).">ballast</span>` : brDash)}</div>
-        <div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.tw>0? fmtF(d.tw/1e6,2) : brDash}</div>
-        <div style="grid-column:21;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a6b1f">${
+        <div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.cargo>0? fmtF(d.cargo,0) : (d.dist>0? `<span style="color:#94a3b8" title="Ballast leg — no cargo on the departure (SOSP) report. Its WtW CO₂e is carried into the next laden voyage (ADR 2026 Appendix 3).">ballast</span>` : brDash)}</div>
+        <div style="grid-column:19;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.tw>0? fmtF(d.tw/1e6,2) : brDash}</div>
+        <div style="grid-column:22;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a6b1f">${
           d.eeoi!=null ? fmtF(d.eeoi,2) + ((d.sccBallast>0||d.sccPort>0)? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(d.sccNumerator,2)} t WtW CO₂e = this leg's own ${fmtF(d.sccWtW,2)}${d.sccBallast>0?` + ${fmtF(d.sccBallast,2)} carried in from the preceding ballast leg (and its port stays)`:""}${d.sccPort>0?` + ${fmtF(d.sccPort,2)} from this voyage's own loading/discharge stays`:""}"> ⊕</span>` : "")
           : (d.sccNoFactor? brNoFactor : brDash)}</div>`
       /* berth rows: no cargo or transport work of their own, but their fuel IS counted —
          say where, so the attribution is auditable rather than invisible (2026-07-22d) */
-      : `<div style="grid-column:17;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
-         <div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
-         <div style="grid-column:21;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-size:10.5px;color:#94a3b8">${
+      : `<div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
+         <div style="grid-column:19;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
+         <div style="grid-column:22;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-size:10.5px;color:#94a3b8">${
            d.sccGoesTo ? `<span style="cursor:help" title="This port stay's ${fmtF(d.sccWtW,2)} t WtW CO₂e is counted as the ${esc(d.sccGoesTo.role)} of ${d.sccGoesTo.label? esc(d.sccGoesTo.label) : "the following ballast leg"} — SCC port consumption is never dropped.">→ ${esc(d.sccGoesTo.role)}</span>` : brDash}</div>`;
 
     return `
       <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
-        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
-          <div style="width:${SELCOL_W}px;flex:none;display:flex;align-items:center;justify-content:center">${selBox("br",i)}</div>
+        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("br",i)}</div>
+        <div style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
             <div style="position:absolute;top:0;bottom:0;left:50%;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
             <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${isBerth?ICON_BERTH:ICON_VOYAGE}</div>
@@ -2500,8 +2569,8 @@ function breakdownGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? esc(voyNo) : brDash}</div>
-        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
+        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? esc(voyNo) : brDash}</div>
+        <div style="grid-column:4;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
         ${fuelCells}
         ${sccLeg}
       </div>`;
@@ -2555,11 +2624,12 @@ function brTotalsHtml(){
   const twTot = sccDets.reduce((a,d)=>a+d.tw,0);
   const numTot = sccDets.reduce((a,d)=>a+(Number(d.sccNumerator)||0),0);
   const eeoiTot = twTot>0? numTot*1e6/twTot : null;
-  const cell=(col,extra,val)=>`<div style="grid-column:${col};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   return `
     <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
-      <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px"><span style="width:${SELCOL_W-8}px;flex:none"></span>${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
-      <div style="grid-column:2;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
+      <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
+      <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),0))}
       ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(sumF("tonnes"),1))}
       ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
@@ -2567,12 +2637,12 @@ function brTotalsHtml(){
            It previously rounded CO₂, EUAs, UKAs, TtW and WtW to whole tonnes while the legs
            below showed 2 dp, so the decimal point in the total sat two characters left of
            the column it was heading. Display only — the summed value is unchanged. */""}
-      <div style="grid-column:6;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:7;padding:${cellPad};text-align:right">${brDash}</div>
       ${cell(7,"", fmtF(sum("co2"),2))}
       ${cell(8,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
-      <div style="grid-column:9;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:10;padding:${cellPad};text-align:right">${brDash}</div>
       ${cell(10,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
-      <div style="grid-column:11;padding:${cellPad};text-align:right">${brDash}</div>
+      <div style="grid-column:12;padding:${cellPad};text-align:right">${brDash}</div>
       ${cell(12,"", fmtF(sumF("eligibleEU"),1))}
       ${cell(13,"", fmtF(sumEnergy,2))}
       ${cell(14,"", fmtF(sum("E")/1e6,2))}
@@ -2890,7 +2960,7 @@ function vwGroups(state){
                 14 Elig. mt  15 Energy  16 Elig. energy  17 CB  18 Penalty (FuelEU)
    The grid TRACKS were reordered to match, so each column keeps its own width. */
 /* Same widening as BR_GRID (see the note there). 18 tracks, total minimum ≈ 1856px. */
-const VW_GRID = "minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
 let VW_LAST = null;
 
@@ -2924,7 +2994,7 @@ function voyageGrid(R, tips){
   const G=R.groups;
   VW_LAST={ R, cellPad };
   rowselReset("vw", G.length);
-  const th=(col,txt,extra,title)=>`<div style="grid-column:${col};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
+  const th=(col,txt,extra,title)=>`<div style="grid-column:${col+1};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
   /* 2026-07-23 (owner, Aurvin): EU-ETS CO₂e GWP set for THIS year — AR5 default / AR4 in
      Settings, and only from 2026 (before that EU ETS is CO₂ only). UK ETS = AR5, FuelEU =
      AR4, SCC = AR6, all locked by their regulations. See breakdownGrid for the full note. */
@@ -2932,15 +3002,16 @@ function voyageGrid(R, tips){
   const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
   const header=`
     <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
-      <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("vw")}</span>Voyage &amp; timeframe</div>
-      <div style="grid-column:2;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
-      <div style="grid-column:4 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:6 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:11 / span 2;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:13;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:14 / span 5;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:4;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("vw")}</div>
+      <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Voyage &amp; timeframe</div>
+      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
+      <div style="grid-column:4;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
+      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:7 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
+      <div style="grid-column:12 / span 2;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:15 / span 5;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:5;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
       ${th(5,colHdr("Cons.","mt"),"border-right:1px solid #e2e8f0;padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
       ${th(6,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
       ${th(7,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
@@ -2964,8 +3035,8 @@ function voyageGrid(R, tips){
     const bg=(zi++%2===1)?"#fafcfd":"#ffffff";
     const [pa,pb]=vwGroupPorts(g);
     const nLegs=g.dets.filter(d=>d.kind==="voyage").length, nBerth=g.dets.length-nLegs;
-    const cell=(col,row,extra,val)=>`<div style="grid-column:${col};grid-row:${row};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
-    const fl=(col,get,extra)=>lines.map((f,k)=>`<div style="grid-column:${col};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${get(f)}</div>`).join("");
+    const cell=(col,row,extra,val)=>`<div style="grid-column:${col+1};grid-row:${row};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+    const fl=(col,get,extra)=>lines.map((f,k)=>`<div style="grid-column:${col+1};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${get(f)}</div>`).join("");
     /* the SCC ⊕ marker: this voyage absorbed a preceding wholly-ballast voyage's emissions */
     const eeoiCell = g.sccNoFactor ? brNoFactor
       : g.eeoi!=null ? fmtF(g.eeoi,2)+(g.sccBallastIn>0?`<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(g.sccNumerator,2)} t WtW CO₂e = this voyage's own ${fmtF(g.sccWtW,2)} + ${fmtF(g.sccBallastIn,2)} carried in from ${g.sccBallastLegs} preceding ballast leg(s) with no cargo of their own (SCC 2025 Technical Guidance Appendix 3)."> ⊕</span>`:"")
@@ -2992,8 +3063,8 @@ function voyageGrid(R, tips){
     if(g.dets.some(d=>d.vwSplit)) flags.push(`<span style="color:#9a6b1f;cursor:help" title="A sea leg in this voyage was split because the voyage number changed mid-passage with no departure on the same or the previous day (an abrupt charterer change).">leg split</span>`);
     const head=`
       <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
-        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
-          <div style="width:${SELCOL_W}px;flex:none;display:flex;align-items:center;justify-content:center">${selBox("vw",i)}</div>
+        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("vw",i)}</div>
+        <div style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
             <div style="position:absolute;top:0;bottom:0;left:50%;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
             <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${ICON_VOYAGE}</div>
@@ -3012,7 +3083,7 @@ function voyageGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:2;grid-row:1 / span ${span};padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
+        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
         ${cell(3,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#475569;",brNum(g.dist,0))}
         ${fl(4,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
         ${fl(5,f=>brNum(f.tonnes,1),"border-right:1px solid #e2e8f0;padding-left:4px;color:#334155;")}
@@ -3061,14 +3132,15 @@ function vwTotalsHtml(){
   const twTot=good.reduce((a,g)=>a+(Number(g.tw)||0),0);
   const numTot=good.reduce((a,g)=>a+(Number(g.sccWtW)||0),0);
   const eeoiTot=twTot>0? numTot*1e6/twTot : null;
-  const cell=(col,extra,val)=>`<div style="grid-column:${col};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   const k=ROWSEL.vw.sel.size;
   const label=k? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
                 : `Total — all ${G.length} voyage${G.length===1?"":"s"} · ${R.year}`;
   return `
     <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
-      <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px"><span style="width:${SELCOL_W-8}px;flex:none"></span>${esc(label)}</div>
-      <div style="grid-column:2;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
+      <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(label)}</div>
+      <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
       ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;",fmtF(sumFu("tonnes"),1))}
       ${cell(6,"color:#475569;",fmtF(sum("cargo"),0))}
