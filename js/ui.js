@@ -168,7 +168,10 @@ function updTime(ri, key, val){
 }
 const MON3=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function fmtTs(ts){ if(!ts) return ""; const d=new Date(ts); if(isNaN(d)) return ts;
-  return String(d.getDate()).padStart(2,"0")+" "+MON3[d.getMonth()]+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+  /* 2026-07-23 (Aurvin, owner instruction): the 4-digit YEAR is now shown between the month and
+     the time (e.g. "26 Jan 2026 09:00") — dates in Reports, Leg-Wise, Voyage-Wise and the
+     Workspace were previously ambiguous with no year. Applied here so all views stay in step. */
+  return String(d.getDate()).padStart(2,"0")+" "+MON3[d.getMonth()]+" "+d.getFullYear()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
 function fmtRange(a,b){ if(!a&&!b) return ""; return (a?fmtTs(a):"…")+" – "+(b?fmtTs(b):"…"); }
 
 /* ---------- port picker widgets ---------- */
@@ -1492,7 +1495,7 @@ function rowHtml(row, ri){
       <div><label>To date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tEnd||"")}" onchange="updTime(${ri},'tEnd',this.value)"></div>
       <div style="max-width:90px"><label>Hours</label><input type="number" step="any" min="0" value="${row.hours??""}" oninput="upd('rows.${ri}.hours',num(this.value))"></div>
     </div>`
-    : (tf?`<div style="margin-top:4px;font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc(tf)}</div>`:"");
+    : (tf?`<div style="margin-top:4px;font-size:11px;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(tf)}</div>`:"");
   return `<div class="rowcard${row.kind==="port"?" portcard":""}"${outYear?' style="opacity:.55"':''}>
     ${head}
     ${dateBlock}
@@ -1845,7 +1848,12 @@ function downloadReportsXlsx(){
    computed (Total − ME − AE − Boiler, clamped ≥ 0); bunkered tonnage shows as a green +n badge
    left of the ROB value on bunkering reports only; activities render as an icon row (multiple
    per event supported); Voyage No sits after Port; Dist nm sits left of Eligibility %. */
-const TR_MONO = "ui-monospace,SFMono-Regular,Menlo,monospace";
+/* 2026-07-23 (Aurvin, owner instruction): the Report-Wise table used a monospace font; the
+   owner asked it to match the Leg-Wise view, which uses the body sans-serif font. "inherit"
+   makes every Report-Wise cell that referenced this constant fall back to that same body font.
+   (Renamed from TR_MONO — it is no longer monospace. The Workspace collapsed-row timeframe,
+   which still wants monospace, now hardcodes the mono stack rather than using this constant.) */
+const TR_FONT = "inherit";
 const TR_ICONS = {
   anchor:'M12 22V8 M5 12H2a10 10 0 0 0 20 0h-3 M15 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
   route:'M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15 M9 19a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0 M20 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0',
@@ -1925,7 +1933,7 @@ function trPctBadge(p){
   const bg = !has||v<=0 ? "#e4eef0" : v>=100 ? "#1f3b45" : "#5b8791";
   const fg = !has||v<=0 ? "#7c8fa0" : "#ffffff";
   const t = has? ((v%1===0? v.toFixed(0): v.toFixed(1))+"%") : "–";
-  return `<span style="display:inline-block;min-width:40px;text-align:center;padding:3px 6px;border-radius:0;font-size:11px;font-weight:700;font-family:${TR_MONO};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
+  return `<span style="display:inline-block;min-width:40px;text-align:center;padding:3px 6px;border-radius:0;font-size:11px;font-weight:700;font-family:${TR_FONT};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
 }
 /* match a raw MDA report to the authoritative aggregated S.rows entry covering its timestamp
    (S.rows and S.mdaReports come from two independent parses of the same import — no shared id —
@@ -2014,20 +2022,20 @@ function trTotalsHtml(){
   const dist = reps.reduce((a,r)=>a+(Number(r.dist)||0),0);
   const fuels = trTotalsAgg(reps);
   const dash='<span style="color:#94a3b8">—</span>';
-  const num=v=>`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_MONO};font-variant-numeric:tabular-nums`;
+  const num=v=>`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
   const fl=(f,style,val)=>`<div style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
   const col=(get,style)=>`<td style="padding:6px 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,style,get(f))).join("")}</td>`;
-  const numStyle=`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_MONO};font-variant-numeric:tabular-nums`;
-  const machStyle=`font-size:12px;font-weight:600;color:#334155;font-family:${TR_MONO};font-variant-numeric:tabular-nums`;
+  const numStyle=`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
+  const machStyle=`font-size:12px;font-weight:600;color:#334155;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
   return `
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_SEL}z-index:13;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px"></td>
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_EVT}z-index:13;font-size:12px;font-weight:700;color:#0f172a;white-space:nowrap;border-right:1px solid #cbd5e1">TOTAL</td>
     <td colspan="4" style="padding:${pad};background:#eef2f7;font-size:11.5px;font-weight:600;color:#475569;white-space:nowrap">${esc(rowselLabel("tr",all.length,S.year).replace(/^Total — /,""))}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_MONO};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,0)}</td>
+    <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_FONT};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,0)}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;border-left:1px solid #cbd5e1">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#334155;font-family:${TR_MONO}`,esc(f.name))).join("")}</td>
+    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;border-left:1px solid #cbd5e1">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#334155;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,numStyle,fmtF(f.total,1))).join("")}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.me,1))).join("")}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.ae,1))).join("")}</td>
@@ -2043,7 +2051,7 @@ function reportTraceTable(reps){
   const thBase="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;vertical-align:bottom";
   const thSub="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;background:#f8fafc;padding:5px 12px;border-bottom:1px solid #e2e8f0";
   const fl=(f,style,val)=>`<div style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
-  const machStyle=`font-size:12px;color:#64748b;font-family:${TR_MONO};font-variant-numeric:tabular-nums`;
+  const machStyle=`font-size:12px;color:#64748b;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
   const dash='<span style="color:#cbd5e1">—</span>';
   TR_LAST = reps;                                           // 2026-07-22: for the totals row
   rowselReset("tr", reps.length);
@@ -2074,14 +2082,14 @@ function reportTraceTable(reps){
           </div>`:""}
         </div>` : dash;
     const fuelTds = fuels.length? `
-      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_MONO}`,esc(f.name))).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_MONO};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.me)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.ae)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.blr)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.oth)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>
-        `<div style="height:17px;padding:0 12px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_MONO};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:6px">${
+        `<div style="height:17px;padding:0 12px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_FONT};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:6px">${
           f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 5px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
         }<span>${f.rob}</span></div>`).join("")}</td>`
       : `<td style="padding:${pad};border-left:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
@@ -2090,19 +2098,19 @@ function reportTraceTable(reps){
       <td style="padding:${pad};vertical-align:top;white-space:nowrap;${TR_FREEZE_EVT}z-index:2;background:#ffffff;border-right:1px solid #f1f5f9">
         <div style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
           <span style="font-size:12px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px">${r.rt==="IN_PORT"?berthIcon(r):""}${esc(reportTypeDisplay(r))}</span>
-          <span style="font-size:11px;color:#64748b;font-family:${TR_MONO}">${esc(fmtTs(r.t))}</span>
+          <span style="font-size:11px;color:#64748b;font-family:${TR_FONT}">${esc(fmtTs(r.t))}</span>
         </div>
       </td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap">${condHtml}</td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap">${actHtml}</td>
       <td style="padding:${pad};vertical-align:top">${portHtml}</td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,0):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,0):"—"}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.eu)}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.feu)}</td>
       <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.uk)}</td>
       ${fuelTds}
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_MONO};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- 2026-07-23 Task 3: a reported 0 shows 0; a BLANK cargo cell shows a dash (was: any 0 showed a dash) -->
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- 2026-07-23 Task 3: a reported 0 shows 0; a BLANK cargo cell shows a dash (was: any 0 showed a dash) -->
     </tr>`;
   }).join("");
   return `
