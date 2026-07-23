@@ -2324,6 +2324,15 @@ function brVoyNos(segs, d){
   return out.join(", ");
 }
 
+/* 2026-07-23 (owner, Aurvin): two-line column header. The parameter name sits on the top
+   line; its unit drops to a smaller, muted line underneath. This de-clutters the row-2
+   labels (units were crammed next to the name before) and lets every column show its unit.
+   colHdr() returns the inner HTML for a header cell; pass unit="" for a unitless column. */
+function colHdr(name, unit){
+  return `<div style="line-height:1.15">${name}</div>`+
+         (unit ? `<div style="font-weight:400;font-size:9px;color:#94a3b8;line-height:1.25;margin-top:1px">${unit}</div>` : "");
+}
+
 /* full inner grid: header rows + one grid per leg + totals + footnote */
 let BR_LAST = null;                       // {R, cellPad} — for re-rendering totals on tick
 function breakdownGrid(R, tips){
@@ -2334,6 +2343,13 @@ function breakdownGrid(R, tips){
   const segs = vwVoyageSegments(S.mdaReports||[]);
   BR_LAST = { R, cellPad };
   rowselReset("br", R.rowDetails.length);
+  /* 2026-07-23 (owner, Aurvin): a CO₂e figure is only meaningful with the GWP set that made
+     it, and that set is regulation- and YEAR-dependent. EU ETS folds CH₄/N₂O in only from
+     2026 (set is AR5 default / AR4, user-selectable in Settings) — before 2026 the basis is
+     CO₂ only, so no AR tag is shown. UK ETS is locked AR5 (Table C1) and only active from
+     2026; FuelEU is locked AR4 (25/298); SCC is AR6. euAR is the EU-ETS tag for THIS year. */
+  const euAR = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
+  const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
   const header = `
     <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("br")}</span>Activity &amp; timeframe</div>
@@ -2345,23 +2361,23 @@ function breakdownGrid(R, tips){
       <div style="grid-column:11 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
       <div style="grid-column:17 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
       <div style="grid-column:4;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
-      <div style="grid-column:5;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">Cons. mt</div>
-      <div style="grid-column:6;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">CO₂ (mt)</div>
-      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">EUAs (tCO₂e)</div>
-      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">UKAs (tCO₂e)</div>
-      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Cov.</div>
-      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">Elig. mt</div>
-      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Energy (10⁶ MJ)</div>
-      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">Elig. energy (10⁶ MJ)</div>
-      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">CB</div>
-      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Penalty (€)</div>
-      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">Cargo (mt)</div>
-      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">TW (10⁶ t·nm)</div>
-      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">TtW (mt)</div>
-      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">WtW (mt)</div>
-      <div style="grid-column:21;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">EEOI</div>
+      <div style="grid-column:5;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
+      <div style="grid-column:6;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">${colHdr("CO₂","mt")}</div>
+      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
+      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
+      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
+      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
+      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
+      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
+      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
+      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">${colHdr("Cargo","mt")}</div>
+      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">${colHdr("T-Work","10⁶ t·nm")}</div>
+      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">${colHdr("TtW","mt (AR6)")}</div>
+      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">${colHdr("WtW","mt (AR6)")}</div>
+      <div style="grid-column:21;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EEOI","gCO₂e/t·nm")}</div>
     </div>`;
 
   let zi=0;
@@ -2909,6 +2925,11 @@ function voyageGrid(R, tips){
   VW_LAST={ R, cellPad };
   rowselReset("vw", G.length);
   const th=(col,txt,extra,title)=>`<div style="grid-column:${col};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
+  /* 2026-07-23 (owner, Aurvin): EU-ETS CO₂e GWP set for THIS year — AR5 default / AR4 in
+     Settings, and only from 2026 (before that EU ETS is CO₂ only). UK ETS = AR5, FuelEU =
+     AR4, SCC = AR6, all locked by their regulations. See breakdownGrid for the full note. */
+  const euAR = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
+  const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
   const header=`
     <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:3;display:flex;align-items:flex-end;gap:8px;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a"><span style="width:${SELCOL_W-8}px;flex:none;display:flex;align-items:center;justify-content:flex-start;padding-bottom:1px">${selAllBox("vw")}</span>Voyage &amp; timeframe</div>
@@ -2920,20 +2941,20 @@ function voyageGrid(R, tips){
       <div style="grid-column:13;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
       <div style="grid-column:14 / span 5;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
       <div style="grid-column:4;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
-      ${th(5,"Cons. mt","border-right:1px solid #e2e8f0;padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
-      ${th(6,"Cargo (mt)","","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
-      ${th(7,"TW (10⁶ t·nm)","","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
-      ${th(8,"TtW (mt)","","Tank-to-wake CO₂e (tonnes) — what comes out of the funnel")}
-      ${th(9,"WtW (mt)","","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
-      ${th(10,"EEOI","border-right:1px solid #e2e8f0;")}
-      ${th(11,"CO₂ (mt)","","white-space:nowrap")}
-      ${th(12,"EUAs (tCO₂e)","border-right:1px solid #e2e8f0;")}
-      ${th(13,"UKAs (tCO₂e)","border-right:1px solid #e2e8f0;")}
-      ${th(14,"Elig. mt","","Eligible mass under regulation scope (tonnes)")}
-      ${th(15,"Energy (10⁶ MJ)")}
-      ${th(16,"Elig. energy (10⁶ MJ)")}
-      ${th(17,"CB","","Compliance balance (tCO₂eq)")}
-      ${th(18,"Penalty (€)","border-right:1px solid #e2e8f0;")}
+      ${th(5,colHdr("Cons.","mt"),"border-right:1px solid #e2e8f0;padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
+      ${th(6,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
+      ${th(7,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
+      ${th(8,colHdr("TtW","mt (AR6)"),"","Tank-to-wake CO₂e (tonnes) — what comes out of the funnel")}
+      ${th(9,colHdr("WtW","mt (AR6)"),"","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
+      ${th(10,colHdr("EEOI","gCO₂e/t·nm"),"border-right:1px solid #e2e8f0;")}
+      ${th(11,colHdr("CO₂","mt"),"","white-space:nowrap")}
+      ${th(12,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
+      ${th(13,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
+      ${th(14,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
+      ${th(15,colHdr("Energy","10⁶ MJ"))}
+      ${th(16,colHdr("Elig. energy","10⁶ MJ"))}
+      ${th(17,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
+      ${th(18,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
     </div>`;
 
   let zi=0;
