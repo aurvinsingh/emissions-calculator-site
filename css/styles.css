@@ -29,6 +29,16 @@ main{max-width:1500px;margin:0 auto;padding:16px 20px 60px}
    Drawing the divider as a box-shadow on the sticky TOTAL cells pins it to the header instead
    (box-shadow travels with the sticky cell). Applies to the Report-Wise table only. */
 #trTotals>td{box-shadow:0 2px 0 #cbd5e1}
+/* 2026-07-24 (Aurvin): the box-shadow above patched only the bottom seam. Body content still
+   bled through the multi-row sticky header because border-collapse:collapse hands the header's
+   borders to the table grid, which scrolls with the body (a Chrome/Blink sticky-thead bug).
+   Switching THIS table (only) to the separated-borders model makes every header cell own its
+   own opaque background + borders, so nothing scrolls away and the body can't show through.
+   Separated mode ignores borders declared on <tr>, so the two row dividers that used to live on
+   <tr> are re-drawn on the cells here. Scoped to .trtable so other tables keep collapse. */
+table.trtable{border-collapse:separate;border-spacing:0}
+table.trtable tbody>tr>td{border-bottom:1px solid #f1f5f9}
+table.trtable #trTotals>td{border-top:1px solid #cbd5e1}
 details.workings summary{cursor:pointer;font-size:14px;font-weight:600;color:#123c47;padding:2px 0}
 /* compact column label — replaces a full h2 (which just repeated the summary's own wording) */
 .wlabel{font-size:12px;font-weight:700;color:#123c47;text-transform:uppercase;letter-spacing:.3px;margin:0 0 8px;display:flex;align-items:center;gap:6px}
@@ -81,6 +91,11 @@ input:focus,select:focus{outline:2px solid #a9d4da}
 .kv{display:flex;justify-content:space-between;gap:8px;padding:5px 0;font-size:13px;border-bottom:1px dotted #eef1f5}
 .kv b{text-align:right}
 .badge{display:inline-block;font-weight:800;font-size:20px;color:#fff;border-radius:8px;padding:3px 14px}
+/* 2026-07-26 (Task 1, Aurvin): CII Percentage box, sits immediately right of the CII
+   rating badge. Attained CII x 100 / Required CII. */
+.ciipctbox{flex:0 0 auto;text-align:center;border:1px solid #b7d8dd;border-radius:8px;padding:2px 12px;background:var(--card)}
+.ciipctbox .v{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;color:#123c47;line-height:1.25}
+.ciipctbox .l{font-size:9.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px}
 .warn{background:#fff8e6;border:1px solid #f0dfae;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#7a5b00;margin:6px 0}
 .flag{display:inline-block;background:#fdeaea;color:var(--red);font-size:10.5px;font-weight:700;border-radius:8px;padding:1px 7px;vertical-align:middle}
 .ok{display:inline-block;background:#e7f4ec;color:var(--green);font-size:10.5px;font-weight:700;border-radius:8px;padding:1px 7px;vertical-align:middle}
@@ -279,3 +294,114 @@ nav{overflow-x:auto;scrollbar-width:thin}
 /* 2026-07-22i: the year + info icon are pushed to the far right of the ribbon, separate from
    the vessel/type/capacity group on the left, with a touch of extra room before the icon. */
 .card.band .bandtail{display:flex;align-items:center;gap:10px;margin-left:auto}
+
+/* ---- shared From/To date-range filter bar (2026-07-24, Aurvin) ---------------------------
+   One sticky control at the top of all four data tabs. On the shell tabs (Leg-/Report-/Voyage-
+   Wise) the tabpanel is the scroll container, so top:0 pins it there; on the Workspace (plain
+   page scroll, no .shell) it must clear the sticky header+nav (~99px). */
+.dfbar{position:sticky;top:0;z-index:18;flex:0 0 auto;background:var(--blue2);border:1px solid #bcd9de;
+  border-radius:12px;padding:8px 12px;margin-bottom:14px;display:flex;flex-wrap:wrap;
+  align-items:center;gap:9px;box-shadow:0 1px 3px rgba(20,50,60,.06)}
+body:not(.shell) .dfbar{top:99px}
+.dfbar input[type=datetime-local],.dfbar select{width:auto;font-size:12px;padding:4px 7px}
+.dfbar .dfld{font-size:11px;color:var(--sub);font-weight:700;letter-spacing:.02em}
+.dfbtn{background:#fff;border:1px solid #bcd9de;color:var(--blue);border-radius:7px;
+  padding:4px 9px;font-size:11.5px;cursor:pointer;font-weight:600}
+.dfbtn:hover{background:#d8ebee}
+.dfbtn.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+.dfutc{font-weight:700;color:var(--blue);font-size:9.5px;border:1px solid #bcd9de;
+  border-radius:5px;padding:1px 5px;background:#fff;letter-spacing:.04em}
+.dfedge{background:#fff4d6;color:#8a5a00;border:1px solid #e6c766;border-radius:4px;
+  padding:0 5px;font-size:10px;font-weight:700;cursor:help}
+.dfcap{flex-basis:100%;font-size:11.5px;color:var(--ink);margin-top:3px;line-height:1.5}
+/* the "edge" marker shown on straddling rows in the Workspace list */
+.zbadge.zb-EDGE{background:#fff4d6;color:#8a5a00}
+
+/* ---------- tick-to-highlight a row + the TOTAL row: Report-Wise / Leg-Wise / Voyage-Wise --------
+   (2026-07-25j, revised 2026-07-25k). Zebra striping was removed from Leg-Wise and Voyage-Wise, so
+   every un-ticked row is plain white. TICKING a row's checkbox (which also feeds the TOTAL row) adds
+   .hi-on in js/ui.js (rowselSync); several ticked rows highlight at once, and the sticky TOTAL row
+   highlights too but ONLY while at least one row is ticked (its host #{br,vw,tr}Totals also gets
+   .hirow/.hi-on). The fill is a PALE TEAL tint #d3ebee (see 2026-07-25l note below; it used to be a
+   dark teal #10717f). !important is required because the tables are built with heavy INLINE
+   background/colour styles. Report-Wise is a real <table> (paint each <td>); Leg-Wise/Voyage-Wise are
+   CSS-grid <div>s (paint the row itself — its transparent grid cells show the tint through — plus the
+   opaque frozen .hicell columns). The TOTAL row's own cells carry an inline #eef2f7 grey, repainted here.
+   2026-07-25l (Aurvin, owner instruction): the earlier fill was a DARK teal #10717f, which forced the
+   neutral text white and left the meaningful coloured FIGURES (red/blue/purple/green/amber) low-contrast
+   and muddy on the dark background. Owner asked to drop the teal intensity to a PALE tint so every
+   coloured figure reads clearly. New fill is #d3ebee (a light teal — same hue, much lighter). Because
+   the background is now light, ALL text goes back to DARK: neutral labels keep their own dark inline
+   colours (the white-forcing rules are gone) and coloured figures are left exactly as they are. */
+tr.hirow.hi-on>td,
+.hirow.hi-on,
+.hirow.hi-on .hicell,
+.hirow.hi-on [style*="background:#eef2f7"]{background:#d3ebee !important}
+/* TEXT: pale teal is light, so default (colour-less) text is DARK, not white. Neutral label hexes now
+   keep their own dark inline colours — no override needed. The meaningful FIGURE colours (EUA blue, UK
+   purple, penalty orange/brown, CB red/green, SCC amber, bunker green, badge colours) are untouched and
+   read cleanly on the light tint. */
+.hirow.hi-on{color:#0f172a}
+/* flat tint: drop the Report-Wise secondary fuel sub-band (e.g. MGO) so the whole row is one colour
+   (owner chose "no sub-band") — the .trfl fuel-line divs carry an inline light-grey band otherwise */
+.hirow.hi-on .trfl{background:transparent !important}
+/* small coloured pills inside a row (jurisdiction, OPL, bunker, eligibility %, zone) carry their own
+   light inline background — drop it so their coloured text sits directly on the pale tint row */
+.hirow.hi-on span[style*="background"]{background:transparent !important}
+/* 2026-07-25m (Aurvin, bug report): EXCEPTION for the eligibility pill (elFusedPill in js/ui.js,
+   shared by Report-Wise and Leg-Wise). Unlike the other pills above, which use a light inline
+   background with their OWN dark or coloured text (so dropping the background above still reads
+   fine), the 100% and "partial" eligibility segments are solid dark pills carrying WHITE text. The
+   blanket rule two lines up was stripping that background too, leaving invisible white-on-pale-teal
+   text once the row was ticked. Restore just these two segment colours so the pill stays visible;
+   the 0%/"–" segment already uses dark-grey text (#7c8fa0) and was never affected.
+   2026-07-27c (Aurvin, bug report — REGRESSION FIX): this exception had gone stale. 26b's handoff
+   note already flagged it and it was never actually fixed: elFusedPill()'s own colours moved on
+   TWICE since this rule was written — 27a desaturated 100% #1f3b45→#3a5157 and 50% #5b8791→#5f7f87,
+   then 26b lightened 50% further to #6f8d94 — but this CSS rule kept matching the ORIGINAL pre-27a
+   hex literals, which no longer appear anywhere in the pill's inline style. So on a ticked row the
+   blanket strip-rule above matched (background:transparent) and NOTHING restored it, making the
+   pill invisible/blended into the tint again — the exact bug this rule was meant to prevent, just
+   reintroduced by an unrelated colour change. Fixed by matching the CURRENT hex literals instead of
+   the historical ones; old literals kept alongside (harmless — trPctBadge, dead code since 26y,
+   still emits them, so leaving these costs nothing and guards against reviving that path unstyled). */
+.hirow.hi-on span[style*="background:#1f3b45"]{background:#1f3b45 !important}
+.hirow.hi-on span[style*="background:#5b8791"]{background:#5b8791 !important}
+.hirow.hi-on span[style*="background:#3a5157"]{background:#3a5157 !important}
+.hirow.hi-on span[style*="background:#6f8d94"]{background:#6f8d94 !important}
+/* 2026-07-26 (Aurvin, bug report): the IMO CII rating badge (A–E letter box, js/ui.js
+   ciiCellHtml ~line 1740) went the same way as the eligibility badges above — it also lost
+   its colour once the row was ticked. It wasn't caught by the two hex exceptions just above
+   because its background is a CSS variable (var(--ra)..var(--re), or #888 when there's no
+   rating), not a literal hex. Same fix: restore its own background on top of the blanket
+   "strip inline background" rule so the letter box stays legible on the pale-teal tint. */
+.hirow.hi-on span[style*="background:var(--ra)"]{background:var(--ra) !important}
+.hirow.hi-on span[style*="background:var(--rb)"]{background:var(--rb) !important}
+.hirow.hi-on span[style*="background:var(--rc)"]{background:var(--rc) !important}
+.hirow.hi-on span[style*="background:var(--rd)"]{background:var(--rd) !important}
+.hirow.hi-on span[style*="background:var(--re)"]{background:var(--re) !important}
+.hirow.hi-on span[style*="background:#888"]{background:#888 !important}
+/* the Leg/Voyage timeline rail keeps its natural faint grey line on the pale tint (no override needed).
+   The "i" info button also keeps its default look — both were only recoloured for the old dark teal. */
+/* 2026-07-25m (Aurvin, bug report): the Leg-Wise/Voyage-Wise/Report-Wise row divider (the 1px
+   border-bottom carried inline on every .hirow, e.g. js/ui.js ~2868/~3429) went invisible once a row
+   was ticked, for two combined reasons: (1) its colour #e2e8f0 has almost no contrast against the new
+   pale-teal selected fill #d3ebee — both are near-white, so the line all but disappears; (2) in
+   Leg-Wise/Voyage-Wise the frozen .hicell columns (checkbox + Activity/port) span the row's full height
+   with their own opaque background and paint on top of that border wherever they overlap it, since they
+   have no border-bottom of their own to carry the line across. Fix: give the frozen cells the same
+   divider, and darken the divider specifically on ticked rows so it always reads against the tint. */
+.hicell{border-bottom:1px solid #e2e8f0}
+tr.hirow.hi-on>td,
+.hirow.hi-on,
+.hirow.hi-on .hicell{border-bottom:1px solid #8fb9c2 !important}
+/* 2026-07-25o (Aurvin, bug report): the VERTICAL column dividers went invisible on a ticked row for
+   the exact same reason as the horizontal one above — every column divider in Report-Wise, Leg-Wise
+   and Voyage-Wise is an inline border-right:1px solid #e2e8f0 (on <td>s, on the CSS-grid <div> cells,
+   and on the frozen .hicell columns), and that colour has almost no contrast against the pale-teal
+   selected fill #d3ebee. Rather than list every one of the ~60 cells that carry it, target any
+   element inside a ticked row that already declares its own border-right inline — that is by
+   definition a real column divider, nothing else uses that property here — and darken it to match
+   the horizontal divider colour so the whole grid (fuel-metrics / EU ETS / UK ETS / FuelEU / SCC
+   group lines, plus the frozen checkbox/Activity edges) stays legible once selected. */
+.hirow.hi-on [style*="border-right"]{border-right-color:#8fb9c2 !important}

@@ -17,6 +17,13 @@ const DEFAULT_STATE = {
   fueleuBankedIn: 0, fueleuBorrow: false, poolPartnerCB: 0, deficitPeriods: 1,
   sccReqMin: "", sccReqStriving: "",
   breakevenFuelId: "BDSL", breakevenE: "", breakevenWtt: "", breakevenPrice: 0, breakevenEngine: "",
+  /* 2026-07-24 (Aurvin): date-range filters. UTC "YYYY-MM-DDTHH:mm" (bound to datetime-local).
+     dateFilter    — the WITHIN-YEAR window shared by Workspace / Report-Wise / Leg-Wise. Always
+                     bounded to S.year; auto-filled to the full year when the year is picked.
+     voyDateFilter — Voyage-Wise ONLY; may span multiple years. Voyages are included by END date
+                     and each voyage is graded under the rules of its end-date year. */
+  dateFilter: { fromISO:"", toISO:"", active:false },
+  voyDateFilter: { fromISO:"", toISO:"", active:false },
   rows: []
 };
 let S = loadState();
@@ -39,6 +46,8 @@ function migrateState(s){
   if(!s.fueleuAlloc) s.fueleuAlloc = "optimal";
   if(s.showSplit===undefined) s.showSplit = false;
   if(!s.mdaReports) s.mdaReports = [];
+  if(!s.dateFilter)    s.dateFilter    = { fromISO:"", toISO:"", active:false };   // 2026-07-24 within-year window
+  if(!s.voyDateFilter) s.voyDateFilter = { fromISO:"", toISO:"", active:false };   // 2026-07-24 Voyage-Wise multi-year range
   return s;
 }
 function save(){ try{ localStorage.setItem("emcalc_state", JSON.stringify(S)); }catch(e){} }
@@ -133,6 +142,12 @@ function _trackInfoPop(e){
 window.addEventListener("scroll", _trackInfoPop, true);
 window.addEventListener("resize", _trackInfoPop);
 document.addEventListener("click", e=>{ if(!e.target.closest(".ibwrap") && !e.target.closest(".ibpop")){ document.querySelectorAll(".ibpop.open").forEach(x=>x.classList.remove("open")); _openInfo = null; } });
+/* 2026-07-25j (Aurvin, owner instruction): row highlighting follows the row's TICK BOX, not a
+   click on the row. Ticking a row (Report-Wise / Leg-Wise / Voyage-Wise) gives it the .hi-on
+   class — painted teal with white text by the .hirow rules in styles.css — so several ticked rows
+   are all highlighted at once. The actual add/remove of .hi-on happens in rowselSync() (the single
+   place that pushes the tick model back onto the page), so highlight and the TOTAL row (which also
+   sums the ticked rows) always stay in step. */
 /* align="right": popover expands leftward from the icon instead of rightward — use for icons
    pinned to a right-edge corner, where the default rightward expansion would run off-screen */
 const info = (html,align)=>`<span class="ibwrap${align==="right"?" ib-right":""}"><button class="ib" type="button" onclick="event.stopPropagation();toggleInfo(this)" title="More information">i</button><span class="ibpop">${html}</span></span>`;
@@ -354,48 +369,36 @@ function parseOVD(text){
     portRow.label = "At berth "+(locode? portDisp(portRow.port) : zoneName(zone));
     out.push(portRow); return portRow;
   };
-  /* year-boundary machinery (2026-07-16): every addition is bucketed by calendar year so
-     multi-year rows can be split report-exactly; a report period that itself straddles
-     midnight 31 Dec is pro-rated by time. */
+  /* year-boundary machinery (2026-07-16; 2026-07-25 Aurvin, owner instruction — NO proration):
+     every report is bucketed WHOLE into the calendar year of its OWN listed time (its
+     DATE_TIME_GMT, i.e. the period END `b`). A report whose period happens to straddle midnight
+     31 Dec is NOT split or pro-rated — all of its consumption / ROB / distance goes to the year
+     it is dated in. So the first report of a year keeps its real MDA time, never a synthetic
+     01 Jan 00:00 break. */
   const yearFracs = (a,b)=>{
     if(!a && !b) return null;
-    if(!a || !b || a.slice(0,4)===b.slice(0,4)) return { [(b||a).slice(0,4)]: 1 };
-    const A=Date.parse(a+":00Z"), B=Date.parse(b+":00Z");
-    if(!(B>A)) return { [b.slice(0,4)]: 1 };
-    const out={}; let t0=A;
-    for(let yy=Number(a.slice(0,4)); yy<Number(b.slice(0,4)); yy++){
-      const bd=Date.parse((yy+1)+"-01-01T00:00:00Z");
-      out[yy]=(Math.min(bd,B)-t0)/(B-A); t0=bd;
-    }
-    out[b.slice(0,4)]=(B-t0)/(B-A);
-    return out;
+    return { [(b||a).slice(0,4)]: 1 };     // whole report → the year of its listed time (period end)
   };
-  /* the part of a report period [a,b] that falls inside calendar year yy (clipped to the year) */
-  const segOf = (a, b, yy)=>[
-    (a && a.slice(0,4)===String(yy)) ? a : yy+"-01-01T00:00",
-    (b && b.slice(0,4)===String(yy)) ? b : (Number(yy)+1)+"-01-01T00:00"
-  ];
-  /* ---- UK ETS report-exact 1 Jul 2026 window (2026-07-20, Aurvin) ----
-     The UK ETS maritime scheme is in force from 1 Jul 2026 (SI 2026/392). We accumulate, per
-     row, the fraction of ACTUAL consumption that occurred on/after 1 Jul 2026 — report by report,
-     exactly like the calendar-year split — so the engine no longer time-pro-rates the whole leg
-     (which assumed uniform burn). ukWinFracOfSeg gives the on/after-1-Jul share of one report's
-     (year-clipped) period; it matches ukSchemeFraction's straddle formula so per-report badges
-     and the aggregated total use identical logic. */
+  /* ---- UK ETS report-exact 1 Jul 2026 window (2026-07-20; 2026-07-25 Aurvin, owner
+     instruction — WHOLE report, no proration) ----
+     The UK ETS maritime scheme is in force from 1 Jul 2026 (SI 2026/392). A report is judged by
+     its OWN listed time (period end `b`): a report dated BEFORE 1 Jul 2026 is wholly OUT of UK
+     ETS scope; a report dated ON/AFTER 1 Jul 2026 is wholly IN. No report is pro-rated across the
+     1 Jul cut. We accumulate, per row, the share of consumption carried by in-scope reports
+     (ukInMass ÷ massTot) so the engine uses actual per-report consumption. */
   const UK_CUT = Date.parse("2026-07-01T00:00:00Z");
-  const ukWinFracOfSeg = (segA, segB)=>{
-    const s=Date.parse(segA+":00Z"), e=Date.parse(segB+":00Z");
-    if(!isFinite(s)||!isFinite(e)||!(e>s)) return 1;
-    if(e<=UK_CUT) return 0;
-    if(s>=UK_CUT) return 1;
-    return (e-UK_CUT)/(e-s);
+  const ukReportIn = (b)=>{                     // whole-report scope test by the report's listed time
+    const e = Date.parse((b||"")+":00Z");
+    return isFinite(e) ? (e>=UK_CUT ? 1 : 0) : 1;
   };
   const bucketOf = (row, yy, a, b)=>{
     row._byYear = row._byYear || {};
     const bk = row._byYear[yy] || (row._byYear[yy]={fuels:{},dist:0,cargo:0,tStart:null,tEnd:null,ukInMass:0,massTot:0});
-    const [segA,segB] = segOf(a, b, yy);
-    if(!bk.tStart || segA<bk.tStart) bk.tStart=segA;
-    if(!bk.tEnd || segB>bk.tEnd) bk.tEnd=segB;
+    /* 2026-07-25 (Aurvin, owner instruction): the year-part window uses the ACTUAL report times
+       (the report's own listed time `b`, falling back to its period start `a`) — no clip to
+       01 Jan 00:00 — so the first report of a year shows its real MDA time. */
+    const stampT = b || a;
+    if(stampT){ if(!bk.tStart || stampT<bk.tStart) bk.tStart=stampT; if(!bk.tEnd || stampT>bk.tEnd) bk.tEnd=stampT; }
     return bk;
   };
   const addFuel = (row, fuelId, t, mach, yfr, a, b)=>{
@@ -414,8 +417,7 @@ function parseOVD(text){
       /* UK ETS report-exact window: accumulate the on/after-1-Jul-2026 share of this report's
          consumption for this year-part (pre-2026 → 0, post-2026 → full, 2026 → clipped share). */
       bk.massTot += massYY;
-      const [segA,segB] = segOf(a, b, yy);
-      const inWin = Number(yy)>2026 ? 1 : Number(yy)<2026 ? 0 : ukWinFracOfSeg(segA, segB);
+      const inWin = Number(yy)>2026 ? 1 : Number(yy)<2026 ? 0 : ukReportIn(b);   // whole report by its listed time
       bk.ukInMass += massYY*inWin;
     }
   };
@@ -536,6 +538,11 @@ function parseOVD(text){
         if(F.indexOf("LOAD")>=0) target.cargoLoad=true;
         if(F.indexOf("DISCH")>=0) target.cargoDisch=true;
         if(F.indexOf("STS")>=0) target.cargoSTS=true;
+        /* 2026-07-24 (Aurvin, owner instruction): cargo happened but a report was flagged
+           OUTSIDE_PORT_LIMIT, so the stay is scored as transit (not a POC). Display-only flag
+           so the Leg-Wise view can show a 📦 + a red OPL badge together — it does NOT change
+           scope (the POC=NO already carried in the POC column governs the calculation). */
+        if(F.indexOf("OPLCARGO")>=0) target.oplCargo=true;
       }
     }
     stamp(target, ts); if(ts) prevTs = ts;
@@ -557,7 +564,20 @@ function parseOVD(text){
       const bk=by[yy];
       return Object.keys(bk.fuels).some(k=>bk.fuels[k].t>5e-4) || bk.dist>0.05;
     }).sort() : [];
-    if(ys.length<2){ if(ys.length===1) r.ukInFrac = ukFracOfBucket(by[ys[0]], ys[0]); rowsFinal.push(r); continue; }
+    if(ys.length<2){
+      if(ys.length===1){
+        const bk=by[ys[0]];
+        r.ukInFrac = ukFracOfBucket(bk, ys[0]);
+        /* 2026-07-25 (Aurvin, owner instruction): a whole-report, single-year row whose FIRST
+           report's period reaches back across 31 Dec (its stamp tStart is the PRIOR report's
+           time, in the previous year) is pulled onto its own reports' time span so it sits
+           cleanly in its one year and cannot be double-counted by the year-range filter. The
+           common case (tStart already in-year) is left untouched — hours/duration unchanged. */
+        if(bk.tStart && String(r.tStart||"").slice(0,4) < String(ys[0])) r.tStart = bk.tStart;
+        if(bk.tEnd   && String(r.tEnd||"").slice(0,4)   > String(ys[0])) r.tEnd   = bk.tEnd;
+      }
+      rowsFinal.push(r); continue;
+    }
     nSplitYear++;
     for(const yy of ys){
       const bk=by[yy];
@@ -590,7 +610,7 @@ function parseOVD(text){
   const keptRows = rowsFinal.filter(r=>r.kind==="voyage" || r.fuels.some(f=>f.tonnes>0));
   const nNonPoc = keptRows.filter(r=>r.kind==="port" && r.poc===false).length;
   return { rows: keptRows, opsMJ: Math.round(opsKWh*3.6), skippedFuels:[...skippedFuels],
-           notes:[ nSplitYear? nSplitYear+" row(s) spanned the calendar-year boundary and were split into per-year parts (each year carries exactly the consumption that occurred in it — straddling report periods pro-rated by time). The reporting year in Settings decides which parts are counted; the others show greyed out.":null,
+           notes:[ nSplitYear? nSplitYear+" row(s) spanned the calendar-year boundary and were split into per-year parts. Each report is counted WHOLE in the year of its own date — no report is pro-rated across 31 Dec — so every year carries exactly the reports dated in it, and the first report of a year keeps its real time. The reporting year in Settings decides which parts are counted; the others show greyed out.":null,
                    opsKWh>0? "Shore-side electricity "+opsKWh.toLocaleString()+" kWh imported as FuelEU OPS energy ("+Math.round(opsKWh*3.6).toLocaleString()+" MJ).":null,
                    nNonPoc? nNonPoc+" port stay(s) marked NOT a port of call (transit / anchorage-only / cargo ops outside port limits) — excluded from EU ETS / UK ETS / FuelEU scope. Toggle POC on the row to change.":null,
                    skippedFuels.size? "Columns for fuel code(s) "+[...skippedFuels].join(", ")+" ('Other' fuels) were SKIPPED — add them manually as Custom fuel with factors from the BDN.":null ].filter(Boolean) };
@@ -627,7 +647,11 @@ function parseOVD(text){
    POC test: cargo ops occurred (incl. quantity fallback: |CARGO_QTY at SOSP − at EOSP|
    > 5% of DWT, or any 0↔loaded transition, with no recorded cargo activity → orange ❗)
    AND no report inside the derived window has OUTSIDE_PORT_LIMIT TRUE (an STS outside
-   port limits = transit). FUEL_STOCK / FUEL_OIL_BUNKER / blank-condition rows are
+   port limits = transit) — EXCEPT (2026-07-24b, owner rule) when the window's OPL flags are
+   MIXED (some TRUE, some FALSE) AND a cargo op was recorded AT_BERTH: the stray OPL flag is
+   then treated as misreporting and the stay is KEPT as a port of call (a real out-of-limits
+   transfer is at anchor/drifting, never at berth; a uniformly-OPL=TRUE window is not "mixed"
+   and stays transit). FUEL_STOCK / FUEL_OIL_BUNKER / blank-condition rows are
    transparent to all chain and POC logic. The file's own POC column is IGNORED for
    calculations — it is only compared against the derived result (mismatch → yellow ⚠).
    Consumption before the derived ARRIVAL / after the derived DEPARTURE is attributed to
@@ -803,7 +827,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
 
   /* ---- pass 2: port stays → derive ARRIVAL / DEPARTURE / POC ---- */
   const notes=[];
-  let nDerived=0,nTransit=0,nQty=0,nMismatch=0,nIncomplete=0,nOPL=0,usedDefaultDwt=false;
+  let nDerived=0,nTransit=0,nQty=0,nMismatch=0,nIncomplete=0,nOPL=0,nOplKept=0,usedDefaultDwt=false;
   if(hasOC){
     let dwt=Number(dwtOpt)||0;
     if(!(dwt>0)){
@@ -880,17 +904,42 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
       if(arr && dep){
         nDerived++;
         const oplHit = M.some(m=> m.rt!=="FUEL_STOCK" && m.opl && m.tStart>=arr && m.tEnd<=dep);
-        poc = cargoTest && !oplHit;
+        /* 2026-07-24b (Aurvin, EXPLICIT owner instruction this session — this DELIBERATELY
+           refines the frozen POC rule, at the owner's request): OUTSIDE_PORT_LIMIT is often
+           reported INCONSISTENTLY within one stay (some reports TRUE, some FALSE — e.g. a
+           discharge still tagged on the departure report after the ship left the berth). The
+           previous rule (poc = cargoTest && !oplHit) let a single stray OPL report demote an
+           entire genuine port call to transit. New rule: when the window's OPL flags are MIXED
+           (at least one TRUE and at least one FALSE) AND a cargo operation was recorded while
+           AT_BERTH — physically alongside a quay, unambiguously in port — the stray OPL flag is
+           treated as MISREPORTING and the stay is KEPT as a port of call. Guardrails so a real
+           out-of-limits transfer is NOT wrongly reinstated:
+             • a genuine STS is AT_ANCHOR / DRIFTING, never AT_BERTH → berthCargo is false → no
+               override (locked by the existing "stay D" self-test);
+             • a stay whose reports are UNIFORMLY OPL=TRUE is NOT "mixed" → respected as transit,
+               even at berth (owner scoped the override to the inconsistent case only). */
+        const winReports = M.filter(m=> m.rt!=="FUEL_STOCK" && m.tStart>=arr && m.tEnd<=dep);
+        const oplMixed   = winReports.some(m=>m.opl) && winReports.some(m=>!m.opl);
+        const berthCargo = ops.some(m=> m.oc==="AT_BERTH");
+        const oplOverride = oplHit && oplMixed && berthCargo;
+        poc = cargoTest && (!oplHit || oplOverride);
         if(poc && qtyTrig){ flags.push("QTY"); nQty++; }
+        if(oplOverride) nOplKept++;
+        /* a stay that had cargo but is STILL demoted because of an OPL report (the override did
+           NOT save it — uniform OPL=TRUE, or cargo not at berth like a real STS). The Leg-Wise
+           view shows 📦 + a red OPL badge for these; an OVERRIDDEN stay (poc true) gets neither
+           flag, so it renders as a clean port of call (owner decision 2026-07-24b). */
+        const oplCargo = oplHit && cargoTest && !poc;
         /* 2026-07-23 (Aurvin, owner instruction): record WHICH cargo operation was seen at
            this stay (ASSOCIATED_ACTIVITY), for the breakdown's 📦 tooltip. Read-only — it
-           does not take part in the arrival/departure ladder or the POC decision above. */
-        if(poc && ops.length){
+           does not take part in the arrival/departure ladder or the POC decision above.
+           2026-07-24: also emit these for an OPL-demoted stay so its 📦 tooltip can name the op. */
+        if(ops.length && (poc || oplCargo)){
           if(ops.some(m=>m.aa==="CARGO_LOADING"||m.aa==="CARGO_LOADING_STS"))       flags.push("LOAD");
           if(ops.some(m=>m.aa==="CARGO_DISCHARGING"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("DISCH");
           if(ops.some(m=>m.aa==="CARGO_LOADING_STS"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("STS");
         }
-        if(oplHit && cargoTest) nOPL++;
+        if(oplCargo){ nOPL++; flags.push("OPLCARGO"); }
         if("POC" in col){
           const filePoc = M.some(m=>m.pocFile==="YES");
           if(filePoc!==poc){ flags.push("MISMATCH"); nMismatch++; }
@@ -1077,6 +1126,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     if(nDerived) notes.push(nDerived+" port stay(s): regulatory ARRIVAL/DEPARTURE derived from the report chain (EOSP/SOSP are sea-passage markers, not the arrival/departure) — consumption before arrival / after departure is attributed to the voyage. The file's POC column was ignored; Port of Call was derived from cargo operations and port limits.");
     if(nTransit) notes.push(nTransit+" stay(s) had no berth / anchorage / drifting / bunkering period — pure transit, merged into the adjacent voyage (no port-stay row).");
     if(nOPL) notes.push(nOPL+" stay(s) with cargo operations OUTSIDE port limits (e.g. STS) — classified as transit, not a port of call.");
+    if(nOplKept) notes.push(nOplKept+" stay(s) had INCONSISTENT OUTSIDE_PORT_LIMIT flags but cargo recorded AT_BERTH — the stray OPL flag was treated as misreporting and the stay KEPT as a port of call (owner rule 2026-07-24b).");
     if(nQty) notes.push(nQty+" stay(s) classified as Port of Call by the cargo-quantity fallback (CARGO_QTY changed by >5% of DWT or 0↔loaded with no recorded cargo operation"+(usedDefaultDwt?"; DWT unknown — default "+MDA_DEFAULT_DWT.toLocaleString()+" mt used":"")+") — marked ❗ on the row.");
     if(nMismatch) notes.push(nMismatch+" stay(s) where the file's POC column disagrees with the derived classification — the derived result is used; marked ⚠ on the row.");
     if(nIncomplete) notes.push(nIncomplete+" stay(s) truncated by the file boundary — derived from the available side only and flagged incomplete. Upload ±1 month around year ends where possible.");
@@ -1329,7 +1379,8 @@ function applyImport(res, label, extraNotes, reports, vessel){
       }
       /* multi-year awareness (2026-07-16): the displayed year stays user-driven */
       const yearsIn = [...new Set(res.rows.map(r=>String(r.tStart||r.tEnd||"").slice(0,4)).filter(x=>/^\d{4}$/.test(x)))].sort();
-      if(yearsIn.length>1) notes.push("The file spans reporting years "+yearsIn.join(" and ")+". The reporting year selected in Settings ("+S.year+") decides which rows are calculated — rows of the other year(s) stay in the list, greyed out, and are included the moment you switch the year.");
+      initDateFilters();   // 2026-07-24: default Year to the latest year just imported; fill its window
+      if(yearsIn.length>1) notes.push("The file spans reporting years "+yearsIn.join(" and ")+". The Year selector now shows the latest ("+S.year+"); each year's rows are shown when that Year is picked (Workspace / Report-Wise / Leg-Wise). The Voyage-Wise tab has its own date picker that can span years.");
       save(); renderAll(); showTab("work");
       if(res.annual){
         try{
@@ -1455,15 +1506,44 @@ function rowHtml(row, ri){
      are greyed and excluded from every KPI until the year selector matches them */
   const ry=String(S.year), ya=row.tStart?String(row.tStart).slice(0,4):null, yb=row.tEnd?String(row.tEnd).slice(0,4):null;
   const outYear = row.yearPart? String(row.yearPart)!==ry : ((ya||yb) && ya!==ry && yb!==ry);
+  /* 2026-07-24: when a From/To range is active it — not the year — decides inclusion/greying */
+  const dfOn = dateFilterActive();
+  const outRange = dfOn && !rowInRange(row);
+  const isEdge  = dfOn && !outRange && rowIsEdge(row);
+  const greyed  = dfOn ? outRange : outYear;
+  const dfChip = outRange
+    ? `<span class="zbadge zb-OMR" title="This row's period is outside the selected From/To date range. Excluded from ALL KPIs; widen or clear the range to include it.">🗓 outside From/To range</span>`
+    : (isEdge? `<span class="zbadge zb-EDGE" title="This row's period starts before From or ends after To. Per your rule it is counted IN FULL, so range totals may slightly exceed the consumption strictly inside the window.">🗓 straddles range edge — counted in full</span>`:"");
   /* country on mouse-over (2026-07-16): ports show their country when hovering the row title */
   const cTip = row.kind==="port"
     ? (row.port&&row.port.c? portCountryName(row.port.c) : "")
     : [row.fromPort&&row.fromPort.c?portCountryName(row.fromPort.c):"", row.toPort&&row.toPort.c?portCountryName(row.toPort.c):""].filter(Boolean).join(" → ");
-  const yearChip = outYear
-    ? `<span class="zbadge zb-OMR" title="Dated ${esc(ya||yb)} — outside the ${ry} reporting year selected in Settings. Excluded from ALL KPIs; switch the reporting year to include it.">🗓 ${esc(ya||yb)} — excluded from ${ry}</span>`
-    : (row.splitYear? `<span class="zbadge" style="background:#eef3f8;color:#38607a" title="One year-part of an activity that crossed 31 Dec — it carries exactly the consumption that occurred in ${esc(String(row.yearPart))} (straddling report periods pro-rated by time).">🗓 split at year boundary</span>` : "");
+  const yearChip = dfOn
+    ? ""   /* a date range is active — the reporting-year badge is replaced by the range badge */
+    : (outYear
+      ? `<span class="zbadge zb-OMR" title="Dated ${esc(ya||yb)} — outside the ${ry} reporting year selected in Settings. Excluded from ALL KPIs; switch the reporting year to include it.">🗓 ${esc(ya||yb)} — excluded from ${ry}</span>`
+      : (row.splitYear? `<span class="zbadge" style="background:#eef3f8;color:#38607a" title="One year-part of an activity that crossed 31 Dec — it carries the reports dated in ${esc(String(row.yearPart))} (each report counted whole in the year of its own date; no proration across midnight).">🗓 split at year boundary</span>` : ""));
   const incompleteChip = derivedIncompleteChip(row);
-  const title = `<b style="font-size:13px${cTip?";cursor:help":""}"${cTip?` title="${esc(cTip)}"`:""}>${esc(composeLabel(row))}</b>${omrChip}${yearChip}${incompleteChip}`;
+  const title = `<b style="font-size:13px${cTip?";cursor:help":""}"${cTip?` title="${esc(cTip)}"`:""}>${esc(composeLabel(row))}</b>${omrChip}${yearChip}${dfChip}${incompleteChip}`;
+  const tf = fmtRange(row.tStart,row.tEnd);
+  /* the two datetime-local inputs already show the exact from/to — no need to also repeat it as
+     a summary span (that's only shown in the collapsed/non-editable view below). lang="en-GB" on
+     the inputs forces the native picker to 24-hour time instead of AM/PM (Chromium browsers). */
+  const dateBlock = S.showDates
+    ? `<div class="inline" style="max-width:550px">
+      <div><label>From date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tStart||"")}" onchange="updTime(${ri},'tStart',this.value)"></div>
+      <div><label>To date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tEnd||"")}" onchange="updTime(${ri},'tEnd',this.value)"></div>
+      <div style="max-width:90px"><label>Hours</label><input type="number" step="any" min="0" value="${row.hours??""}" oninput="upd('rows.${ri}.hours',num(this.value))"></div>
+    </div>`
+    : (tf?`<div style="margin-top:4px;font-size:11px;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(tf)}</div>`:"");
+  /* 2026-07-26k (Aurvin, owner instruction, layout-only): on the VOYAGE card, From/To date-
+     time now sits ABOVE the Distance/Cargo row (it used to render below it, appended after
+     the whole `head` block). Moved `dateBlock` to sit between the port/zone inline row and
+     the distance/cargo inline row, inside the voyage template itself, instead of being
+     appended after `head` for every row kind. The AT BERTH card has no distance/cargo row to
+     reorder against, so its dateBlock placement (right after `head`) is unchanged — only the
+     final return below no longer re-appends dateBlock for a voyage row (it's already inside
+     `head`), to avoid rendering it twice. No calculation, field, or data change. */
   const head = row.kind==="voyage"
     ? `<div class="rhead"><span class="tag">VOYAGE</span>${title}<div style="margin-left:auto"><button class="del" onclick="S.rows.splice(${ri},1);save();renderWorkspace()">Remove</button></div></div>
        <div class="inline">
@@ -1472,6 +1552,7 @@ function rowHtml(row, ri){
          ${portInputHtml(ri,'toPort',row.toPort,'To port')}
          <div style="max-width:120px"><label>To zone</label><select onchange="setZone(${ri},'to',this.value)">${zoneOptions(row.to)}</select></div>
        </div>
+       ${dateBlock}
        <div class="inline">
          <div style="max-width:180px"><label>Distance nm</label><input type="number" step="any" min="0" value="${row.dist??""}" oninput="upd('rows.${ri}.dist',num(this.value))"></div>
          <div style="max-width:180px"><label>Cargo mt (SCC)</label><input type="number" step="any" min="0" value="${row.cargo??""}" oninput="upd('rows.${ri}.cargo',num(this.value))"></div>
@@ -1485,20 +1566,9 @@ function rowHtml(row, ri){
            <div class="chk" style="margin-top:6px"><input type="checkbox" ${row.poc!==false?"checked":""} onchange="S.rows[${ri}].poc=this.checked;save();renderWorkspace()"> ${row.poc!==false?"YES — port of call":"NO — transit"}</div></div>
          <div style="flex:1"></div>
        </div>`;
-  const tf = fmtRange(row.tStart,row.tEnd);
-  /* the two datetime-local inputs already show the exact from/to — no need to also repeat it as
-     a summary span (that's only shown in the collapsed/non-editable view below). lang="en-GB" on
-     the inputs forces the native picker to 24-hour time instead of AM/PM (Chromium browsers). */
-  const dateBlock = S.showDates
-    ? `<div class="inline" style="max-width:550px">
-      <div><label>From date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tStart||"")}" onchange="updTime(${ri},'tStart',this.value)"></div>
-      <div><label>To date/time (UTC) — optional</label><input type="datetime-local" lang="en-GB" value="${esc(row.tEnd||"")}" onchange="updTime(${ri},'tEnd',this.value)"></div>
-      <div style="max-width:90px"><label>Hours</label><input type="number" step="any" min="0" value="${row.hours??""}" oninput="upd('rows.${ri}.hours',num(this.value))"></div>
-    </div>`
-    : (tf?`<div style="margin-top:4px;font-size:11px;color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">${esc(tf)}</div>`:"");
-  return `<div class="rowcard${row.kind==="port"?" portcard":""}"${outYear?' style="opacity:.55"':''}>
+  return `<div class="rowcard${row.kind==="port"?" portcard":""}"${greyed?' style="opacity:.55"':''}>
     ${head}
-    ${dateBlock}
+    ${row.kind==="voyage"? "" : dateBlock}
     ${(row.fuels||[]).length? fuelHeaderHtml():""}${(row.fuels||[]).map((fr,fi)=>fuelLineHtml(ri,fi,fr)).join("")}
     <button class="add" onclick="S.rows[${ri}].fuels.push({fuelId:'HFO',tonnes:0,price:0});save();renderWorkspace()">+ Fuel</button>
   </div>`;
@@ -1507,23 +1577,40 @@ function rowHtml(row, ri){
 /* ---------- WORKSPACE (live) ---------- */
 function renderWorkspace(){
   const el = document.getElementById("tab-work");
+  /* 2026-07-25d (owner instruction): the vessel band and the Year/From/To date-filter bar
+     used to be two separate rows (band, then renderDateFilterBar('year') underneath), each
+     carrying its own Year selector. Merged into ONE row here — vessel fields, then From/To/
+     UTC/Clear straight after — with only the band's own Year select kept (still calls the
+     same dfYear() the removed bar's selector called). Placed OUTSIDE the .ws two-column grid
+     so it spans the full width, over the KPI panel too, like the Leg-Wise/Report-Wise bar. */
+  const y=Number(S.year)||2026, d=S.dateFilter||{};
+  const lo=`${y}-01-01T00:00`, hi=`${y}-12-31T23:59`;
+  const narrowed = (d.fromISO||lo)!==lo || (d.toISO||hi)!==hi;
+  const band = `
+  <div class="card noprint band dfbar" style="background:var(--blue2);border-color:#bcd9de">
+    <b style="font-size:13px">${esc(S.ship.name||"Vessel")}</b>
+    <span class="bsep">·</span>
+    <select class="bandsel" title="Ship type (CII G2). Also decides whether the ship's size is measured in deadweight (DWT) or gross tonnage (GT)." onchange="updBand('ship.typeId',this.value)">${SHIP_TYPES.map(t=>`<option value="${t.id}" ${t.id===S.ship.typeId?"selected":""}>${esc(t.name)}</option>`).join("")}</select>
+    <span class="bsep">·</span>
+    <input class="bandnum" type="number" step="any" min="0" value="${S.ship.capacity??""}" title="Ship capacity — deadweight (DWT) or gross tonnage (GT) depending on the ship type. Drives the CII transport-work denominator." oninput="upd('ship.capacity',num(this.value))">
+    <b>${(TYPE_BY_ID[S.ship.typeId]||{}).capUnit||""}</b>
+    <span class="bandtail">
+      <span class="bsep">·</span>
+      <span style="font-size:12px">year</span>
+      <select class="bandsel bandyear" title="Reporting year. Picking a year fills the date window below to that whole year; rows outside it are greyed and excluded from every KPI." onchange="dfYear(this.value)">${[2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option ${yy===y?"selected":""}>${yy}</option>`).join("")}</select>
+      <span class="dfld" style="margin-left:6px">📅 From</span>
+      <input type="datetime-local" lang="en-GB" min="${lo}" max="${hi}" value="${esc(d.fromISO||lo)}" onchange="dfSet('fromISO',this.value)" title="Window start within ${y} (UTC)">
+      <span class="dfld">To</span>
+      <input type="datetime-local" lang="en-GB" min="${lo}" max="${hi}" value="${esc(d.toISO||hi)}" onchange="dfSet('toISO',this.value)" title="Window end within ${y} (UTC)">
+      <span class="dfutc">UTC</span>
+      ${narrowed?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the narrowed window — reset From/To to the whole of ${y}" onclick="dfClearRange()">✕ Clear</button>`:''}
+      <span style="margin-left:4px">${info("<b>Quick edits (2026-07-22g):</b> ship type, capacity and reporting year can be changed right here — they are the <i>same</i> settings as on the 🚢 Settings tab, not a copy, so a change in either place shows in both and recalculates everything immediately. Everything else about the vessel still lives on the Settings tab.<br><br><b>Capacity unit:</b> cargo ships (bulk carrier, tanker, container, general cargo…) are measured in <b>DWT</b> (deadweight — how much weight the ship can carry); passenger and ro-ro ships in <b>GT</b> (gross tonnage — enclosed volume). If you change the ship type and the unit flips, the number you typed is <b>kept as-is</b> and only the label changes — check it still makes sense for the new unit.<br><br><b>Date window:</b> picking a Year fills From/To to that whole year; rows outside the window are greyed and excluded from every KPI. ✕ Clear resets to the whole year.")}</span>
+    </span>
+  </div>`;
   el.innerHTML = `
+  ${band}
   <div class="ws">
     <div>
-      <div class="card noprint band" style="background:var(--blue2);border-color:#bcd9de">
-        <b style="font-size:13px">${esc(S.ship.name||"Vessel")}</b>
-        <span class="bsep">·</span>
-        <select class="bandsel" title="Ship type (CII G2). Also decides whether the ship's size is measured in deadweight (DWT) or gross tonnage (GT)." onchange="updBand('ship.typeId',this.value)">${SHIP_TYPES.map(t=>`<option value="${t.id}" ${t.id===S.ship.typeId?"selected":""}>${esc(t.name)}</option>`).join("")}</select>
-        <span class="bsep">·</span>
-        <input class="bandnum" type="number" step="any" min="0" value="${S.ship.capacity??""}" title="Ship capacity — deadweight (DWT) or gross tonnage (GT) depending on the ship type. Drives the CII transport-work denominator." oninput="upd('ship.capacity',num(this.value))">
-        <b>${(TYPE_BY_ID[S.ship.typeId]||{}).capUnit||""}</b>
-        <span class="bandtail">
-          <span class="bsep">·</span>
-          <span style="font-size:12px">year</span>
-          <select class="bandsel bandyear" title="Reporting year. Rows dated outside it are greyed out and excluded from every KPI." onchange="updBand('year',Number(this.value))">${[2024,2025,2026,2027,2028,2029,2030].map(y=>`<option ${y===S.year?"selected":""}>${y}</option>`).join("")}</select>
-          <span style="margin-left:4px">${info("<b>Quick edits (2026-07-22g):</b> ship type, capacity and reporting year can be changed right here — they are the <i>same</i> settings as on the 🚢 Settings tab, not a copy, so a change in either place shows in both and recalculates everything immediately. Everything else about the vessel still lives on the Settings tab.<br><br><b>Capacity unit:</b> cargo ships (bulk carrier, tanker, container, general cargo…) are measured in <b>DWT</b> (deadweight — how much weight the ship can carry); passenger and ro-ro ships in <b>GT</b> (gross tonnage — enclosed volume). If you change the ship type and the unit flips, the number you typed is <b>kept as-is</b> and only the label changes — check it still makes sense for the new unit.")}</span>
-        </span>
-      </div>
       <h4 class="sec" style="margin-top:0">Voyages &amp; port stays — edit anything, results update live → ${info("<b>Scope per row:</b> EU ETS &amp; FuelEU — EEA↔EEA and at berth EEA 100%, EEA↔other 50% (euets-art3ga); UK ETS — UK→UK voyages and UK in-port only (ukets-sch2a-p7); at-berth scope applies only when the stay is a <b>port of call</b> (POC toggle on each port row); CII &amp; SCC count all activity (imo-g1-s4).<br><br>Import a DNV OVD Log Abstract CSV, an MDA event-log export (.xlsx/.csv) or a THETIS-MRV GHG Emissions XML from the header bar to fill this list automatically.")}</h4>
       <div class="noprint" style="display:flex;gap:22px;flex-wrap:wrap">
         <div class="chk"><input type="checkbox" ${S.showDates?"checked":""} onchange="S.showDates=this.checked;save();renderWorkspace()"> 🕓 Optional date entry ${info("Shows From/To date-time fields on each row — mainly useful for seeing which report period an OVD-imported row covers.")}</div>
@@ -1547,6 +1634,253 @@ const fmt = (x,d=2)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-G
 const fmtI = (x)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:0});
 const fmtF = (x,d=2)=> x==null||isNaN(x) ? "—" : Number(x).toLocaleString("en-GB",{maximumFractionDigits:d,minimumFractionDigits:d});
 function ratingColor(r){ return {A:"var(--ra)",B:"var(--rb)",C:"var(--rc)",D:"var(--rd)",E:"var(--re)"}[r]||"#888"; }
+
+/* 2026-07-26 (Task 1, Aurvin): "CII Percentage" shown next to the CII rating badge.
+   Plain meaning: how big the ship's ACHIEVED carbon intensity is compared with the
+   intensity the IMO REQUIRES for that year, expressed as a percentage.
+     CII Percentage = Attained CII x 100 / Required CII
+   Under 100% = better than required (good), over 100% = worse than required.
+   Display-only: it is derived from figures engine.js already computes (c.attained,
+   c.ciiReq) — no regulatory calculation is changed. Returns null when either input is
+   missing or the required value is zero, so the box can show "—" instead of Infinity. */
+function ciiPctOfRequired(c){
+  if(!c || c.attained==null || c.ciiReq==null || !isFinite(c.attained) || !isFinite(c.ciiReq) || c.ciiReq===0) return null;
+  return c.attained*100/c.ciiReq;
+}
+
+/* 2026-07-26c (Task 2, Aurvin): PER-LEG IMO figures for the Leg-Wise table.
+   ------------------------------------------------------------------------------------
+   IMPORTANT CAVEAT, stated once here and surfaced to the user in the IMO header tooltip:
+   CII is defined by the IMO over a FULL CALENDAR YEAR for the whole ship. A single leg
+   has no CII in law. What these show is an INDICATIVE figure — "what the ship's CII would
+   be if the entire year looked like this one leg" — measured against that year's real
+   required CII and its real A-E bands (those come from ship type + capacity + year, which
+   ARE ship-level properties, so applying them to a leg is legitimate).
+   Two consequences the owner accepted (2026-07-26c) and the tooltip spells out:
+     1. Berth stays get no CII (no distance to divide by), so at-berth CO2 sits in the
+        ANNUAL numerator but in no leg — leg figures therefore read BETTER than the annual
+        CII. They do not sum to it.
+     2. A rating letter on one leg is not a compliance position.
+   No engine.js change: both figures are derived from numbers computeAll already produces
+   (det.co2 = CII-basis CO2, all fuel, CO2 only, tonnes; det.dist; det.tw). */
+
+/* the capacity the CII denominator uses — read from the SAME place js/engine.js reads it
+   (state.ship.capacity), so the two can never drift apart. NOT g2.cap, which is the
+   possibly-CAPPED reference capacity used for the ciiRef curve, not for attained CII. */
+function ciiCapacityOf(state){ return Number(((state||S).ship||{}).capacity)||0; }
+
+/* 2026-07-26d (Aurvin, owner instruction): "if the distance is zero or the percentage/EEOI is
+   too high, let's put a dash". A short hop with a lot of fuel behind it — a 4 nm shift with
+   two days of port stay attached, say — divides a real CO₂ figure by a near-zero denominator
+   and produces a CII or an EEOI in the thousands. That is arithmetic, not performance, and
+   showing it as a rating would be actively misleading. Above these cut-offs the table shows a
+   dash instead, and the hover tells you the raw value and why it was withheld — the number is
+   never silently discarded. Both are DISPLAY thresholds only; nothing is excluded from any
+   total, and no regulatory calculation is affected.
+   Chosen deliberately generous so a merely bad voyage still gets its rating: a real E is
+   roughly 120-130% of required, so 1000% is ~8x the worst genuine rating; a laden bulk-carrier
+   EEOI sits around 5-30 gCO₂/t·nm, so 10,000 is ~300x a normal figure. Raise or lower them
+   here if a real voyage ever gets suppressed. */
+const CII_PCT_IMPLAUSIBLE = 1000;      // % of required CII
+const EEOI_IMPLAUSIBLE    = 10000;     // gCO₂/t·nm
+
+/* Indicative attained CII for one leg or one voyage group, plus its rating letter and CII
+   Percentage. attained = CO2 (grams) / (capacity x distance) — the annual formula, scoped to
+   whatever period is passed in. Returns null when there is nothing to show at all (no
+   distance, no capacity), or a {suppressed:true} result when the figure is implausible. */
+function legCII(d, cii, state){
+  if(!d || !cii || d.kind!=="voyage" || !(d.dist>0)) return null;
+  return ciiFrom(Number(d.co2)||0, d.dist, cii, state);
+}
+
+/* the shared core, so a leg (legCII) and a whole voyage group (vwGroupCII) can never disagree
+   about the formula, the bands or the implausibility cut-off */
+function ciiFrom(co2_t, dist, cii, state){
+  const cap = ciiCapacityOf(state);
+  if(!(cap>0) || !(dist>0) || !cii || !cii.bounds || cii.ciiReq==null) return null;
+  const attained = co2_t*1e6/(cap*dist);
+  if(!isFinite(attained)) return null;
+  const pct = ciiPctOfRequired({attained, ciiReq:cii.ciiReq});
+  if(pct!=null && pct > CII_PCT_IMPLAUSIBLE) return { attained, pct, rating:null, suppressed:true };
+  return { attained, rating: ciiRatingOf(attained, cii.bounds), pct, suppressed:false };
+}
+
+/* the A-E ladder, identical to js/engine.js line ~598 — kept as its own function so the
+   leg rows and the TOTAL row can never disagree about where a band starts. */
+function ciiRatingOf(attained, b){
+  if(attained==null || !b) return null;
+  return attained<=b.sup?"A":attained<=b.low?"B":attained<=b.up?"C":attained<=b.inf?"D":"E";
+}
+
+/* IMO EEOI (MEPC.1/Circ.684) for one leg: TANK-TO-WAKE, CO2 ONLY, in gCO2 per tonne-mile.
+   = leg CO2 (grams) / transport work (cargo t x laden distance nm).
+   Deliberately NOT the Sea Cargo Charter intensity, which is well-to-wake CO2e (AR6) and
+   also carries in the preceding ballast leg's and the port stays' emissions. This one is
+   the leg's own emissions over the leg's own cargo-miles — nothing carried in or out.
+   Returns null when there is no transport work (berth stay, or a ballast leg with no
+   cargo on its SOSP report), which the table renders as a dash. */
+function legEEOI(d){
+  if(!d || d.kind!=="voyage" || !(d.tw>0)) return null;
+  const v = (Number(d.co2)||0)*1e6/d.tw;
+  return isFinite(v) ? v : null;
+}
+
+/* 2026-07-26u (Aurvin, owner instruction): PORT STAY rows have no distance, so the CII column
+   used to show a plain dash there (see the isBerth branch in breakdownGrid's imoLeg). The
+   owner asked for that space to carry something useful instead: the equivalent HFO fuel
+   consumption per day for the stay — "if all the fuel actually burned in port had been HFO,
+   how many tonnes a day was that". This is a DISPLAY-ONLY, informational figure — not a
+   regulatory value, not part of any CII/EU ETS/UK ETS/FuelEU calculation, and engine.js is
+   untouched.
+   2026-07-26v (Aurvin, owner instruction, Task 1 this session): the same idea, for VOYAGE
+   rows — equivalent HFO fuel consumption per NAUTICAL MILE (kg/nm), shown as a second line
+   under the CII pill rather than replacing anything (a voyage row's CII pill is real and
+   stays exactly as it was). Same energy-equivalent recipe as t/d, owner-confirmed unchanged
+   for this leg-distance version: all fuel actually burned (full tonnes, not the narrower
+   "eligible" mass), converted to HFO-equivalent mass via LCV, this time expressed in KG and
+   divided by the leg's own distance (nm) instead of a duration. Also NO plausibility cutoff
+   (owner's explicit choice, same as t/d) — kg/nm always shows its raw value even on a leg
+   whose CII pill above it is itself withheld as implausible (2026-07-26v: the two figures
+   are allowed to disagree on whether a leg "looks right"; kg/nm is a separate, simpler ratio
+   with no A-E rating riding on it, so it doesn't need the same protection).
+   Both t/d and kg/nm share the same core conversion (energy → HFO-equivalent TONNES),
+   factored into legHfoEqTonnes() below so the two can never drift apart on that shared step;
+   they differ only in their denominator (duration vs distance) and their final unit
+   (tonnes/day vs kg/nm — hence the extra ×1000 in legHfoEqPerNm). */
+function legHfoEqTonnes(d){
+  if(!d || !d.fuels || !d.fuels.length) return null;
+  const hfoLcv = (FUEL_BY_ID.HFO||{}).lcv;
+  if(!hfoLcv) return null;
+  let energyMJ = 0;
+  for(const fu of d.fuels){
+    const fb = FUEL_BY_ID[fu.id];
+    if(fb && fb.lcv && fu.tonnes) energyMJ += Number(fu.tonnes)*1e6*fb.lcv;
+  }
+  if(!(energyMJ>0)) return null;
+  return energyMJ/(hfoLcv*1e6);
+}
+
+/* Formula (owner-confirmed, energy-equivalent basis):
+     1. energy (MJ) = Σ over every fuel actually burned on the stay of tonnes × that fuel's
+        own LCV (MJ/g, js/engine.js FUELS) × 1e6 (t→g). Uses the FULL tonnes consumed — not
+        the narrower "eligible" mass the Energy column uses — because this is meant to read
+        as the stay's real physical fuel burn, not a regulation-scoped subset.
+     2. HFO-equivalent tonnes = that energy ÷ HFO's own LCV (MJ/g × 1e6) — i.e. "how many
+        tonnes of HFO would carry the same energy". (legHfoEqTonnes, shared with kg/nm below.)
+     3. ÷ the stay's duration in days (tEnd − tStart, fractional, 24-hour basis — a 30-hour
+        stay divides by 1.25, not 2).
+   Returns null (rendered as a dash) only for genuine missing-data cases: no fuel recorded,
+   or no usable start/end timestamps to measure a duration against. Per owner instruction
+   (2026-07-26u) there is NO plausibility cutoff on the result itself, unlike legCII/legEEOI
+   above — a very short, fuel-heavy stay is allowed to show a large t/d value rather than
+   being suppressed to a dash; the owner's own expectation is that real values normally read
+   as a single low digit (e.g. "2.4 t/d"). */
+function legHfoEqPerDay(d){
+  if(!d || d.kind==="voyage") return null;
+  const hfoEqTonnes = legHfoEqTonnes(d);
+  if(hfoEqTonnes==null) return null;
+  const startMs = d.tStart? new Date(d.tStart).getTime() : NaN;
+  const endMs   = d.tEnd?   new Date(d.tEnd).getTime()   : NaN;
+  if(!isFinite(startMs) || !isFinite(endMs) || endMs<=startMs) return null;
+  const days = (endMs-startMs)/86400000;
+  if(!(days>0)) return null;
+  const perDay = hfoEqTonnes/days;
+  return isFinite(perDay) ? perDay : null;
+}
+
+/* 2026-07-26v (Task 1, Aurvin): same core (legHfoEqTonnes) as legHfoEqPerDay, but for a
+   VOYAGE leg — divides by the leg's own distance (nm) instead of a duration, and reports KG
+   (×1000) rather than tonnes, since kg/nm reads as a more natural-sized number than t/nm
+   would (a typical leg is tens to low-hundreds of kg/nm, which would be a tiny, hard-to-read
+   fraction of a tonne). Returns null only for genuine missing data — no fuel, not a voyage
+   row, or no positive distance to divide by. No plausibility cutoff (see note above). */
+function legHfoEqPerNm(d){
+  if(!d || d.kind!=="voyage" || !(d.dist>0)) return null;
+  const hfoEqTonnes = legHfoEqTonnes(d);
+  if(hfoEqTonnes==null) return null;
+  const perNm = (hfoEqTonnes*1000)/d.dist;
+  return isFinite(perNm) ? perNm : null;
+}
+
+/* the PORT STAY CII-column cell: value + small "t/d" unit (owner-specified example "2.4 t/d"
+   with the unit shown smaller), or a dash with an explanation when there is nothing to show.
+   The full formula lives in the IMO section's info icon (iIMO); this hover title gives the
+   quick per-row version so the owner does not have to leave the row to see what fed the
+   number. */
+function hfoEqCellHtml(v){
+  if(v==null) return `<span style="color:#94a3b8;font-size:10.5px;cursor:help" title="No equivalent HFO fuel/day: either no fuel is recorded for this port stay, or its start/end timestamps can't be used to measure a duration.">—</span>`;
+  return `<span style="cursor:help" title="Equivalent HFO fuel consumption per day for this port stay: all fuel actually burned during the stay, converted to how much HFO would carry the same energy, divided by the stay's duration (24-hour basis). Informational only — not a regulatory figure.">${fmtF(v,1)}<span style="font-size:70%;font-weight:400;color:#64748b;margin-left:2px">t/d</span></span>`;
+}
+
+/* 2026-07-26v (Task 1, Aurvin): the VOYAGE-leg CII-column SECOND LINE — equivalent HFO
+   fuel/nm, sits below the CII pill (see hfoEqPillWrapCss / imoLeg in breakdownGrid). Same
+   dash-with-title treatment as hfoEqCellHtml above when there's nothing to show, kept as its
+   own small block so it stacks under the pill rather than sitting beside it. */
+function hfoEqPerNmCellHtml(v){
+  if(v==null) return `<span style="display:block;color:#94a3b8;font-size:9.5px;cursor:help" title="No equivalent HFO fuel/nm: no fuel is recorded for this leg, or it has no distance to divide by.">—</span>`;
+  return `<span style="display:block;font-size:11px;font-weight:600;color:#1e293b;cursor:help" title="Equivalent HFO fuel consumption per nautical mile for this leg: all fuel actually burned, converted to how much HFO would carry the same energy, divided by the leg's distance. Informational only — not a regulatory figure.">${fmtF(v,1)}<span style="font-size:70%;font-weight:400;color:#64748b;margin-left:2px">kg/nm</span></span>`;
+}
+
+/* 2026-07-26m (Aurvin, owner instruction, from a reference photo): the pill is now ONE SOLID
+   COLOUR throughout (the rating colour) with two white ROUNDED-RECTANGLE "cutouts" punched
+   into it for the two numbers — replacing the 2026-07-26l version (three touching segments,
+   only the middle one coloured, the outer two a light grey). The rating letter sits directly
+   on the solid colour with no box of its own; the coloured frame shows through in the small
+   gaps between the letter and each cutout, and around the whole pill via the outer padding.
+   Padding/gaps are deliberately snug per the owner's "reduce [the space] to max possible
+   without looking bad" instruction.
+   Character caps (owner's explicit instruction, independent of the existing
+   CII_PCT_IMPLAUSIBLE / suppressed-CELL logic elsewhere, which withholds the WHOLE cell):
+   inside a cell that IS shown, the % segment shows "—" once it would need more than 3 digits
+   (≥1000%), and the AER segment shows "—" once its whole-number part would need more than 2
+   digits (≥100) — "xx.xx" is the max width the owner asked for. Both keep the pill's width
+   predictable instead of stretching the column for a rare extreme value.
+   Shared by every place a CII figure is shown: the Leg-Wise/Voyage-Wise table cells
+   (ciiCellHtml, size "sm") AND the Results-tab IMO CII card (called directly with size "lg").
+   class="ciipill"/"ciipill-seg"/"ciipill-rat" markers exist purely so self-tests can find the
+   three pieces without depending on exact inline-style substrings that change between sizes. */
+function ciiPillHtml(pct, rating, attained, size){
+  const lg = size==="lg";
+  const pctRounded = pct==null ? null : Math.round(pct);
+  const pctTooWide = pctRounded!=null && Math.abs(pctRounded) >= 1000;
+  const pctTxt = (pct==null || pctTooWide) ? "—" : `${pctRounded}<span style="font-size:60%">%</span>`;
+  const aerTooWide = attained!=null && Math.abs(attained) >= 100;
+  const aerTxt = (attained==null || aerTooWide) ? "—" : fmtF(attained,2);
+  const outerPad = lg? 3 : 2;
+  const gap      = lg? 4 : 3;
+  const rad      = lg? 10 : 6;
+  const segRad   = Math.max(rad-outerPad, 3);
+  const segPad   = lg? "3px 8px" : "1px 5px";
+  const midPad   = lg? "3px 10px" : "1px 6px";
+  const segFont  = lg? "15px" : "11px";
+  const midFont  = lg? "22px" : "12px";
+  return `<span class="ciipill" style="display:inline-flex;align-items:stretch;gap:${gap}px;padding:${outerPad}px;background:${ratingColor(rating)};border-radius:${rad}px;font-variant-numeric:tabular-nums">`+
+         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${pctTxt}</span>`+
+         `<span class="ciipill-rat" style="display:flex;align-items:center;justify-content:center;padding:${midPad};font-weight:800;font-size:${midFont};color:#fff">${rating||"—"}</span>`+
+         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${aerTxt}</span>`+
+         `</span>`;
+}
+
+/* the CII cell's contents: ciiPillHtml above, at table size. Shared by Leg-Wise, Voyage-Wise
+   and both their TOTAL rows, so the two tabs always look and read the same. NB: no min-width
+   anywhere in ciiPillHtml on purpose — the Leg-Wise self-test "row backgrounds also span the
+   full scrolled width" scans this tab for every `min-width:Npx` and requires them all to equal
+   the grid's own width, so a badge carrying its own min-width would break it. */
+function ciiCellHtml(res){
+  if(!res) return `<span style="color:#94a3b8">—</span>`;
+  if(res.suppressed){
+    return `<span style="color:#94a3b8;cursor:help" title="Withheld as implausible: this period works out at ${fmtF(res.pct,0)}% of the required CII (attained ${fmtF(res.attained,2)}), which is over the ${CII_PCT_IMPLAUSIBLE}% display cut-off. That normally means a very short distance with a lot of fuel behind it — e.g. a brief shift with long port stays attached — so the ratio reflects the tiny denominator, not the ship's performance. The consumption itself is still counted in every total and in the annual CII.">—</span>`;
+  }
+  return ciiPillHtml(res.pct, res.rating, res.attained);
+}
+
+/* the IMO EEOI cell — same implausibility treatment as the CII cell above, so the two
+   columns behave consistently. `why` explains the plain-dash case for this table. */
+function eeoiCellHtml(v, why){
+  if(v==null) return `<span style="color:#94a3b8;font-weight:400;font-size:10.5px;cursor:help" title="${esc(why||"No transport work — nothing to divide by.")}">—</span>`;
+  if(v > EEOI_IMPLAUSIBLE) return `<span style="color:#94a3b8;font-weight:400;font-size:10.5px;cursor:help" title="Withheld as implausible: ${fmtF(v,0)} gCO₂/t·nm is over the ${EEOI_IMPLAUSIBLE} display cut-off, roughly 300x a normal laden figure. That normally means very little transport work (a short laden distance, or a very small parcel) with a lot of fuel behind it. The consumption itself is still counted in every total.">—</span>`;
+  return fmtF(v,2);
+}
 
 function ciiBarHtml(c){
   if(c.attained==null) return "<p class='note'>Enter capacity, distance and fuel to compute CII.</p>";
@@ -1602,18 +1936,20 @@ function renderLive(){
     <p class="note">TtW CO₂, all activity worldwide ${info("CO₂ figures are Tank-to-Wake per fuel Cf (imo-g1-s4 / FuelEU Annex II values), covering all activity worldwide — not only the EU/UK-scoped share.")}</p>
   </div>
 
-  <div class="card noprint" style="padding:10px 16px">
-    <span class="note">📊 The detailed <b>voyage &amp; berth breakdown</b> (per-row ETS %, EUA/UKA, eligible energy, CB, penalty) and the FuelEU allocation working are on the <b>⛵ Leg-Wise</b> tab; the MDA-level <b>report-level trace</b> is on the <b>📋 Report-Wise</b> tab — both downloadable as Excel.</span>
-    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('calcs')">Open Leg-Wise →</button>
-    <button class="pill hbtn" style="margin-left:8px" onclick="showTab('trace')">Open Report-Wise →</button>
-  </div>
-
   <div class="card">
     <h2>IMO CII — ${R.year} ${info("<b>Regulatory sources:</b> imo-g1-s4 · imo-g2-s4 · imo-g4-s4 · imo-a6-reg28")}</h2>
+    ${/* 2026-07-26l (Aurvin, owner instruction): the separate rating chip + percentage box are
+         now the SAME 3-segment pill used on Leg-Wise/Voyage-Wise (ciiPillHtml, "lg" size) —
+         CII Percentage · rating letter · attained CII ("AER"), 2 decimals, touching with no
+         gaps. id="ciiPctBox" kept on the wrapper (not the old inner box) so anything that
+         still looks for that id finds the live-updating element. */""}
     <div style="display:flex;gap:16px;align-items:center">
-      <span class="badge" style="background:${ratingColor(c.rating)}">${c.rating??"—"}</span>
+      <div id="ciiPctBox" title="Left: Attained CII × 100 ÷ Required CII (below 100% = better than required). Middle: IMO A–E rating. Right: attained CII itself, aka AER, gCO₂ per ${c.capUnit}·nm.">
+        ${ciiPillHtml(ciiPctOfRequired(c), c.rating, c.attained, "lg")}
+        <div style="margin-top:4px;font-size:9.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;text-align:center">% of required · rating · AER</div>
+      </div>
       <div style="flex:1">
-        <div class="kv"><span>Attained CII</span><b>${fmtF(c.attained,2)} gCO₂/${c.capUnit}·nm</b></div>
+        <div class="kv"><span>Attained CII (AER)</span><b>${fmtF(c.attained,2)} gCO₂/${c.capUnit}·nm</b></div>
         <div class="kv"><span>Required (Z=${c.Z}% <span class="flag">FILL-IN</span>)</span><b>${fmtF(c.ciiReq,2)}</b></div>
       </div>
     </div>
@@ -1784,9 +2120,18 @@ const fmtDict=(d)=> d? Object.entries(d).filter(([,v])=>v>1e-9).map(([k,v])=>k+"
 /* ---- Excel: voyage & berth breakdown (one line per row × fuel; row totals on first line) ---- */
 function downloadBreakdownXlsx(){
   const R=computeAll(S);
+  /* 2026-07-26 (Aurvin, owner instruction): the "CO2 mt (row)" column now follows the same
+     year-specific basis as the on-screen Leg-Wise table — CO2 only before 2026, CO2e (incl.
+     CH4/N2O, GWP set from Settings — AR5 default / AR4) from 2026 onward.
+     2026-07-26p (Aurvin, owner instruction): this is now the Fuel-metrics TOTAL CO2e — full
+     fuel burned, NOT scaled by EU ETS coverage — matching the on-screen column's move out of
+     the EU ETS group. Column relabelled "Total CO2e/CO2" and fed from d.totalCO2e/d.totalCO2
+     (js/engine.js) instead of the EU-ETS-eligible d.etsCO2e/d.etsCO2. See HANDOFF_LOG.md. */
+  const co2EUAr = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
+  const co2ColLbl = R.year>=2026 ? ("Total CO2e mt (row, "+(co2EUAr||"AR5")+")") : "Total CO2 mt (row)";
   const rows=[["Activity","Kind","From (UTC)","To (UTC)","Hours","Distance nm","Cargo mt",
                "EU ETS %","UK ETS %","FuelEU %","Fuel","Tonnes","LCV MJ/g","Eligible EU mt","Eligible energy MJ",
-               "CO2 mt (row)","EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)",
+               co2ColLbl,"EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)",
                /* SCC block, 2026-07-22c */
                "SCC cargo mt (SOSP report)","SCC cargo source","SCC transport work t.nm","SCC TtW tCO2e (fuel)","SCC WtW tCO2e (fuel)",
                "SCC Table 8 factor row (fuel)","SCC biogenic CO2 t (fuel)",
@@ -1803,7 +2148,7 @@ function downloadBreakdownXlsx(){
                  i? "":d.covEU*100, i? "":d.covUK*100, i? "":d.covEU*100,
                  f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
                  (f.lcv&&fu.eligibleEU!=="")? fu.eligibleEU*1e6*f.lcv : "",
-                 i? "":d.co2, i? "":d.euas, i? "":d.ukCO2e, i? "":(d.feuCB!=null? d.feuCB/1e6 : ""), i? "":(d.feuPenalty||0),
+                 i? "":(R.year>=2026? d.totalCO2e : d.totalCO2), i? "":d.euas, i? "":d.ukCO2e, i? "":(d.feuCB!=null? d.feuCB/1e6 : ""), i? "":(d.feuPenalty||0),
                  i? "":(d.kind==="voyage"? d.cargo : ""), i? "":(d.kind==="voyage"? (d.cargoSOSP?"SOSP report":"max per leg (no departure report)") : ""),
                  i? "":(d.tw||""), fu.sccTtW==null?"":fu.sccTtW, fu.sccWtW==null?"":fu.sccWtW,
                  fu.sccLabel||"", fu.sccBio||"",
@@ -1871,6 +2216,14 @@ const TR_CONDS = {
   CANAL_TRANSIT:   { label:'Canal transit', icon:TR_ICONS.route,  color:'#64748b' },
   'NORMAL SAILING':{ label:'Sailing',       icon:TR_ICONS.route,  color:'#64748b' }
 };
+/* 2026-07-25 (Aurvin, owner instruction) — Report-Wise condition labels are abbreviated so the
+   Condition column can be narrower: "Most economic speed"→"Eco Speed", "Manoeuvring"→"Mnvrng",
+   "Anchored"→"Anchor". Matched case-insensitively so it fires whether the label came from
+   TR_CONDS or the raw-OC fallback. Display only — the underlying r.oc value is never changed. */
+function trCondLabel(label){
+  const map = { 'most economic speed':'Eco Speed', 'super slow steaming':'Super slow', 'manoeuvring':'Mnvrng', 'manoeuvering':'Mnvrng', 'anchored':'Anchor' };
+  return map[String(label||"").trim().toLowerCase()] || label;
+}
 const TR_ACTS = {
   AWAITING_ORDERS:      { label:'Awaiting Orders',         icon:TR_ICONS.clock, color:'#d97706' },
   BUNKERING:            { label:'Bunkering',               icon:TR_ICONS.fuel,  color:'#16a34a' },
@@ -1926,6 +2279,92 @@ function trFuelLines(r){
       bg: i%2===1? "#f1f5f9":"transparent" };
   });
 }
+/* 2026-07-26x (Aurvin, owner instruction, this session): Leg-Wise ONLY — from a screenshot
+   comparing the Eligibility badges to the IMO CII pill next to them, the owner asked for the
+   three badges to read as ONE fused pill (like the CII pill's "one shape, four rounded outer
+   corners") instead of three separate square boxes with gaps between them. Asked 3 clarifying
+   questions first (all answered): (1) keep each segment's OWN state color (dark teal 100% /
+   medium teal partial / pale 0%-or-no-data) rather than switch to the CII pill's single-flat-
+   color-with-white-cutouts look — the color is the only way to tell EU ETS / FuelEU / UK ETS
+   apart at a glance, so losing it wasn't wanted; (2) segments touch with a hard seam, no gap
+   and no visible hairline between them; (3) Leg-Wise only for the actual code change —
+   Report-Wise's Eligibility columns are separate TABLE CELLS with their own headers (not
+   adjacent the way these three are), so fusing them is a different, bigger operation, and
+   the owner asked to flag it as a possible follow-up rather than do it now (see HANDOFF_LOG).
+   This is therefore a NEW function, not a restyle of the shared trPctBadge() below — that
+   function is untouched and still drives Report-Wise's per-column badges exactly as before.
+   Technique: one inline-flex container holds the 3 segments at equal width (flex:1 1 0 inside
+   a fixed-width box, same total width the old 3×46px-badges-plus-2×3px-gaps arrangement used,
+   so the pill isn't narrower or wider than before); `overflow:hidden` on the container clips
+   each segment's own square corners to the container's OWN border-radius (6px, matching the
+   "sm"-size CII pill's own radius — see ciiPillHtml's `rad` for size!=="lg" — so the two
+   pills read as the same family of shape side by side), which is what turns 3 separate boxes
+   into 1 visual pill without adding any border/gap between the segments themselves. */
+function elFusedPill(pcts){
+  const seg = p=>{
+    const has = p!=null && !isNaN(p);
+    const v = has? p : 0;
+    /* 2026-07-27a (Aurvin, owner instruction, this session): 100%/50% colours SOFTENED —
+       owner's ask, after 26z shrank the text, was to reduce color intensity on the two darker
+       segments (still distinguishable from each other and from 0%, "don't pinch the eyes").
+       Was #1f3b45 (100%, a near-navy dark teal, ~12:1 contrast against white — very harsh next
+       to 0%'s pale #e4eef0 when the pill is a FUSED shape with no gap between segments, 26x/y)
+       and #5b8791 (50%, ~4:1 contrast). Both DESATURATED (muted toward gray-teal) rather than
+       simply lightened — lightening would have pushed white-text contrast down further right
+       after 26z made that text smaller/thinner, hurting legibility exactly when it matters
+       most; desaturating keeps a similar or BETTER luminance/contrast (100%: #3a5157 ≈8.4:1,
+       was ≈11.9:1; 50%: #5f7f87 ≈4.3:1, was ≈3.95:1) while reading as visibly softer/less
+       vivid. The three-way lightness order is preserved (100% darkest, 50% mid, 0% palest)
+       so distinguishability is unchanged. Mirrored into the two Eligibility info-popover
+       legend swatches (Report-Wise's `reportTraceTable` header tooltip and Leg-Wise's
+       `iEligibility`) so the legend still matches what's actually on screen — see both below.
+       trPctBadge() (dead code since 26y, not deleted) intentionally NOT updated to match —
+       it renders nothing anywhere, so touching its colours would be cosmetic churn with no
+       visible effect; flagged again in HANDOFF_LOG alongside the earlier dead-code note. */
+    /* 2026-07-26b (Aurvin, owner instruction, this session): owner compared the "100%/100%/0%"
+       pill to the "50%/50%/0%" pill (screenshot, At-EU vs EU->Non-EU legs) and said the 100%-
+       vs-50% contrast had gotten too close since 27a's desaturation, and asked for 50% made
+       "even lighter". #5f7f87 (50%, ~4.3:1 white-text contrast, ~1.95:1 against the 100% colour
+       #3a5157) -> #6f8d94 (~3.55:1 white-text contrast, ~2.37:1 against #3a5157 — a real, visible
+       lightening of the 100-vs-50 gap) while staying ~3.0:1 against the 0% colour #e4eef0 so the
+       "partial" and "0%" bands are still clearly two different colours, not just one blurring
+       into the next. Mirrored into the two Eligibility info-popover legend swatches (Report-
+       Wise's `reportTraceTable` header tooltip and Leg-Wise's `iEligibility`) per the 27a note
+       above, so the legend still matches what's on screen. */
+    const bg = !has||v<=0 ? "#e4eef0" : v>=100 ? "#3a5157" : "#6f8d94";
+    const fg = !has||v<=0 ? "#7c8fa0" : "#ffffff";
+    const t = has? ((v%1===0? v.toFixed(0): v.toFixed(1))+"%") : "–";
+    /* 2026-07-26z (Aurvin, owner instruction, this session): text inside the fused pill's
+       segments made non-bold + smaller (was font-weight:700/font-size:11px, matching the old
+       trPctBadge() styling) — owner's ask, once Report-Wise and Leg-Wise shared this ONE
+       function (26y), was to lighten the label since the badge itself now carries the visual
+       weight (fused pill shape + solid colour) that the old bold text used to help provide.
+       font-weight:400 (was 700); font-size:9.5px (was 11px) — matches the small-caption sizing
+       already used elsewhere on these two tables (elReasonText's caption is 9px, the IMO kg/nm
+       caption is 9.5px), so the pill's own label now reads at the same scale as its neighbours
+       rather than standing out. Single shared function — this changes BOTH Leg-Wise's eligLeg
+       and Report-Wise's reportTraceTable() badges at once, which is the point (26y made them
+       the same component). NOTE: trPctBadge() below is left untouched/unremoved but is, as of
+       26y, no longer called from anywhere in this file — both tables moved to elFusedPill().
+       Not deleted here since dead-code cleanup wasn't asked for; flagged in HANDOFF_LOG as a
+       possible tidy-up for a future session. */
+    /* 2026-07-26 (Aurvin, owner instruction, from a screenshot comparing this pill to the
+       adjacent CII pill, ciiPillHtml "sm" size): the eligibility pill sat a few px SHORTER
+       than the CII pill next to it. Owner's ask was to match the two pills' heights while
+       keeping this pill's own look otherwise unchanged. Measured in a real Chrome tab against
+       this page's actual inherited body line-height (14px/1.5, styles.css) rather than
+       guessed from the CSS box model: with the OLD padding:3px 0 this pill rendered 20.25px
+       tall vs the CII pill's 24px; padding:5px 0 renders 24.25px — a sub-pixel (~0.25px,
+       antialiasing rounding) difference from 24px, imperceptible, and a clean round number
+       rather than a fragile fractional one. Vertical padding only (3px -> 5px); horizontal
+       padding, font-size/weight and colours are untouched. Single shared function — this
+       pill is used by BOTH Leg-Wise's eligLeg AND Report-Wise's reportTraceTable() badges
+       (26y unified them), so this one change already covers both views; no separate
+       Report-Wise edit needed. */
+    return `<span style="display:flex;align-items:center;justify-content:center;flex:1 1 0;box-sizing:border-box;padding:5px 0;font-size:9.5px;font-weight:400;font-family:${TR_FONT};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
+  };
+  return `<span style="display:inline-flex;width:138px;overflow:hidden;border-radius:6px">${pcts.map(seg).join("")}</span>`;
+}
 /* eligibility badge — dark teal 100%, medium teal partial, pale 0%/out-of-scope-or-not-in-source */
 function trPctBadge(p){
   const has = p!=null && !isNaN(p);
@@ -1933,7 +2372,12 @@ function trPctBadge(p){
   const bg = !has||v<=0 ? "#e4eef0" : v>=100 ? "#1f3b45" : "#5b8791";
   const fg = !has||v<=0 ? "#7c8fa0" : "#ffffff";
   const t = has? ((v%1===0? v.toFixed(0): v.toFixed(1))+"%") : "–";
-  return `<span style="display:inline-block;min-width:40px;text-align:center;padding:3px 6px;border-radius:0;font-size:11px;font-weight:700;font-family:${TR_FONT};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
+  /* 2026-07-24d (Aurvin, owner instruction): switched from min-width (a floor that let "100%"
+     render wider than "50%" or "–") to a FIXED width — every badge is now exactly the same
+     box regardless of its value, including the muted "–" no-data state. box-sizing:border-box
+     so the declared width is the true rendered width; padding is vertical-only since the fixed
+     width plus text-align:center already centers the label. */
+  return `<span style="display:inline-block;box-sizing:border-box;width:46px;text-align:center;padding:3px 0;border-radius:0;font-size:11px;font-weight:700;font-family:${TR_FONT};font-variant-numeric:tabular-nums;background:${bg};color:${fg}">${t}</span>`;
 }
 /* match a raw MDA report to the authoritative aggregated S.rows entry covering its timestamp
    (S.rows and S.mdaReports come from two independent parses of the same import — no shared id —
@@ -1966,21 +2410,19 @@ function trCoverage(r){
   const row = trMatchRow(r);
   if(!row) return { eu:null, uk:null, feu:null };
   const eu = euCoverage(row)*100;
-  /* UK ETS — use the SAME regulatory logic as the totals, at report granularity (2026-07-20,
-     Aurvin). The engine computes covUK = ukCoverage(row) × ukSchemeFraction(row, y); UK ETS
-     maritime is in force only from 1 Jul 2026 (SI 2026/392). The badge must apply
-     ukSchemeFraction to THIS REPORT'S OWN period (r.ts→r.te), NOT the aggregated row's:
-     otherwise every report inside a stay that straddles 1 Jul (e.g. an anchorage spanning
-     late June into July) inherits the whole stay's in-force status and wrongly shows 100% on
-     its June days — the bug reported here. Rules:
-       • frac === 0  (period wholly before the window, or a pre-2026 year) → UK ETS not
-         applicable to this report → dash (null), not a spatial 0%/100%.
-       • frac  >  0  → show the in-scope share = ukCoverage(row) × frac × 100, i.e. exactly the
-         totals' formula. A period straddling 1 Jul therefore shows a partial %, matching the
-         calculation. Undated reports → frac = 1 (counted in full, as in the totals).
+  /* UK ETS — judged WHOLE by the report's OWN listed time (r.t), matching the totals' new
+     report-by-date rule (2026-07-25, Aurvin, owner instruction). UK ETS maritime is in force
+     only from 1 Jul 2026 (SI 2026/392):
+       • a report dated BEFORE 1 Jul 2026 (or any pre-2026 year) → out of scope → dash (null);
+       • a report dated ON/AFTER 1 Jul 2026 → fully in → ukCoverage(row) × 100;
+       • 2027+ → the whole calendar year is in scope.
+     No per-report time-proration across the 1 Jul cut. Undated reports count in full.
      Display-only: engine, totals and workspace rows are untouched. */
-  const frac = ukSchemeFraction({tStart:r.ts, tEnd:r.te}, Number(S.year)||2026);
-  const uk = frac>0 ? ukCoverage(row)*frac*100 : null;
+  const uy = Number(S.year)||2026;
+  const cutMs = Date.parse("2026-07-01T00:00:00Z");
+  const tMs = _utcms(r.t || r.te || r.ts);
+  const inUk = uy<2026 ? false : uy>2026 ? true : (isFinite(tMs) ? tMs>=cutMs : true);
+  const uk = inUk ? ukCoverage(row)*100 : null;
   return { eu, uk, feu:eu };
 }
 /* 2026-07-20: coverage depends on the voyage-continuity annotations (non-call stays);
@@ -2023,7 +2465,7 @@ function trTotalsHtml(){
   const fuels = trTotalsAgg(reps);
   const dash='<span style="color:#94a3b8">—</span>';
   const num=v=>`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
-  const fl=(f,style,val)=>`<div style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
+  const fl=(f,style,val)=>`<div class="trfl" style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
   const col=(get,style)=>`<td style="padding:6px 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,style,get(f))).join("")}</td>`;
   const numStyle=`font-size:12px;font-weight:700;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
   const machStyle=`font-size:12px;font-weight:600;color:#334155;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
@@ -2031,6 +2473,7 @@ function trTotalsHtml(){
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_SEL}z-index:13;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px"></td>
     <td style="padding:${pad};background:#eef2f7;${TR_FREEZE_EVT}z-index:13;font-size:12px;font-weight:700;color:#0f172a;white-space:nowrap;border-right:1px solid #cbd5e1">TOTAL</td>
     <td colspan="4" style="padding:${pad};background:#eef2f7;font-size:11.5px;font-weight:600;color:#475569;white-space:nowrap">${esc(rowselLabel("tr",all.length,S.year).replace(/^Total — /,""))}</td>
+    <td style="padding:${pad};background:#eef2f7;text-align:right">${dash}</td><!-- 2026-07-25: Cargo mt (per-event, not additive) — now sits right of Voyage No, left of Dist -->
     <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_FONT};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,0)}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
@@ -2041,8 +2484,7 @@ function trTotalsHtml(){
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.ae,1))).join("")}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.blr,1))).join("")}</td>
     <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.oth,1))).join("")}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:right;border-right:1px solid #cbd5e1" title="ROB is a stock reading at each event, not a flow — it cannot be summed">${dash}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:right">${dash}</td>`;
+    <td style="padding:${pad};background:#eef2f7;text-align:right;border-right:1px solid #cbd5e1" title="ROB is a stock reading at each event, not a flow — it cannot be summed">${dash}</td>`;
 }
 
 function reportTraceTable(reps){
@@ -2050,7 +2492,7 @@ function reportTraceTable(reps){
   const pad="6px 12px", padV="6px";                         // compact density
   const thBase="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;background:#f8fafc;padding:8px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;vertical-align:bottom";
   const thSub="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;background:#f8fafc;padding:5px 12px;border-bottom:1px solid #e2e8f0";
-  const fl=(f,style,val)=>`<div style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
+  const fl=(f,style,val)=>`<div class="trfl" style="height:17px;line-height:17px;padding:0 12px;background:${f.bg};${style}">${val}</div>`;
   const machStyle=`font-size:12px;color:#64748b;font-family:${TR_FONT};font-variant-numeric:tabular-nums`;
   const dash='<span style="color:#cbd5e1">—</span>';
   TR_LAST = reps;                                           // 2026-07-22: for the totals row
@@ -2065,35 +2507,57 @@ function reportTraceTable(reps){
     const zone=z==="EEA"?"EU":z==="UK"?"UK":null;
     const condHtml = c? `<div style="display:flex;align-items:center;gap:6px">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${c.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="${c.icon}"></path></svg>
-          <span style="font-size:12px;color:#334155;font-weight:500">${esc(c.label)}</span>
+          <span style="font-size:12px;color:#334155;font-weight:500" title="${esc(c.label)}">${esc(trCondLabel(c.label))}</span>
           ${r.opl?'<span style="font-size:9.5px;font-weight:700;letter-spacing:0.05em;color:#b91c1c;background:#fee2e2;padding:1.5px 6px;border-radius:4px" title="OUTSIDE_PORT_LIMIT = TRUE">OPL</span>':""}
         </div>` : dash;
     const actHtml = acts.length? `<div style="display:flex;align-items:center;gap:5px">${acts.map(a=>
         `<span class="actic" data-tip="${esc(a.label)}" aria-label="${esc(a.label)}" tabindex="0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${a.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${a.icon}"></path></svg></span>`).join("")}</div>` : dash;
-    const portNameHtml = `<span style="max-width:18ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom" title="${esc(port)}">${esc(port)}</span>`;
-    const ctryHtml = r.ctry? `<span style="max-width:18ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom" title="${esc(r.ctry)}">${esc(r.ctry)}</span>` : "";
-    const regnHtml = r.regn? `<span style="white-space:nowrap">${esc(r.regn)}</span>` : "";
-    const portSubHtml = [ctryHtml,regnHtml].filter(Boolean).join(' <span style="color:#cbd5e1">·</span> ');
-    const portHtml = port? `<div style="display:flex;flex-direction:column;gap:2px">
-          <span style="font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap">${portNameHtml}${(r.portN&&r.cur)?`<span style="font-size:10px;font-weight:400;color:#94a3b8"> – ${esc(r.cur)}</span>`:""}</span>
-          ${(portSubHtml||zone)?`<div style="display:flex;align-items:center;gap:6px">
-            ${portSubHtml?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap">${portSubHtml}</span>`:""}
-            ${zone?`<span style="font-size:9px;font-weight:700;letter-spacing:0.05em;color:#1d4ed8;background:#dbeafe;padding:1px 5px;border-radius:4px">${zone}</span>`:""}
+    /* 2026-07-25b (Aurvin, owner instruction) — the whole Port cell is capped to 25 CHARACTERS
+       measured at the COUNTRY line's font size (11px): the outer container sets font-size:11px and
+       max-width:25ch, so "25ch" resolves at that 11px font. Both text lines truncate to fit and keep
+       the full value in their hover title (a tooltip is mandatory on every shortened field). The port
+       name is right-truncated (its bigger 12px font means fewer glyphs show before the ellipsis); the
+       LOCODE and the zone badge sit at flex:none so they are never clipped. CURRENT_REGION is still
+       dropped when it is only a compliance-zone token (it duplicated the blue zone badge). */
+    const regnZoneToken = /^(eu\/eea|eea|eu|uk|eu\/eea\s*&\s*uk|non-?eu(\/uk|\/eea)?|other)$/i;
+    const showRegn = r.regn && !regnZoneToken.test(String(r.regn).trim());
+    /* 2026-07-25c (Aurvin, owner instruction): drop the trailing ISO article artifact " (the)" from the
+       displayed country (e.g. "United States of America (the)" → "United States of America") — exactly
+       6 characters, and the correct term. Display only; the underlying r.ctry (and the export) is kept. */
+    const ctryDisp = String(r.ctry||"").replace(/\s*\(the\)\s*$/i, "");
+    const subParts = [ctryDisp, showRegn?r.regn:""].filter(Boolean);
+    const subInner = subParts.map(esc).join(' <span style="color:#cbd5e1">·</span> ');
+    const subTitle = subParts.join(' · ');
+    const portHtml = port? `<div style="display:flex;flex-direction:column;gap:2px;font-size:11px;max-width:25ch;overflow:hidden">
+          <span style="display:flex;align-items:baseline;font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" title="${esc(port)}">${esc(port)}</span>
+            ${(r.portN&&r.cur)?`<span style="flex:none;font-size:10px;font-weight:400;color:#94a3b8"> – ${esc(r.cur)}</span>`:""}
+          </span>
+          ${(subParts.length||zone)?`<div style="display:flex;align-items:center;gap:6px;overflow:hidden">
+            ${subParts.length?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" title="${esc(subTitle)}">${subInner}</span>`:""}
+            ${zone?`<span style="flex:none;font-size:9px;font-weight:700;letter-spacing:0.05em;color:#1d4ed8;background:#dbeafe;padding:1px 5px;border-radius:4px">${zone}</span>`:""}
           </div>`:""}
         </div>` : dash;
+    /* 2026-07-25q (Aurvin, owner instruction): the Fuel/ROB group (Fuel, Total, ME, AE, Boiler,
+       Others, ROB) had the SAME gap as the rest of Report-Wise (25p) — only the outer edges
+       (Fuel's border-left, ROB's border-right) carried a divider; the five columns between them
+       had none, selected or not. Added border-right to Fuel/Total/ME/AE/Boiler/Others (ROB is the
+       last column and keeps its own existing border-right) so every column in this group is
+       divided too; the 25o rule darkens all of them on a ticked row exactly like the rest of the
+       table, since it matches on the inline property, not a specific value. */
     const fuelTds = fuels.length? `
-      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.me)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.ae)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.blr)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,f.oth)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.me)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.ae)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.blr)).join("")}</td>
+      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.oth)).join("")}</td>
       <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>
-        `<div style="height:17px;padding:0 12px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_FONT};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:6px">${
-          f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 5px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
+        `<div class="trfl" style="height:17px;padding:0 6px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_FONT};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:4px">${
+          f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 4px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
         }<span>${f.rob}</span></div>`).join("")}</td>`
-      : `<td style="padding:${pad};border-left:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
-    return `<tr style="border-bottom:1px solid #f1f5f9;background:#ffffff">
+      : `<td style="padding:${pad};border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
+    return `<tr class="hirow" style="background:#ffffff"><!-- 2026-07-24: row divider moved to .trtable tbody td (border-separate ignores <tr> borders) -->
       <td style="padding:${pad};vertical-align:middle;text-align:center;${TR_FREEZE_SEL}z-index:2;background:#ffffff;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px">${selBox("tr",ri)}</td>
       <td style="padding:${pad};vertical-align:top;white-space:nowrap;${TR_FREEZE_EVT}z-index:2;background:#ffffff;border-right:1px solid #f1f5f9">
         <div style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
@@ -2101,21 +2565,47 @@ function reportTraceTable(reps){
           <span style="font-size:11px;color:#64748b;font-family:${TR_FONT}">${esc(fmtTs(r.t))}</span>
         </div>
       </td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${condHtml}</td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap">${actHtml}</td>
-      <td style="padding:${pad};vertical-align:top">${portHtml}</td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.voy?esc(r.voy):"—"}</td>
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.dist?fmtF(r.dist,0):"—"}</td>
-      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.eu)}</td>
-      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.feu)}</td>
-      <td style="padding:6px 6px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${trPctBadge(cov.uk)}</td>
+      <!-- 2026-07-25p (Aurvin, owner instruction): Report-Wise previously had NO vertical divider at
+           all between Condition/Activity/Port/Voyage No/Cargo/Dist — even unselected — unlike Leg-Wise
+           and Voyage-Wise, which carry one between every column. Added a matching border-right on all
+           six so the whole table now reads consistently; the existing .hirow.hi-on [style*="border-
+           right"] rule (2026-07-25o) automatically darkens all of these too once a row is ticked. -->
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap;border-right:1px solid #f1f5f9">${condHtml}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap;border-right:1px solid #f1f5f9">${actHtml}</td>
+      <td style="padding:${pad};vertical-align:top;border-right:1px solid #f1f5f9">${portHtml}</td>
+      <!-- 2026-07-25b (Aurvin, owner instruction): Voyage No capped at 8 chars; truncated from the LEFT
+           (start) so the distinguishing tail (end) stays visible — direction:rtl+unicode-bidi:plaintext
+           keeps the value reading left-to-right while the ellipsis lands on the left. Full value in title. -->
+      <td style="padding:${pad};vertical-align:top;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.voy?`<span style="display:inline-block;max-width:8ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;unicode-bidi:plaintext;vertical-align:bottom" title="${esc(r.voy)}">${esc(r.voy)}</span>`:"—"}</td>
+      <!-- 2026-07-25 (Aurvin, owner instruction): Cargo mt moved to sit right of Voyage No and left of Dist nm. -->
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- a reported 0 shows 0; a BLANK cargo cell shows a dash -->
+      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.dist?fmtF(r.dist,0):"—"}</td>
+      <!-- 2026-07-24d (Aurvin, owner instruction): asymmetric padding so the gap BETWEEN badges
+           (EU ETS→FEU→UK ETS, the touching inner sides) is clearly smaller than the gap from the
+           outer two badges to the Eligibility group's own wall (its left/right border) — was
+           accidentally the other way round when every side used the same padding. -->
+      <!-- 2026-07-26q (Aurvin, owner instruction): the 2026-07-26p merge (one colspan="3" cell
+           + a reason-text caption) was UNDONE on Report-Wise per the owner's explicit "task 1 —
+           remove the text from the Report-Wise view (undo that part)".
+           2026-07-26y (Aurvin, owner instruction, this session): REDONE, deliberately narrower
+           than 26p — "same as Leg-Wise, repeat the look" (26x's fused-pill treatment), confirmed
+           NO caption text this time (that was the specific part the owner had reverted in 26q;
+           the pill SHAPE itself was never the complaint). One <td colspan="3"> replaces the
+           three independent badge <td>s below; the values (cov.eu/cov.feu/cov.uk), their
+           source (trCoverage()), and the colours/thresholds are all unchanged — only the
+           container merges, via the same elFusedPill() Leg-Wise's eligLeg already uses (see
+           26x above trPctBadge()). The TOTAL row's three separate dash <td>s (trTotalsHtml(),
+           ~line 2420) are deliberately left UNMERGED per the owner's explicit answer this
+           session — a coverage % was never summable there anyway. The header's own 3 sub-
+           labels (EU/ETS, FEU, UK/ETS just below) are also left as 3 separate <th> — the
+           owner's ask was about the VALUE pill, not the column labels above it. -->
+      <td colspan="3" style="padding:6px 8px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${elFusedPill([cov.eu, cov.feu, cov.uk])}</td>
       ${fuelTds}
-      <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- 2026-07-23 Task 3: a reported 0 shows 0; a BLANK cargo cell shows a dash (was: any 0 showed a dash) -->
     </tr>`;
   }).join("");
   return `
     <div class="tablescroll" style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">
-    <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+    <table class="trtable" style="width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px"><!-- 2026-07-24 (Aurvin): border-separate (was collapse) stops the sticky-header bleed-through — see styles.css .trtable notes -->
       <thead style="position:sticky;top:0;z-index:10">
         <tr>
           <th rowspan="2" style="text-align:center;${thBase};${TR_FREEZE_SEL}z-index:14;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px;padding:8px 6px">${selAllBox("tr")}</th>
@@ -2123,25 +2613,38 @@ function reportTraceTable(reps){
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Condition</th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Activity</th>
           <th rowspan="2" style="text-align:left;${thBase};width:1%">Port</th>
-          <th rowspan="2" style="text-align:left;${thBase};width:1%;white-space:nowrap">Voyage No</th>
-          <th rowspan="2" style="text-align:right;${thBase}">Dist nm</th>
-          <th colspan="3" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Eligibility ${info("Share of this report's energy in scope for each regulation — computed the same way as your CII / EU ETS / UK ETS / FuelEU totals (matched to the corresponding voyage/port entry). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#1f3b45;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#5b8791;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope<br><br>\"–\" = no confident match to a calculated voyage/port entry (e.g. bunkering/stock reports, or reports right at a year boundary) — shown blank rather than guessed")}</th>
-          <th colspan="7" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(tonnes)</span></th>
-          <th rowspan="2" style="text-align:right;${thBase}">Cargo mt</th>
+          <!-- 2026-07-25b (Aurvin, owner instruction): "Voyage No" header wrapped to two lines so the column can be narrower (values capped at 8 chars). -->
+          <th rowspan="2" style="text-align:left;${thBase};width:1%">Voyage<br>No</th>
+          <!-- 2026-07-25 (Aurvin): Cargo mt sits right of Voyage No, left of Dist nm. 2026-07-25b: header wrapped to two lines ("mt" lowercase) so the column can be narrow (cargo is never many characters); the cell still sizes to fit a rare long value in full. -->
+          <th rowspan="2" style="text-align:right;${thBase};width:1%">Cargo<br><span style="text-transform:none">mt</span></th>
+          <!-- 2026-07-25b (Aurvin): unit shown lowercase ("nm") rather than the column's default uppercase. -->
+          <th rowspan="2" style="text-align:right;${thBase}">Dist <span style="text-transform:none">nm</span></th>
+          <th colspan="3" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Eligibility ${info("Share of this report's energy in scope for each regulation — computed the same way as your CII / EU ETS / UK ETS / FuelEU totals (matched to the corresponding voyage/port entry). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#3a5157;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#6f8d94;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope<br><br>\"–\" = no confident match to a calculated voyage/port entry (e.g. bunkering/stock reports, or reports right at a year boundary) — shown blank rather than guessed")}</th>
+          <th colspan="7" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(mt)</span></th>
         </tr>
         <tr>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">EU ETS</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">FEU</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none">UK ETS</th>
+          <!-- 2026-07-24c (Aurvin): EU ETS/UK ETS forced to an explicit two-line label (EU / ETS)
+               instead of relying on the browser to wrap "EU ETS" at the column edge — that wrap
+               was inconsistent (UK ETS wrapped, EU ETS didn't) at the same column width. An
+               explicit <br> makes both render identically and lets the column go narrower. -->
+          <!-- 2026-07-24d: header padding mirrors the body cells' asymmetric wall/inner split
+               (8px outer, 1px inner) so the header and the badges below it line up. -->
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:8px;padding-right:1px">EU<br>ETS</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:1px">FEU</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:8px">UK<br>ETS</th>
           <th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>
           <th style="text-align:right;${thSub};font-weight:700;color:#475569">Total</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">ME</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">AE</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Boiler</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Others</th>
-          <th style="text-align:right;${thSub};font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB (Bunker)</th>
+          <!-- 2026-07-27 (Aurvin, owner instruction): "ROB (Bunker)" shortened to "ROB" and the
+               column's value-pill padding tightened (below, in fuelTds) so the column takes less
+               width — max expected value is "xxxxx.x" (7 chars), which no longer needs the wider
+               padding that the longer header text used to justify. -->
+          <th style="text-align:right;${thSub};font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB</th>
         </tr>
-        <tr id="trTotals" style="border-top:1px solid #cbd5e1">${trTotalsHtml()}</tr><!-- 2026-07-23 Task 1: bottom divider now a box-shadow on #trTotals>td (styles.css) so it pins to the sticky header and no longer leaves a seam -->
+        <tr id="trTotals">${trTotalsHtml()}</tr><!-- 2026-07-23 Task 1: bottom divider is a box-shadow on #trTotals>td (styles.css). 2026-07-24: top divider moved there too (border-separate ignores <tr> borders) -->
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -2193,7 +2696,78 @@ const JURIS_PAL = {
 /* 2026-07-23 (Task 2, Aurvin): a dedicated frozen CHECKBOX column was added as track 1 (matching
    the Report-Wise table), so every data column shifted right by one and this grid gained a leading
    fixed 34px track. gridMinWidth counts it automatically. */
-const BR_GRID = "minmax(34px,34px) minmax(300px,3.05fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(62px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(100px,0.8fr) minmax(62px,0.55fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr)";
+/* 2026-07-25n (Aurvin, owner instruction): SCC column ORDER changed to TtW, WtW, Cargo,
+   T-Work, EEOI (was Cargo, T-Work, TtW, WtW, EEOI) — see the reordered header/body cells
+   below. Each column keeps ITS OWN width, just carried to its new position (owner chose
+   "reorder, don't resize"): the last 5 tracks below are now TtW's old width, WtW's old
+   width, Cargo's old width, T-Work's old width, then EEOI unchanged.
+   2026-07-26 (Aurvin, owner instruction): the TtW (AR6) column is REMOVED from this on-screen
+   table entirely (owner: "not needed in SCC section") — its track is dropped below and every
+   subsequent grid-column number shifts down by 1 (was 18-22 for TtW/WtW/Cargo/T-Work/EEOI,
+   now 18-21 for WtW/Cargo/T-Work/EEOI). TtW is still CALCULATED internally (WtW = WtT + TtW
+   still needs it) and still appears in the Leg-Wise Excel export — display-only removal. */
+/* 2026-07-26c (Task 2, Aurvin, owner instruction): the whole SEA CARGO CHARTER section is
+   removed from THIS on-screen table (WtW, Cargo, T-Work, SCC EEOI — 4 tracks), a new IMO
+   section (CII + EEOI, 2 tracks) is inserted between Fuel metrics and EU ETS, and Cargo
+   comes back as a standalone column between Voyage No and Dist. Net 21 tracks → 20.
+   Nothing is lost from the product: every SCC figure is still CALCULATED (T-Work is the
+   denominator of the new IMO EEOI) and still written to the Leg-Wise Excel export, and the
+   Voyage-Wise tab keeps its full SCC section on screen. New column order:
+     1 chk | 2 Activity | 3 Voyage No | 4 Cargo | 5 Dist |
+     6-7 IMO (CII, EEOI) | 8-9 FUEL METRICS (Fuel type, Cons.) |
+     10-12 EU ETS | 13-14 UK ETS | 15-20 FuelEU
+     (2026-07-26e, Aurvin: IMO moved to the LEFT of Fuel metrics — a simple swap of the two
+      2-col blocks; columns 10+ unchanged. The 90/78px IMO widths and 76/88px Fuel widths
+      travelled with them.)
+   Widths: Cargo keeps its old SCC width (104px/1fr) and Dist/Fuel/Cons/EU/UK/FuelEU all keep
+   theirs; the two new IMO tracks are sized for a rating badge + percentage (112px) and a
+   4-5 digit intensity (92px).
+   2026-07-26d (Aurvin, owner instruction — squeeze the horizontal width): three tracks
+   narrowed. CARGO 104px→76px: the owner confirms a cargo figure never exceeds six digits,
+   and its header is now wrapped onto two lines ("Cargo" / "mt") so the column no longer has
+   to be as wide as the words "Cargo (mt)". CII 112px→90px and EEOI 92px→78px: the CII
+   column's "rating · % of required" sub-label moved into the IMO info icon, so the header no
+   longer sets the width, and inside the cell the percentage moved to the LEFT of the rating
+   box with a tighter 4px gap. Net saving ~64px of horizontal scroll.
+   2026-07-26l (Aurvin, owner instruction): CII 90px→150px. The cell gained a 3rd number (the
+   attained-CII "AER" value, in its own pill segment alongside % and the rating letter) and
+   needs the extra room to avoid crowding; the owner's explicit choice was to widen THIS
+   column only and leave EEOI (78px) untouched.
+   2026-07-26m (Aurvin, owner instruction): CII 150px→126px. The pill's own internal padding
+   was tightened (solid-colour bar + snug white cutouts, replacing the airier 3-touching-
+   segment version) and both numbers now carry a hard character cap (% ≤3 digits, AER ≤"xx.xx"
+   before falling back to a dash), so the pill's own maximum width is now small and predictable
+   — the column no longer needs the extra room 150px gave it. */
+/* 2026-07-26o (Aurvin, owner instruction): the three per-section "Cov." tracks (EU ETS,
+   UK ETS, FuelEU) were removed and replaced by ONE consolidated ELIGIBILITY block of 3
+   fixed-width badge tracks (55/48/55px, sized to the 46px pill + its padding — same as the
+   Report-Wise Eligibility columns, NOT a stretchy fr share), inserted LEFT of IMO (was
+   columns 6-7, now 9-10). Net column count unchanged (20), but total minimum width shrank
+   ~28px because the badge tracks are narrower than the 3 removed 62px Cov tracks — the
+   owner's explicit choice ("size new columns to fit badges", not "keep total width"). New
+   order: chk|Activity|VoyNo|Cargo|Dist|ELIGIBILITY(EU,FEU,UK)|IMO(CII,EEOI)|Fuel metrics|
+   EU ETS(CO₂,EUAs)|UK ETS(UKAs)|FuelEU(Elig,Energy,Elig.energy,CB,Penalty). */
+/* 2026-07-26o2 (Aurvin, owner instruction): column 2 ("Activity & timeframe") shrunk from
+   minmax(300px,3.05fr) to minmax(280px,0.5fr) — the owner's screenshot showed the "PORT
+   STAY" tag overflowing PAST the column's right edge, and asked to reduce this column's
+   width as much as possible, capped at whatever a 25-character port name (+ LOCODE) needs.
+   The old 3.05fr share was by far the largest of any column here, so on anything but a very
+   narrow screen it stretched far past its 300px minimum — that stretch, not the minimum
+   itself, was most of the excess width the owner was seeing. Two changes together fix this:
+   (1) "PORT STAY" now wraps to two lines (see legTag, ~line 3382) instead of needing ~60-70px
+   on one line, so the badge lane next to the timestamps only needs its longer word's width
+   (~4 chars); (2) this track's own minimum came down to 280px — estimated as gutter (36px,
+   GUTTER_W) + a 25-character name+LOCODE at the row's inherited 14px body font (~190-205px
+   for 25ch in a system sans-serif, per the SAME max-width:25ch technique as the port-name cap
+   itself, 2026-07-26n) + the jurisdiction badge's worst case (~34px, wider than the arrow) +
+   the cell's own right padding (12px) — with a small buffer for font-metric variance across
+   browsers. The fr share shrank from 3.05 to 0.5 (in line with several of this row's other
+   columns, e.g. Voyage No/Dist at 0.6-0.7fr) so it no longer disproportionately claims extra
+   space on wide screens, but still grows a little along with its neighbours rather than being
+   frozen rigid. NOTE: this 280px figure is a calculation, not a live screen measurement — this
+   session's sandbox has no browser available to render and screenshot the page, so the owner
+   should eyeball the actual result and say if it needs a further nudge either way. */
+const BR_GRID = "minmax(34px,34px) minmax(280px,0.5fr) minmax(84px,0.6fr) minmax(76px,0.6fr) minmax(84px,0.7fr) minmax(55px,55px) minmax(48px,48px) minmax(55px,55px) minmax(126px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const BR_BOX = gridBox(BR_GRID);          // every Leg-Wise row resolves to this same width
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
@@ -2206,6 +2780,69 @@ function jurisOfPort(port, zone){
   }
   if(zone) return zone==="EEA"?"EU":zone==="UK"?"UK":null;
   return null;
+}
+/* 2026-07-26p (Aurvin, owner instruction, clarified over 4 questions): the reason text shown
+   under the Leg-Wise ELIGIBILITY badges — explains WHICH zone(s) drove that row's EU ETS /
+   UK ETS / FuelEU coverage %. (Report-Wise had the same feature added, then REMOVED again on
+   the owner's explicit "task 1" instruction 2026-07-26q — Leg-Wise only from here on.)
+   Reuses jurisOfPort()'s EXISTING priority (OMR wins, then plain EU/UK, then neither)
+   unchanged — that IS the "priority to EU/EU OMR and UK/UK OMR over Non-EU" the owner asked
+   for — only relabelling a null result as "Non-EU" for THIS display (the Activity column's own
+   port badge still shows nothing for null, untouched). */
+function elZoneLabel(port, zone){ return jurisOfPort(port, zone) || "Non-EU"; }
+/* plain EU/UK/Non-EU bucket, no OMR — used when we only know which zone BUCKET applies (EEA/
+   UK/OTHER) but not the exact port, because the true port of call was walked PAST a skipped
+   transit stay (see elVoySide() below) and its identity isn't carried by the coverage
+   annotation, only its zone. */
+function elBucketLabel(zoneCode){ return zoneCode==="EEA"?"EU":zoneCode==="UK"?"UK":"Non-EU"; }
+/* 2026-07-26q (Aurvin, owner instruction, this session — corrects 2026-07-26p's logic, which
+   read the leg's own immediate row.from/row.to/fromPort/toPort directly): "the zone 1 has to
+   be last POC and zone 2 is upcoming POC... Don't include Transit @berth" — i.e. a voyage
+   leg's zone pair must be the LAST port of call before it and the NEXT port of call after it,
+   skipping straight past any non-call (transit/anchorage) stay in between, exactly per
+   euets-art3ga's port-of-call test. Rather than re-deriving that walk ourselves (the
+   arrival/departure/POC segmentation is FROZEN, CLAUDE.md), this reads the SAME `_covFrom`/
+   `_covTo` fields `euCoverage()`/`ukCoverage()` already use for the identical purpose
+   (`annotateVoyageContinuity`, js/engine.js) — guaranteed to "match the Percentages nicely"
+   because it IS the percentage's own input, not a re-guess of it.
+   `_covFrom`/`_covTo` are always set on every voyage row (annotateVoyageContinuity's forward/
+   backward passes both run unconditionally), equal to the row's own immediate from/to when
+   there is no adjacent transit stay to skip, or to the walked-past ancestor's zone when there
+   is. When unchanged (own port genuinely is the last/next POC), the real port object gives
+   OMR precision; when walked past a stay, only the zone bucket survives (that distant port's
+   identity isn't carried by the annotation), so it falls back to the plain bucket label. */
+function elVoySide(row, port, rawKey, covKey){
+  const zoneCode = row[covKey] || row[rawKey];
+  const chained = row[covKey] && row[covKey]!==row[rawKey];
+  return chained ? elBucketLabel(zoneCode) : elZoneLabel(port, zoneCode);
+}
+/* A genuine POC berth stay (row.poc is not false) shows "At <Zone>" — its own single port,
+   binary in/out (euCoverage/ukCoverage score it 100% or 0%, never 50%, matching a single zone).
+   A TRANSIT stay (row.poc===false — NOT a port of call) never shows "At Zone" (owner
+   instruction, this session): its own consumption is folded into the SURROUNDING voyage's
+   coverage exactly like a voyage leg is (euCoverage/ukCoverage run the identical
+   covVoyEU(_covFrom,_covTo) formula on it), so it can genuinely read 50% — it therefore gets
+   the SAME "<Zone>-<Zone>" pattern as a voyage leg, sourced from its own _covFrom/_covTo (owner:
+   "if EU ETS is 50% then its from EU or to EU case even on transit berth cases"). A LONE
+   transit stay with no _covFrom/_covTo at all (no surrounding voyage rows to inherit from)
+   scores 0% in the engine and gets no caption here either — nothing meaningful to explain. A
+   voyage leg reads its zone pair via elVoySide() (POC to POC, skipping any transit in between). */
+function elReasonText(row){
+  if(!row) return "";
+  /* 2026-07-26 (Aurvin, owner instruction): separator changed from a bare "-" to " → "
+     (arrow). With a plain dash, a leg between two Non-EU/UK ports rendered as "Non-EU-Non-EU"
+     — three dashes in a row (one inside each "Non-EU" label plus the separator itself), which
+     read as ambiguous/garbled rather than "from -> to". An arrow is unambiguous regardless of
+     how many hyphens the zone labels themselves contain (Non-EU, EU/EEA, etc.). Display-only —
+     does not touch the FROZEN arrival/departure/POC derivation this text merely describes. */
+  if(row.kind==="voyage") return elVoySide(row,row.fromPort,"from","_covFrom")+" → "+elVoySide(row,row.toPort,"to","_covTo");
+  if(row.poc===false){
+    if(!row._covFrom && !row._covTo) return "";
+    const a = row._covFrom ? elBucketLabel(row._covFrom) : elZoneLabel(row.port, row.zone);
+    const b = row._covTo   ? elBucketLabel(row._covTo)   : elZoneLabel(row.port, row.zone);
+    return a+" → "+b;
+  }
+  return "At "+elZoneLabel(row.port, row.zone);
 }
 /* strict percentage — max 2 dp, integers show no decimals (SPEC §4) */
 function brPct(frac){ const r=Math.round(frac*10000)/100; return (r%1===0?r.toFixed(0):r.toFixed(2))+"%"; }
@@ -2248,12 +2885,69 @@ function cargoTipText(row){
   const acts=[];
   if(row.cargoLoad)  acts.push("Loading");
   if(row.cargoDisch) acts.push("Discharging");
+  const sts = row.cargoSTS? " (STS)" : "";
+  /* 2026-07-24 (Aurvin): an OPL-demoted stay DID have cargo, but a report was flagged
+     OUTSIDE_PORT_LIMIT, so it is scored as transit — the tooltip must NOT call it a port of call. */
+  if(row.oplCargo) return "Cargo"+(acts.length? " "+acts.join(" & ").toLowerCase()+sts : sts)+" was reported OUTSIDE port limits — this stay is scored as transit, not a port of call";
   if(!acts.length) return "Port of Call (Cargo Activity)";
-  return "Port of Call (Cargo Activity) — "+acts.join(" & ")+(row.cargoSTS? " (STS)":"");
+  return "Port of Call (Cargo Activity) — "+acts.join(" & ")+sts;
 }
 
 /* replicate the engine's reporting-year filter so source rows align 1:1 with rowDetails */
+/* ---- shared From/To date-range filter (2026-07-24, Aurvin) --------------------------
+   When S.dateFilter.active, row inclusion is decided by the date RANGE, not the reporting
+   year — a report counts IN FULL if its own UTC period [tStart,tEnd] overlaps [from,to]
+   at all (owner's rule: "include all reports which fall in/on the selected dates"). The
+   reporting year (S.year) is kept separately selectable and still drives the regulatory
+   parameters (CII bands, UK ETS start, FuelEU targets); it no longer decides which rows
+   are counted while a range is active. All uploaded rows always stay in S.rows (memory);
+   out-of-range rows are greyed + badged and excluded from every KPI, exactly like the
+   out-of-year behaviour they replace. Strings are "YYYY-MM-DDTHH:mm" UTC (datetime-local),
+   so we normalise to UTC ms before comparing. */
+function _utcms(s){
+  if(!s) return NaN;
+  s = String(s).replace(" ", "T");           // tolerate "YYYY-MM-DD HH:mm"
+  if(s.length===16) s += ":00";              // no seconds → add them
+  if(!/[zZ]$/.test(s) && !/[+-]\d\d:?\d\d$/.test(s)) s += "Z";   // force UTC
+  return Date.parse(s);
+}
+/* report-level range test (Report-Wise tab works off S.mdaReports, which use ts/te/t) */
+function repInRange(rep){
+  if(!dateFilterActive()) return true;
+  /* 2026-07-25 (Aurvin, owner instruction): a report is placed by its OWN listed time
+     (DATE_TIME_GMT = rep.t) and counted WHOLE in whichever window that instant falls in — so a
+     report whose period straddles a year (or any range) boundary appears in ONE view only,
+     never in both the previous and the present year. */
+  const t = rep.t!=null ? _utcms(rep.t) : (rep.te!=null ? _utcms(rep.te) : (rep.ts!=null ? _utcms(rep.ts) : null));
+  if(t==null || !isFinite(t)) return true;                 // undated report → never filtered out
+  return t>=_utcms(S.dateFilter.fromISO) && t<=_utcms(S.dateFilter.toISO);
+}
+function dateFilterActive(){ const d=S.dateFilter; return !!(d && d.active && d.fromISO && d.toISO); }
+/* row span as UTC ms; undated rows → null span (never filtered out) */
+function _rowSpan(row){
+  const a = row.tStart? _utcms(row.tStart) : null;
+  const b = row.tEnd?   _utcms(row.tEnd)   : null;
+  if(a==null && b==null) return null;
+  return { st:(a!=null?a:b), en:(b!=null?b:a) };
+}
+function rowInRange(row){
+  if(!dateFilterActive()) return true;
+  const sp=_rowSpan(row); if(!sp) return true;         // undated rows can't be range-filtered → keep
+  const from=_utcms(S.dateFilter.fromISO), to=_utcms(S.dateFilter.toISO);
+  return sp.st<=to && sp.en>=from;                     // any overlap = counted (in full)
+}
+/* true when a row overlaps the range but straddles a boundary (partly outside) → "edge" */
+function rowIsEdge(row){
+  if(!dateFilterActive()) return false;
+  const sp=_rowSpan(row); if(!sp) return false;
+  const from=_utcms(S.dateFilter.fromISO), to=_utcms(S.dateFilter.toISO);
+  return (sp.st<=to && sp.en>=from) && (sp.st<from || sp.en>to);
+}
+/* count of edge rows currently in range — for the bar caption */
+function edgeRowCount(){ return dateFilterActive()? (S.rows||[]).filter(r=>rowInRange(r)&&rowIsEdge(r)).length : 0; }
+
 function inYearRows(){
+  if(dateFilterActive()) return (S.rows||[]).filter(rowInRange);   // range wins when active
   const y = Number(S.year)||2026;
   return (S.rows||[]).filter(row=>{
     if(row.yearPart) return Number(row.yearPart)===y;
@@ -2262,6 +2956,128 @@ function inYearRows(){
     if(!a && !b) return true;
     return a===String(y) || b===String(y);
   });
+}
+
+/* ---- date-filter bar UI (2026-07-24, Aurvin) : ONE shared control rendered at the sticky
+   top of all four data tabs. Editing it anywhere updates S.dateFilter and repaints every
+   tab, so the tabs can never disagree. Dates are UTC "YYYY-MM-DDTHH:mm" (datetime-local). */
+function dfRepaint(){
+  save();
+  try{ renderWorkspace(); }catch(e){}
+  try{ if(document.getElementById('tab-calcs')) renderCalcs(); }catch(e){}
+  try{ if(document.getElementById('tab-voy'))   renderVoyage(); }catch(e){}
+  try{ if(document.getElementById('tab-trace')) renderTrace(); }catch(e){}
+}
+function _fullYearRange(y){ return { fromISO:`${y}-01-01T00:00`, toISO:`${y}-12-31T23:59`, active:true }; }
+/* within-year narrowing on Workspace / Report-Wise / Leg-Wise (bounded to S.year) */
+function dfSet(field, val){
+  const y=Number(S.year)||2026, lo=`${y}-01-01T00:00`, hi=`${y}-12-31T23:59`;
+  val = val || "";
+  if(val){ if(val<lo) val=lo; if(val>hi) val=hi; }        // clamp inside the selected year
+  if(!S.dateFilter || !S.dateFilter.active) S.dateFilter=_fullYearRange(y);
+  S.dateFilter[field] = val || (field==="fromISO"?lo:hi);
+  S.dateFilter.active = true;                             // always a within-year window
+  dfRepaint();
+}
+/* pick the reporting year → fill the picker to that whole year */
+function dfYear(v){
+  const y=Number(v)||2026; S.year=y; S.dateFilter=_fullYearRange(y);
+  try{ renderVessel(); }catch(e){} dfRepaint();
+}
+/* 2026-07-25: "Clear" for the year-locked bar (Report-Wise / Leg-Wise) can't disable the
+   filter — it's always within-year — so it resets From/To back to that year's full range,
+   same as picking the Year dropdown but without touching S.year itself. */
+function dfClearRange(){
+  const y=Number(S.year)||2026; S.dateFilter=_fullYearRange(y); dfRepaint();
+}
+/* Voyage-Wise ONLY: its own unbounded (multi-year) range */
+function voySet(field, val){
+  if(!S.voyDateFilter) S.voyDateFilter={ fromISO:"", toISO:"", active:false };
+  S.voyDateFilter[field] = val || "";
+  S.voyDateFilter.active = !!(S.voyDateFilter.fromISO && S.voyDateFilter.toISO);
+  save(); try{ renderVoyage(); }catch(e){}
+}
+function voyClear(){ S.voyDateFilter={ fromISO:"", toISO:"", active:false }; save(); try{ renderVoyage(); }catch(e){} }
+/* 2026-07-25: quick-pick a calendar year on the Voyage-Wise bar → fills From/To to that
+   year's full Jan1–Dec31 range (still editable afterwards; still multi-year capable). */
+function voyYear(v){
+  if(!v){ return; }
+  const y=Number(v)||new Date().getUTCFullYear();
+  S.voyDateFilter={ fromISO:`${y}-01-01T00:00`, toISO:`${y}-12-31T23:59`, active:true };
+  save(); try{ renderVoyage(); }catch(e){}
+}
+/* latest calendar year present in the workspace rows (null if none) */
+function latestDataYear(){
+  let mx=null;
+  for(const r of (S.rows||[])){
+    let yy = r.yearPart ? Number(r.yearPart) : null;
+    if(!yy){ const s=r.tEnd||r.tStart; if(s) yy=Number(String(s).slice(0,4)); }
+    if(yy && (mx==null || yy>mx)) mx=yy;
+  }
+  return (mx && isFinite(mx)) ? mx : null;
+}
+/* on load / after an import: default the Year to the latest year that has data (else 2026),
+   and fill the within-year window to that whole year. (2026-07-24, owner's chosen default) */
+function initDateFilters(){
+  const ly=latestDataYear();
+  if(ly) S.year=ly; else if(!S.year) S.year=2026;
+  const y=Number(S.year)||2026;
+  S.dateFilter=_fullYearRange(y);
+  if(!S.voyDateFilter) S.voyDateFilter={ fromISO:"", toISO:"", active:false };
+}
+/* the bar's HTML. mode "voy" → Voyage-Wise multi-year picker; otherwise the year-locked bar.
+   2026-07-25 (owner instruction): each tab's title/Excel/info icons that used to sit in the
+   tab's own <h2> now live in this same sticky row instead, passed in as `extraHtml` and
+   right-aligned via margin-left:auto — this frees the vertical space the old header row
+   took, without duplicating date-range controls per tab. */
+function renderDateFilterBar(mode, extraHtml){
+  const y=Number(S.year)||2026;
+  const extra = extraHtml? `<span class="dfextra" style="margin-left:auto;display:flex;align-items:center;gap:8px">${extraHtml}</span>` : "";
+  /* 2026-07-25 (Aurvin, owner instruction): show the vessel name at the start of the bar on the
+     Report-Wise / Leg-Wise / Voyage-Wise tabs too, the same as the Workspace blue band, so every
+     data view is clearly labelled with the ship it is showing. */
+  const vname = `<b class="bandvessel" style="font-size:13px">${esc((S.ship&&S.ship.name)||"Vessel")}</b><span class="bsep">·</span>`;
+  if(mode==="voy"){
+    const d=S.voyDateFilter||{}, on=!!(d.active&&d.fromISO&&d.toISO);
+    /* 2026-07-25b (owner instruction): layout now matches the year-mode bar — Year picker
+       first, then From/To — and the "multi-year OK..." caption is folded into the tab's own
+       info icon (passed in via extraHtml) instead of sitting as its own label in the bar.
+       2026-07-25f (owner instruction): when FULL DATA is shown (no single-year range — the range
+       is cleared / spans multiple years) the Year picker is left BLANK ("—") rather than showing
+       a year that isn't actually the filter. It shows a year only when From/To pin exactly one
+       calendar year. (Supersedes the 2026-07-25c default-to-S.year behaviour.) */
+    const voySelYear = (d.fromISO && d.toISO && d.fromISO.slice(0,4)===d.toISO.slice(0,4)) ? Number(d.fromISO.slice(0,4)) : null;
+    return `<div class="dfbar noprint">
+      ${vname}
+      <span class="dfld">Year</span>
+      <select title="Quick-pick a calendar year — fills From/To to that year's full Jan 1–Dec 31 range (still editable, still multi-year capable afterwards). Blank (—) when full data / a multi-year range is shown." onchange="voyYear(this.value)">
+        <option value="" ${voySelYear==null?"selected":""}>—</option>
+        ${[2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option ${yy===voySelYear?"selected":""}>${yy}</option>`).join("")}
+      </select>
+      <span class="dfld" style="margin-left:6px">📅 From</span>
+      <input type="datetime-local" lang="en-GB" value="${esc(d.fromISO||"")}" onchange="voySet('fromISO',this.value)" title="Voyage-Wise range start (UTC) — may span multiple years">
+      <span class="dfld">To</span>
+      <input type="datetime-local" lang="en-GB" value="${esc(d.toISO||"")}" onchange="voySet('toISO',this.value)" title="Voyage-Wise range end (UTC) — may span multiple years">
+      <span class="dfutc">UTC</span>
+      ${on?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the range — show all voyages" onclick="voyClear()">✕ Clear</button>`:''}
+      ${extra}
+    </div>`;
+  }
+  const d=S.dateFilter||{};
+  const lo=`${y}-01-01T00:00`, hi=`${y}-12-31T23:59`;
+  const narrowed = (d.fromISO||lo)!==lo || (d.toISO||hi)!==hi;
+  return `<div class="dfbar noprint">
+    ${vname}
+    <span class="dfld">Year</span>
+    <select title="Reporting year — selects the calendar year shown and its CII bands, UK ETS window and FuelEU target. The date picker is bounded inside this year." onchange="dfYear(this.value)">${[2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option ${yy===y?"selected":""}>${yy}</option>`).join("")}</select>
+    <span class="dfld" style="margin-left:6px">📅 From</span>
+    <input type="datetime-local" lang="en-GB" min="${y}-01-01T00:00" max="${y}-12-31T23:59" value="${esc(d.fromISO||`${y}-01-01T00:00`)}" onchange="dfSet('fromISO',this.value)" title="Window start within ${y} (UTC)">
+    <span class="dfld">To</span>
+    <input type="datetime-local" lang="en-GB" min="${y}-01-01T00:00" max="${y}-12-31T23:59" value="${esc(d.toISO||`${y}-12-31T23:59`)}" onchange="dfSet('toISO',this.value)" title="Window end within ${y} (UTC)">
+    <span class="dfutc">UTC</span>
+    ${narrowed?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the narrowed window — reset From/To to the whole of ${y}" onclick="dfClearRange()">✕ Clear</button>`:''}
+    ${extra}
+  </div>`;
 }
 
 /* ---- Gmail-style row selection, shared by both tables (2026-07-22, Aurvin) ------------
@@ -2307,11 +3123,24 @@ function rowselAll(kind, ev){
    any open tooltip and the rest of the tab stay exactly where they were. */
 function rowselSync(kind){
   const s=ROWSEL[kind];
-  document.querySelectorAll('input[data-sel="'+kind+'"]').forEach(b=>{ b.checked = s.sel.has(Number(b.dataset.idx)); });
+  document.querySelectorAll('input[data-sel="'+kind+'"]').forEach(b=>{
+    const on = s.sel.has(Number(b.dataset.idx));
+    b.checked = on;
+    /* 2026-07-25j (owner): the tick also drives the teal row highlight — see .hirow rules in
+       styles.css. Each tick box lives inside its row's .hirow element, so mark that row. */
+    const row = b.closest(".hirow");
+    if(row) row.classList.toggle("hi-on", on);
+  });
   const m=document.getElementById(kind+"SelAll");
   if(m){ m.checked = s.n>0 && s.sel.size===s.n; m.indeterminate = s.sel.size>0 && s.sel.size<s.n; }
   const host=document.getElementById(kind+"Totals");
-  if(host) host.innerHTML = kind==="br" ? brTotalsHtml() : kind==="vw" ? vwTotalsHtml() : trTotalsHtml();
+  if(host){
+    host.innerHTML = kind==="br" ? brTotalsHtml() : kind==="vw" ? vwTotalsHtml() : trTotalsHtml();
+    /* 2026-07-25k (owner): the sticky TOTAL row highlights too, but ONLY while at least one row is
+       ticked. It reuses the same .hirow/.hi-on teal treatment as the data rows (see styles.css). */
+    host.classList.add("hirow");
+    host.classList.toggle("hi-on", s.sel.size>0);
+  }
 }
 const SELBOX_CSS = "width:14px;height:14px;margin:0;cursor:pointer;accent-color:#3652a3;flex:none";
 function selBox(kind, idx){
@@ -2405,8 +3234,12 @@ function brVoyNos(segs, d){
    labels (units were crammed next to the name before) and lets every column show its unit.
    colHdr() returns the inner HTML for a header cell; pass unit="" for a unitless column. */
 function colHdr(name, unit){
+  /* 2026-07-26g: text-transform:none added so a unit (e.g. "mt") stays lowercase even when
+     a caller's header cell sets text-transform:uppercase on the whole column — needed for
+     the Report-Wise-matched Voyage No / Cargo / Dist headers, harmless everywhere else since
+     no other caller's parent sets text-transform. */
   return `<div style="line-height:1.15">${name}</div>`+
-         (unit ? `<div style="font-weight:400;font-size:9px;color:#94a3b8;line-height:1.25;margin-top:1px">${unit}</div>` : "");
+         (unit ? `<div style="font-weight:400;font-size:9px;color:#94a3b8;line-height:1.25;margin-top:1px;text-transform:none">${unit}</div>` : "");
 }
 
 /* full inner grid: header rows + one grid per leg + totals + footnote */
@@ -2430,31 +3263,61 @@ function breakdownGrid(R, tips){
     <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("br")}</div>
       <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
-      <div style="grid-column:4;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
-      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:10 / span 2;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:12 / span 6;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:18 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:5;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
-      <div style="grid-column:6;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;border-right:1px solid #e2e8f0;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
-      <div style="grid-column:7;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:8;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap">${colHdr("CO₂","mt")}</div>
-      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
-      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:11;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
-      <div style="grid-column:12;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Cov.","%")}</div>
-      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
-      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
-      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
-      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
-      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
-      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only.">${colHdr("Cargo","mt")}</div>
-      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Transport work = cargo × laden distance, shown in millions of tonne-miles to keep the column narrow">${colHdr("T-Work","10⁶ t·nm")}</div>
-      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Tank-to-wake CO₂e (tonnes) — what comes out of the funnel">${colHdr("TtW","mt (AR6)")}</div>
-      <div style="grid-column:21;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Well-to-wake CO₂e (tonnes) — production and transport of the fuel included; this is the SCC numerator">${colHdr("WtW","mt (AR6)")}</div>
-      <div style="grid-column:22;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EEOI","gCO₂e/t·nm")}</div>
+      <!-- 2026-07-26g (Aurvin, owner instruction): Voyage No / Cargo / Dist headers restyled to
+           match Report-Wise exactly — uppercase, letter-spaced, font-weight 600, #64748b grey,
+           10.5px, on the flat #f8fafc header background (was a bold #0f172a-on-#f1f5f9 "boxed"
+           look). Voyage No specifically moved from right- to LEFT-aligned per the owner's
+           instruction; Cargo/Dist stay right-aligned like their Report-Wise counterparts.
+           colHdr()'s unit line now carries text-transform:none (see colHdr) so "mt"/"nm" stay
+           lowercase under this uppercase parent, same as Report-Wise. -->
+      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
+      <div style="grid-column:4;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only — a berth stay and a voyage with no cargo on its SOSP report both show a dash. No TOTAL is shown: the same parcel is reported on every leg it is carried over, so adding the column up would count it several times.">${colHdr("Cargo","mt")}</div>
+      <!-- 2026-07-26h (Aurvin, owner instruction): "nm" now shown the SAME way as Cargo's "mt"
+           — its own smaller, muted line under "DIST" (via colHdr), not squeezed onto the same
+           line at full size/weight. flex-direction:column added so colHdr's two stacked divs
+           lay out one above the other, matching the Cargo cell immediately to its left. -->
+      <div style="grid-column:5;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right">${colHdr("Dist","nm")}</div>
+      <!-- 2026-07-26o (Aurvin, owner instruction): standalone ELIGIBILITY group, left of IMO —
+           deliberately copies the Report-Wise Eligibility header EXACTLY (background, colour,
+           font, padding split, two-line EU/UK labels) rather than the colour-coded style the
+           other Leg-Wise group headers use, so the two tabs read as the same concept. -->
+      <div style="grid-column:6 / span 3;grid-row:1;padding:6px 12px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-right:1px solid #e2e8f0;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Eligibility ${tips.eligibility}</div>
+      <div style="grid-column:9 / span 2;grid-row:1;padding:6px 10px;background:#d9f2e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#1d7a5f;white-space:nowrap">IMO ${tips.imo}</div>
+      ${/* 2026-07-26p (Aurvin, owner instruction): CO2e moved OUT of the EU ETS group INTO
+           Fuel metrics — it is no longer the EU-ETS-eligible/coverage-scoped figure, it is the
+           TOTAL CO2e of the fuel actually consumed (see the column-13 cell below and
+           js/engine.js det.totalCO2e). Fuel metrics group widened from span 2 (11-12) to span 3
+           (11-13); EU ETS group narrowed from span 2 (13-14) to column 14 only (EUAs). See
+           HANDOFF_LOG.md 2026-07-26 entry. */""}
+      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#ddecf3;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#e1ebf4;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1e6f5;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#def2e0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <!-- sub-header row (row 2): same three eligibility labels/styling as Report-Wise's thSub
+           cells (10px, #94a3b8, centered, asymmetric 8/1/1/8 padding so the gap between the
+           three badges is smaller than the gap to the group's own outer wall). -->
+      <div style="grid-column:6;grid-row:2;padding:5px 1px 5px 8px;background:#f8fafc;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:#94a3b8;text-align:center">EU<br>ETS</div>
+      <div style="grid-column:7;grid-row:2;padding:5px 1px;background:#f8fafc;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:#94a3b8;text-align:center">FEU</div>
+      <div style="grid-column:8;grid-row:2;padding:5px 8px 5px 1px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:#94a3b8;text-align:center">UK<br>ETS</div>
+      <div style="grid-column:11;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      <div style="grid-column:12;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
+      ${/* 2026-07-26d (Aurvin): the "rating · % of required" sub-label was removed to narrow
+            this column — that explanation now lives in the IMO section's info icon. */""}
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="INDICATIVE per-leg CII: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, with the leg's equivalent HFO fuel consumption per nautical mile (kg/nm) shown below it. CII is a whole-year, whole-ship metric in law — this shows what the rating would be if the entire year looked like this leg. Port stays have no distance, so they show the stay's equivalent HFO fuel consumption per day (t/d) instead — see the IMO section's ⓘ for the full explanation.">${colHdr("CII / Performance","")}</div>
+      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right" title="IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — this leg's own CO₂ ÷ its own transport work (cargo × laden distance). Nothing is carried in from ballast legs or port stays. A ballast leg or port stay has no transport work, so it shows a dash.">${colHdr("EEOI","gCO₂/t·nm")}</div>
+      ${/* 2026-07-26p (Aurvin, owner instruction): this is now a Fuel-metrics TOTAL — full fuel
+           actually burned on this leg, same CO2+CH4/N2O GWP treatment EU ETS uses, but NOT cut
+           down by the EU ETS coverage rule (100% intra-EU / 50% extra-EU / 0% out of scope).
+           The border-right that used to sit after Cons. (col 12, marking the old Fuel
+           metrics/EU ETS boundary) moved to here, since Fuel metrics now ends at this column. */""}
+      <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap" title="${R.year>=2026?"Total CO₂e of ALL fuel consumed on this leg (CO₂+CH₄/N₂O, "+euEUAsUnit+") — the full amount burned, NOT scaled by EU ETS coverage. See EUAs (EU ETS group) for the EU-ETS-eligible/scoped figure.":"Total CO₂ of ALL fuel consumed on this leg (CO₂ only before 2026) — the full amount burned, NOT scaled by EU ETS coverage."}">${colHdr(R.year>=2026?"Total CO₂e":"Total CO₂", euEUAsUnit)}</div>
+      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
+      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
+      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
+      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
+      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
+      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
+      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
     </div>`;
 
   let zi=0;
@@ -2468,13 +3331,27 @@ function breakdownGrid(R, tips){
        engine's per-fuel attribution — see js/engine.js, same indicative basis as the row. */
     const lines = brFuelLines(d);
     const span = Math.max(1, lines.length);
-    const bg = (zi++ % 2 === 1) ? "#fafcfd" : "#ffffff";
+    /* 2026-07-25 (Aurvin, owner instruction): zebra striping removed from Leg-Wise — every
+       row is now plain white. Row emphasis is instead done on demand: clicking a row toggles
+       the .hi-on highlight (see the .hirow rules in css/styles.css). zi is kept but no longer
+       drives the alternating tint. */
+    const bg = "#ffffff"; void zi;
     /* 2026-07-23 (Aurvin, owner instruction): ONE LINE PER PORT. A voyage gets two lines —
        origin (with a trailing →) above destination; a berth stay gets one. The port NAME
        truncates with an ellipsis when the column is narrow, while the UN/LOCODE, the
        jurisdiction badge and the arrow are never clipped (they are flex:none); hovering any
        port line shows the untruncated "Name (LOCODE)". This replaces the old single
-       wrapping line, which broke names mid-word and made the two ports hard to tell apart. */
+       wrapping line, which broke names mid-word and made the two ports hard to tell apart.
+       2026-07-26n (Aurvin, owner instruction): the "name (LOCODE)" pair is now additionally
+       capped to max-width:25ch of its own, in a wrapper separate from the badge/arrow — so a
+       long name truncates once "Name (CODE)" would exceed 25 characters, EVEN THOUGH the
+       Activity & timeframe column itself stays its current (wider) width for the date/time
+       lines and the VOYAGE/PORT STAY tag underneath (owner chose "cap the name only", not
+       "shrink the whole column"). Mirrors the 25-char cap already applied to the Report-Wise
+       Port column (2026-07-25b) so the two views read the same way. Applies per port LINE —
+       a voyage's origin and destination each get their own independent 25-char budget. The
+       jurisdiction badge and the → arrow sit OUTSIDE this capped wrapper (still flex:none on
+       the outer row) so they are never clipped and never eat into the name's budget. */
     const ports = legPorts(d, row);
     const portHtml = ports.map((p,pi)=>{
       const j = (isBerth && p.juris) ? JURIS_PAL[p.juris] : null;
@@ -2489,15 +3366,50 @@ function breakdownGrid(R, tips){
         ? (p.name ? `<span style="flex:none;margin-left:4px">(${esc(p.code)})</span>`
                   : `<span style="flex:none">${esc(p.code)}</span>`)
         : (p.name ? "" : `<span style="flex:none">${esc(p.label)}</span>`);
-      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameSpan}${codeSpan}${badge}${arrow}</div>`;
+      const nameCodeCap = `<span style="display:flex;align-items:baseline;min-width:0;max-width:25ch;overflow:hidden;flex:0 1 auto">${nameSpan}${codeSpan}</span>`;
+      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameCodeCap}${badge}${arrow}</div>`;
     }).join("");
-    const cargo = isBerth && (!row || row.poc!==false);
+    /* 2026-07-24 (Aurvin, owner instruction): a stay where cargo happened but a report was
+       OUTSIDE_PORT_LIMIT is scored as transit (row.poc===false) — but the owner wants it to
+       still show a 📦 AND a red OPL badge in Leg-Wise, so it is clear cargo WAS done, just
+       under a port-limit flag (which is WHY it is not a port of call). Leg-Wise only. */
+    const oplCargo = isBerth && !!(row && row.oplCargo);
+    const cargo = isBerth && (!row || row.poc!==false || oplCargo);
     /* 2026-07-23c: the icon now lives in the badge lane beside the timestamps, so it is a
        fixed-height line box (1.45em of the 0.85em time font = exactly one time line) with
        the glyph centred in it — that keeps 📦 and the leg tag on one vertical line and stops
        the taller emoji from pushing the arrival timestamp out of alignment. */
-    const cargoIcon = cargo ? `<div title="${esc(cargoTipText(row))}" style="cursor:help;height:1.45em;display:flex;align-items:center;font-size:13px;line-height:1">📦</div>` : "";
-    const legTag = isBerth ? "@BERTH" : "VOYAGE";
+    const cargoGlyph = cargo ? `<span title="${esc(cargoTipText(row))}" style="cursor:help;font-size:13px;line-height:1">📦</span>` : "";
+    const oplBadge = oplCargo ? `<span title="A cargo operation here was reported OUTSIDE_PORT_LIMIT (e.g. discharging still tagged on the departure report, after the ship left the berth). Because of that, this stay is scored as transit — NOT a port of call — and is excluded from EU ETS / UK ETS / FuelEU. If it should count, toggle POC on for this row in the Workspace." style="cursor:help;font-size:8px;font-weight:700;letter-spacing:0.04em;color:#b91c1c;background:#fee2e2;padding:1px 4px;border-radius:3px;line-height:1.3">OPL</span>` : "";
+    /* 2026-07-26 (Aurvin, owner instruction): a port stay that is NOT a port of call
+       (row.poc===false) but has no cargo and no OPL flag either — a plain transit/anchorage
+       stay — previously left this whole badge-lane slot blank, so it looked identical to a
+       genuine POC port stay (same tag on both) until you opened Leg-Wise's ELIGIBILITY
+       caption or the Workspace POC toggle to check. A "Transit" caption now fills that same
+       slot for this case, so it's visible at a glance. Deliberately does NOT apply when
+       oplCargo is true — that case already shows 📦 + the red "OPL" badge, which itself flags
+       "not a port of call, cargo done outside port limits"; adding "Transit" there too was
+       judged redundant (owner decision, this session). Display-only — reads the same
+       row.poc===false already used everywhere else this session (elReasonText, oplCargo); no
+       POC derivation touched (FROZEN, CLAUDE.md). */
+    const plainTransit = isBerth && !!row && row.poc===false && !oplCargo;
+    const transitCaption = plainTransit ? `<span title="This port stay was not identified as a port of call (POC) — it is scored as a transit/anchorage stay for EU ETS, UK ETS and FuelEU, not a port visit. Toggle POC on for this row in the Workspace if that's wrong." style="cursor:help;font-size:8px;font-weight:700;letter-spacing:0.04em;color:#94a3b8">Transit</span>` : "";
+    const cargoIcon = (cargoGlyph||oplBadge||transitCaption) ? `<div style="height:1.45em;display:flex;align-items:center;justify-content:flex-end;gap:4px">${cargoGlyph}${oplBadge}${transitCaption}</div>` : "";
+    /* 2026-07-26t (Aurvin, owner instruction): "@BERTH" renamed to "PORT STAY" — the owner
+       flagged that "@BERTH" could be misread as a literal physical berth (a specific type of
+       quay/mooring), when the tag is really just marking "the ship was in this port" (which
+       may include anchorage, STS, or a genuine berth — the underlying stay TYPE is unrelated
+       to this label). Display-only rename; the value driving it (isBerth = d.kind!=="voyage")
+       and the data-layer AT_BERTH port-activity-code terminology (MDA source field, Case A/B
+       derivation ladder — FROZEN, CLAUDE.md) are completely untouched. Kept the existing
+       all-caps/letter-spaced style to match "VOYAGE" beside it.
+       2026-07-26o3 (Aurvin, owner instruction): 2026-07-26o2's two-line wrap of "PORT STAY"
+       was REVERTED — owner asked instead to close the gap between the dates and the tag,
+       keeping "PORT STAY" on one line. (Root cause of that gap turned out to be the dates
+       block's flex:1 1 auto below stretching to fill leftover width in the row, pushing the
+       tag away from the dates even though "PORT STAY" itself fits comfortably on one line
+       within this column's width — see the fix at the dates/tag row below.) */
+    const legTag = isBerth ? "PORT STAY" : "VOYAGE";
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
     const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
     const voyNo = brVoyNos(segs, d);        // 2026-07-23f: canonical voyage number(s) for this leg
@@ -2511,48 +3423,117 @@ function breakdownGrid(R, tips){
       const cbC = fu.isTotal ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d")
                              : (covEU>0 ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8");
       const cell = (col,extra,val)=>`<div style="grid-column:${col+1};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
+      /* 2026-07-26o: the three per-fuel "Cov." cells (9/12/14 in the old layout) are gone —
+         coverage is now shown ONCE per leg, as badges in the ELIGIBILITY block (columns 6-8,
+         see eligLeg below), not repeated on every fuel sub-row. Fuel type/Cons. shifted to
+         11/12, EU ETS to 13-14, UK ETS to 15, FuelEU to 16-19 (was 8/9, 10-11, 13-14, 15-19). */
       return `
-        <div style="grid-column:5;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
-        ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(fu.tonnes,1))}
-        ${cell(6,"color:#475569;", fu.isTotal?brDash:brPct(covEU))}
-        ${cell(7,"", brNum(fu.co2))}
-        ${cell(8,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
-        ${cell(9,"color:#475569;", fu.isTotal?brDash:brPct(covUK))}
-        ${cell(10,"border-right:1px solid #e2e8f0;font-weight:600;color:#6d4fa3;", covUK>0? fmtF(fu.ukCO2e,2) : brDash)}
-        ${cell(11,"color:#475569;", fu.isTotal?brDash:brPct(covEU))}
-        ${cell(12,"", brNum(fu.eligibleEU,1))}
-        ${cell(13,"", brNum(fu.energy))}
-        ${cell(14,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
-        ${cell(15,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
-        ${cell(16,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}
-        ${cell(19,"color:#334155;", fmtF(fu.sccTtW,2))}
-        ${cell(20,"font-weight:600;color:#9a6b1f;", fu.sccWtW==null? brNoFactor : fmtF(fu.sccWtW,2))}`;
+        <div style="grid-column:11;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
+        ${cell(11,"padding-left:4px;", fmtF(fu.tonnes,1))}
+        ${cell(12,"border-right:1px solid #e2e8f0;", brNum(R.year>=2026? fu.totalCO2e : fu.totalCO2))}
+        ${cell(13,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
+        ${cell(14,"border-right:1px solid #e2e8f0;font-weight:600;color:#6d4fa3;", covUK>0? fmtF(fu.ukCO2e,2) : brDash)}
+        ${cell(15,"", brNum(fu.eligibleEU,1))}
+        ${cell(16,"", brNum(fu.energy))}
+        ${cell(17,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
+        ${cell(18,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
+        ${cell(19,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}`;
     }).join("");
 
-    /* SCC leg-level cells (2026-07-22c). Cargo and transport work are properties of the LEG,
-       not of a fuel, so they span the fuel lines — repeating a cargo figure on each fuel line
-       would invite reading it as additive. Berth rows carry none of this: SCC measures the
-       carriage of cargo over a distance. */
-    const sccLeg = !isBerth ? `
-        <div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.cargo>0? fmtF(d.cargo,0) : (d.dist>0? `<span style="color:#94a3b8" title="Ballast leg — no cargo on the departure (SOSP) report. Its WtW CO₂e is carried into the next laden voyage (ADR 2026 Appendix 3).">ballast</span>` : brDash)}</div>
-        <div style="grid-column:19;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;color:#475569">${d.tw>0? fmtF(d.tw/1e6,2) : brDash}</div>
-        <div style="grid-column:22;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#9a6b1f">${
-          d.eeoi!=null ? fmtF(d.eeoi,2) + ((d.sccBallast>0||d.sccPort>0)? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(d.sccNumerator,2)} t WtW CO₂e = this leg's own ${fmtF(d.sccWtW,2)}${d.sccBallast>0?` + ${fmtF(d.sccBallast,2)} carried in from the preceding ballast leg (and its port stays)`:""}${d.sccPort>0?` + ${fmtF(d.sccPort,2)} from this voyage's own loading/discharge stays`:""}"> ⊕</span>` : "")
-          : (d.sccNoFactor? brNoFactor : brDash)}</div>`
-      /* berth rows: no cargo or transport work of their own, but their fuel IS counted —
-         say where, so the attribution is auditable rather than invisible (2026-07-22d) */
-      : `<div style="grid-column:18;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
-         <div style="grid-column:19;grid-row:1 / span ${span};padding:${cellPad};text-align:right">${brDash}</div>
-         <div style="grid-column:22;grid-row:1 / span ${span};padding:${cellPad};text-align:right;font-size:10.5px;color:#94a3b8">${
-           d.sccGoesTo ? `<span style="cursor:help" title="This port stay's ${fmtF(d.sccWtW,2)} t WtW CO₂e is counted as the ${esc(d.sccGoesTo.role)} of ${d.sccGoesTo.label? esc(d.sccGoesTo.label) : "the following ballast leg"} — SCC port consumption is never dropped.">→ ${esc(d.sccGoesTo.role)}</span>` : brDash}</div>`;
+    /* 2026-07-26c (Task 2, Aurvin, owner instruction): the Sea Cargo Charter leg-level block
+       (Cargo, T-Work, SCC EEOI) that used to live here is REPLACED by the IMO block below.
+       Cargo moved to its own column 4 (see legLevel further down); T-Work and the SCC WtW /
+       SCC EEOI figures are no longer shown in this table at all — still calculated, still in
+       the Leg-Wise Excel export, still on screen in Voyage-Wise.
+       Like the cells they replace, these are LEG-level (a CII or an EEOI belongs to the leg,
+       not to one of its fuels), so they span every fuel sub-row and are vertically centred. */
+    const imoCellStyle = "display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;";
+    /* 2026-07-26v (Task 2, Aurvin, owner instruction): the CII column (col 9 only — EEOI,
+       col 10, is untouched and keeps imoCellStyle above) needs its content on ONE consistent
+       vertical line down the whole column, for both row kinds: a port stay's single t/d value
+       and a voyage's CII pill + kg/nm second line. The CII pill's own three segments (%,
+       rating letter, AER) resize per row, so the letter's exact x-position drifts row to row
+       under right-alignment — there is no fixed pixel spot to anchor a second line under.
+       Owner-confirmed fix: CENTER this cell instead (flex-direction:column so the pill/dash
+       and any second line stack vertically, align-items:center so every row's content shares
+       the cell's own horizontal centre) rather than trying to track the letter's position. */
+    const imoCellStyleCII = "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-variant-numeric:tabular-nums;";
+    const legCiiRes = legCII(d, R.cii, S);
+    const legEeoi = legEEOI(d);
+    /* 2026-07-26u (Aurvin, owner instruction): port stays used to show a bare dash in the CII
+       column (no distance, no CII). That slot now carries the equivalent HFO fuel/day figure
+       instead — see legHfoEqPerDay above for the full formula and reasoning. */
+    const legHfoEq = isBerth ? legHfoEqPerDay(d) : null;
+    /* 2026-07-26v (Task 1, Aurvin): voyage rows get a second figure — equivalent HFO fuel/nm —
+       shown as a small line under the existing CII pill (the pill itself is unchanged: same
+       ciiCellHtml, same suppression rule). See legHfoEqPerNm above for the formula. */
+    const legHfoEqNm = (!isBerth) ? legHfoEqPerNm(d) : null;
+    /* 2026-07-26o (Aurvin, owner instruction): standalone ELIGIBILITY badges, left of IMO
+       (columns 6-8). LEG-level like the IMO cells below (one badge per leg, not repeated per
+       fuel sub-row) — same trPctBadge() pill the Report-Wise Eligibility columns use, fed the
+       SAME covEU/covUK values the old per-section "Cov." cells used (display-only change, no
+       calculation touched). FEU mirrors EU ETS's coverage, exactly as Report-Wise's
+       trCoverage() does (fueleu-art2 mirrors euets-art3ga).
+       2026-07-26p/q (Aurvin, owner instruction, clarified over questions both sessions): a
+       reason-text caption sits BELOW the badges — one shared line under all three (not
+       repeated per badge), e.g. "EU → Non-EU" for a voyage leg or "At UK OMR" for a genuine POC
+       berth stay (see elReasonText() above — logic corrected 2026-07-26q; separator changed
+       from "-" to " → " on 2026-07-26 to fix "Non-EU-Non-EU" reading as garbled). The three separate
+       per-column divs were merged into ONE div spanning columns 6-8 so a single caption can sit
+       under all three without overlapping them — the badges themselves are unchanged (same
+       trPctBadge(), same 100%/partial/0% styling), only their layout container changed.
+       2026-07-26q (Aurvin, owner instruction — Task 3, this session): the badge row must sit
+       at the TRUE vertical centre of the leg's own row-span, unmoved by the caption beneath it
+       (unlike 26p's flex-column, which centred badge+caption as ONE block, nudging the badge up
+       slightly). Both are now ABSOLUTELY positioned inside a `position:relative` box: the badge
+       row at `top:50%` (translate -50%,-50%) — exactly where it sat before any caption existed —
+       and the caption at a FIXED offset below that centre (`50% + 22px`: 10px = half the
+       badge's own ~20px height, +12px = the owner's chosen "generous" gap below the badge's
+       own bottom edge). Absolutely positioned children don't drive the grid's own row-height
+       auto-sizing, so a `min-height:70px` guard is added — comfortably fitting badge+gap+
+       caption even on a single-fuel-line leg — accepting the owner's explicit trade-off
+       ("more generous gap" over "tight", knowing it costs some row height) that every leg row
+       is now a little taller. */
+    const elText = elReasonText(row);
+    const eligLeg = `
+        <div style="grid-column:6 / span 3;grid-row:1 / span ${span};position:relative;min-height:70px;border-right:1px solid #e2e8f0">
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${elFusedPill([covEU*100, covEU*100, covUK*100])}</div>
+          ${elText?`<div style="position:absolute;top:calc(50% + 22px);left:50%;transform:translateX(-50%);font-size:9px;font-weight:600;color:#94a3b8;white-space:nowrap;line-height:1.2" title="Zone pair (or single zone for a port stay) that this leg's EU ETS / UK ETS / FuelEU coverage is judged on.">${esc(elText)}</div>`:""}
+        </div>`;
+    /* 2026-07-26w (Aurvin, owner instruction, this session): SUPERSEDES the 2026-07-26v
+       "centered flex-column" layout for col 9 on VOYAGE rows only (port-stay t/d, isBerth
+       branch, is untouched — owner confirmed only voyage rows needed this). Reason: flex
+       centering centres the PILL+CAPTION as one combined block, so the pill's own y-position
+       drifts with the caption's presence/height — it does not sit at the row's true centre.
+       That put the CII pill out of vertical alignment with the Eligibility badges (columns
+       6-8), which use a DIFFERENT technique (absolute position, pill pinned at the row's
+       literal top:50% centre, caption pinned at a fixed centre+22px offset, min-height:70px
+       guard) — see eligLeg above. Owner asked (screenshot: leg-wise IMO/Eligibility banners
+       not level) for the two columns to share one visual baseline for both the badge/pill row
+       AND the caption row. Fix: col 9 on voyage rows now copies eligLeg's exact technique
+       (same 50%/50%+22px anchors, same min-height:70px) so both columns are pinned to
+       IDENTICAL coordinates instead of two independent centering rules that happen to look
+       close. This changes the self-test at "CII column (grid-column:9) cell uses centered
+       flex-column layout" (below) — updated in the same commit, per CLAUDE.md's rule that a
+       test only changes with an explicit owner instruction, stated here. */
+    const imoLeg = `
+        <div style="grid-column:9;grid-row:1 / span ${span};${
+          isBerth ? `padding:${cellPad};${imoCellStyleCII}`
+                  : `position:relative;min-height:70px`}">${
+          isBerth ? hfoEqCellHtml(legHfoEq)
+                  : `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${ciiCellHtml(legCiiRes)}</div>`+
+                    `<div style="position:absolute;top:calc(50% + 22px);left:50%;transform:translateX(-50%);white-space:nowrap">${hfoEqPerNmCellHtml(legHfoEqNm)}</div>`}</div>
+        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};${imoCellStyle}border-right:1px solid #e2e8f0;font-weight:600;color:#1d7a5f">${
+          eeoiCellHtml(legEeoi, isBerth?"A port stay carries no cargo over a distance, so it has no EEOI."
+                                       :"No transport work on this leg — the departure (SOSP) report shows no cargo (ballast leg), so there are no tonne-miles to divide by.")}</div>`;
 
     return `
-      <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
-        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("br",i)}</div>
-        <div style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
+      <div class="hirow" style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+        <div class="hicell" style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("br",i)}</div>
+        <div class="hicell" style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
             <div style="position:absolute;top:0;bottom:0;left:50%;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
-            <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${isBerth?ICON_BERTH:ICON_VOYAGE}</div>
+            <div class="hicell" style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${isBerth?ICON_BERTH:ICON_VOYAGE}</div>
           </div>
           <div style="flex:1 1 auto;min-width:0;padding:10px 12px 10px 0">
             <!-- 2026-07-23c (Aurvin, owner instruction): the port lines now get the FULL width
@@ -2563,8 +3544,22 @@ function breakdownGrid(R, tips){
             <!-- The two timestamps are stacked one above the other, mirroring the two port
                  lines above (start over end, arrow trailing the first). To their right is a
                  badge lane of the SAME two line heights: 📦 on the first (arrival) line,
-                 the VOYAGE / @BERTH tag on the second — so both sit on one vertical line and
-                 neither steals width from the port name. -->
+                 the VOYAGE / PORT STAY tag on the second (renamed from "@BERTH" 2026-07-26t) —
+                 so both sit on one vertical line and neither steals width from the port name.
+                 2026-07-26o4 (Aurvin, owner instruction): 2026-07-26o3's flex:none on the
+                 dates block (left the tag flush against the dates, with blank space to its
+                 right) is REVERTED back to flex:1 1 auto — owner clarified the tag should
+                 pull back over to the RIGHT edge (flush under the name/badge above), not sit
+                 close to the dates. Key point the owner made: this costs nothing in column
+                 width. The grid TRACK width (BR_GRID's minmax for this column, set by the
+                 25-character name+LOCODE row above) is fixed independently of how this inner
+                 flex row lays out its own two children — flex:1 1 auto here only redistributes
+                 space ALREADY allocated to the cell; it cannot make the column itself grow.
+                 The dates+tag row's own content (~180px) was always comfortably inside the
+                 column's available width (~232px, driven by the name row) whether the tag
+                 sits close to the dates or flush right — so "flush right" was free either way,
+                 and is simply the better-looking choice, matching how the port name row above
+                 already ends with the badge/arrow near the same right edge. -->
             <div style="display:flex;align-items:flex-end;gap:8px;font-size:0.85em;color:#64748b;margin-top:5px;line-height:1.45">
               <div style="flex:1 1 auto;min-width:0;font-variant-numeric:tabular-nums">
                 <div style="white-space:nowrap">${fromS} <span style="color:#94a3b8">→</span></div>
@@ -2577,10 +3572,19 @@ function breakdownGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? esc(voyNo) : brDash}</div>
-        <div style="grid-column:4;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
+        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? esc(voyNo) : brDash}</div>
+        <!-- 2026-07-26c (Aurvin, owner instruction): Cargo now has its own column between
+             Voyage No and Dist., matching where it sits in the Workspace / Report-Wise
+             tables. Owner chose PLAIN NUMBERS here — the old grey "ballast" word that the
+             SCC Cargo cell used is not carried over.
+             2026-07-26e (Aurvin, owner instruction): a voyage leg with genuine zero cargo now
+             shows 0 (not a dash) — a real reading of zero is a value, not "no data". Berth
+             stays still show a dash (cargo is a voyage concept). -->
+        <div style="grid-column:4;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${(!isBerth)? fmtF(d.cargo||0,0) : brDash}</div>
+        <div style="grid-column:5;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
+        ${eligLeg}
         ${fuelCells}
-        ${sccLeg}
+        ${imoLeg}
       </div>`;
   }).join("");
   /* the timeline rule now lives INSIDE each frozen first cell (see the gutter above) — as a
@@ -2607,7 +3611,10 @@ function brFuelLines(d){
              tonnes: fu.tonnes, eligibleEU: fu.eligibleEU,
              energy: (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0,   // 10⁶ MJ = t × LCV(MJ/g)
              E: fu.E||0, feuCB: fu.feuCB, feuPenalty: fu.feuPenalty||0,
-             co2: fu.co2||0, euas: fu.euas||0, ukCO2e: fu.ukCO2e||0,
+             co2: fu.co2||0, etsCO2: fu.etsCO2||0, etsCO2e: fu.etsCO2e||0, euas: fu.euas||0, ukCO2e: fu.ukCO2e||0,
+             /* 2026-07-26p (Aurvin, owner instruction): Fuel metrics' own "Total CO2e" — full
+                fuel burned, not EU ETS coverage-scoped. See js/engine.js. */
+             totalCO2: fu.totalCO2||0, totalCO2e: fu.totalCO2e||0,
              sccTtW: fu.sccTtW||0, sccWtW: fu.sccWtW, isTotal:false };
   });
   /* 2026-07-22b (owner): the per-leg "All fuels" subtotal line was removed — it was not
@@ -2627,40 +3634,77 @@ function brTotalsHtml(){
   const sumEnergy = dets.reduce((a,d)=>a+d.fuels.reduce((b,fu)=>{const fb=FUEL_BY_ID[fu.id]||{};return b+((fb.lcv&&fu.eligibleEU)?fu.eligibleEU*fb.lcv:0);},0),0);
   /* SCC fleet intensity is a WEIGHTED average — Σ numerator ÷ Σ transport work — never the
      sum or the mean of the per-leg EEOIs. Legs whose fuel has no Appendix 6 factor are left
-     out of both sides rather than counted as zero (2026-07-22c). */
+     out of both sides rather than counted as zero (2026-07-22c).
+     2026-07-26c: the SCC columns no longer appear in this table, so eeoiTot is no longer
+     rendered — kept here (unused) only because removing it would be an unrelated change. */
   const sccDets = dets.filter(d=>d.kind==="voyage" && d.tw>0 && !d.sccNoFactor);
   const twTot = sccDets.reduce((a,d)=>a+d.tw,0);
   const numTot = sccDets.reduce((a,d)=>a+(Number(d.sccNumerator)||0),0);
-  const eeoiTot = twTot>0? numTot*1e6/twTot : null;
+  const eeoiTot = twTot>0? numTot*1e6/twTot : null; void eeoiTot;
+  /* 2026-07-26i (Aurvin, EXPLICIT owner instruction, this session, after a clarifying-question
+     round): the TOTAL row's CII/EEOI numerator now sums CO₂ from EVERY ticked row — voyage
+     LEGS AND BERTH STAYS — matching the real annual attained CII engine.js computes for the
+     Results/Workspace tab (cii_g there accumulates every row's CO₂ regardless of kind; only
+     totalDist is voyage-only). With nothing ticked (every row counted), this TOTAL row's CII
+     % and rating now equal the Workspace figure for the same year/date-filter selection —
+     the owner's explicit ask ("this value should match the value in the workspace"). Ticking
+     a subset still narrows the total to just the ticked rows' CO₂, same mechanic as every
+     other column.
+       TOTAL CII  = Σ ALL ticked rows' CO₂ (g) ÷ (capacity × Σ ticked VOYAGE-LEG distance)
+       TOTAL EEOI = Σ ALL ticked rows' CO₂ (g) ÷ Σ ticked VOYAGE-LEG transport work
+     Distance and transport-work denominators are UNCHANGED (voyage-legs only — a berth stay
+     never has either). This supersedes the previous 2026-07-26c rule that excluded at-berth
+     CO₂ from both totals entirely; INDIVIDUAL leg and berth rows are NOT touched by this
+     change (owner: "for @berth row — no CII/EEOI needed [individually]; but their consumption
+     will be part of Total CII, EEOI") — a leg's own CII/EEOI keeps its existing indicative,
+     berth-excluded definition and caveat tooltip; a berth row keeps showing a dash. */
+  const co2AllTot = sum("co2");
+  const imoDets = dets.filter(d=>d.kind==="voyage" && d.dist>0);
+  const imoCap = ciiCapacityOf(S);
+  const imoDist = imoDets.reduce((a,d)=>a+(Number(d.dist)||0),0);
+  const imoAttained = (imoCap>0 && imoDist>0) ? co2AllTot*1e6/(imoCap*imoDist) : null;
+  const ciiTot = (imoAttained!=null && R.cii && R.cii.bounds && R.cii.ciiReq!=null)
+    ? { attained:imoAttained, rating:ciiRatingOf(imoAttained,R.cii.bounds), pct:ciiPctOfRequired({attained:imoAttained,ciiReq:R.cii.ciiReq}) }
+    : null;
+  const twImo = dets.filter(d=>d.kind==="voyage" && d.tw>0);
+  const twImoTot = twImo.reduce((a,d)=>a+d.tw,0);
+  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null;
   const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   return `
     <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
       <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
-      ${cell(3,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),0))}
-      ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;", fmtF(sumF("tonnes"),1))}
+      ${/* 2026-07-26d (Aurvin, owner instruction): no cargo TOTAL. Beyond saving width, a sum
+           here was misleading — the same parcel is reported on every leg it is carried over,
+           so the column does not add up to a meaningful tonnage. Dash instead. */""}
+      <div style="grid-column:4;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      ${cell(4,"border-right:1px solid #e2e8f0;", fmtF(sum("dist"),0))}
+      ${/* 2026-07-26o: ELIGIBILITY totals (columns 6-8) — a coverage % cannot be meaningfully
+           summed across legs (same reasoning the old per-section "Cov." totals used), so all
+           three show a dash, centred like the badges above them. */""}
+      <div style="grid-column:6 / span 3;padding:${cellPad};text-align:center;border-right:1px solid #e2e8f0">${brDash}</div>
+      ${/* 2026-07-26e: weighted IMO totals — see the note above brTotalsHtml's imoDets block.
+           The CII cell reuses ciiCellHtml, so the TOTAL row's badge and percentage look
+           exactly like the leg rows' and the Results tab's. IMO now sits LEFT of Fuel metrics. */""}
+      <div style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
+      ${cell(9,"border-right:1px solid #e2e8f0;color:#1d7a5f;", eeoiImoTot!=null? fmtF(eeoiImoTot,2) : brDash)}
+      ${cell(11,"padding-left:4px;", fmtF(sumF("tonnes"),1))}
       ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
            the SAME number of decimal places as the leg rows underneath it in every column.
            It previously rounded CO₂, EUAs, UKAs, TtW and WtW to whole tonnes while the legs
            below showed 2 dp, so the decimal point in the total sat two characters left of
            the column it was heading. Display only — the summed value is unchanged. */""}
-      <div style="grid-column:7;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(7,"", fmtF(sum("co2"),2))}
-      ${cell(8,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
-      <div style="grid-column:10;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(10,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
-      <div style="grid-column:12;padding:${cellPad};text-align:right">${brDash}</div>
-      ${cell(12,"", fmtF(sumF("eligibleEU"),1))}
-      ${cell(13,"", fmtF(sumEnergy,2))}
-      ${cell(14,"", fmtF(sum("E")/1e6,2))}
-      ${cell(15,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
-      ${cell(16,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
-      ${cell(17,"color:#475569;", fmtF(sum("cargo"),0))}
-      ${cell(18,"color:#475569;", fmtF(sum("tw")/1e6,2))}
-      ${cell(19,"color:#334155;", fmtF(sum("sccTtW"),2))}
-      ${cell(20,"color:#9a6b1f;", fmtF(sum("sccWtW"),2))}
-      ${cell(21,"color:#9a6b1f;", eeoiTot!=null? fmtF(eeoiTot,2) : brDash)}
+      ${/* 2026-07-26p: Total CO2e moved to Fuel metrics — sums det.totalCO2/totalCO2e (full
+           fuel burned, not EU-ETS-coverage-scoped). Border-right moved here from Cons. (col 11). */""}
+      ${cell(12,"border-right:1px solid #e2e8f0;", fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
+      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
+      ${cell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
+      ${cell(15,"", fmtF(sumF("eligibleEU"),1))}
+      ${cell(16,"", fmtF(sumEnergy,2))}
+      ${cell(17,"", fmtF(sum("E")/1e6,2))}
+      ${cell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
+      ${cell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
     </div>`;
 }
 
@@ -2883,12 +3927,13 @@ function vwFuelLines(g){
     let a=acc.get(fu.id);
     if(!a){ a={ id:fu.id, label:cleanFuelName(FUEL_BY_ID[fu.id]||{id:fu.id,name:fu.name}),
                 tonnes:0, eligibleEU:0, energy:0, E:0, feuCB:0, feuPenalty:0,
-                co2:0, euas:0, ukCO2e:0, sccTtW:0, sccWtW:0, noFactor:false }; acc.set(fu.id,a); }
+                co2:0, etsCO2:0, etsCO2e:0, totalCO2:0, totalCO2e:0, euas:0, ukCO2e:0, sccTtW:0, sccWtW:0, noFactor:false }; acc.set(fu.id,a); }
     const fb=FUEL_BY_ID[fu.id]||{};
     a.tonnes+=Number(fu.tonnes)||0; a.eligibleEU+=Number(fu.eligibleEU)||0;
     a.energy += (fb.lcv&&fu.eligibleEU)? fu.eligibleEU*fb.lcv : 0;
     a.E+=Number(fu.E)||0; a.feuCB+=Number(fu.feuCB)||0; a.feuPenalty+=Number(fu.feuPenalty)||0;
-    a.co2+=Number(fu.co2)||0; a.euas+=Number(fu.euas)||0; a.ukCO2e+=Number(fu.ukCO2e)||0;
+    /* 2026-07-26p: totalCO2/totalCO2e — Fuel metrics' full-fuel figure, see js/engine.js */
+    a.co2+=Number(fu.co2)||0; a.etsCO2+=Number(fu.etsCO2)||0; a.etsCO2e+=Number(fu.etsCO2e)||0; a.totalCO2+=Number(fu.totalCO2)||0; a.totalCO2e+=Number(fu.totalCO2e)||0; a.euas+=Number(fu.euas)||0; a.ukCO2e+=Number(fu.ukCO2e)||0;
     a.sccTtW+=Number(fu.sccTtW)||0;
     if(fu.sccWtW==null) a.noFactor=true; else a.sccWtW+=Number(fu.sccWtW)||0;
   }
@@ -2905,42 +3950,78 @@ function vwFuelLines(g){
    NEXT, so they are carried forward into the next group that has transport work. This is the
    same rule js/engine.js applies per leg, lifted to voyage granularity. A group burning a fuel
    with no Table 8 factor is dashed and excluded rather than silently counted as zero. */
+/* end-year of a voyage = calendar year of its END timestamp (SCC: emissions belong to the
+   voyage, taken at its end date). Falls back to the given year when undated. */
+function vwEndYear(endISO, fallback){
+  if(endISO){ const yy=Number(String(endISO).slice(0,4)); if(isFinite(yy)) return yy; }
+  return fallback;
+}
 function vwGroups(state){
   const S0 = state||S;
-  const y  = Number(S0.year)||2026;
+  const fallbackY = Number(S0.year)||2026;
   const reps = S0.mdaReports||[];
   const segs = vwVoyageSegments(reps);
   const split = vwSplitRows(S0.rows||[], segs, reps);
-  const R = computeAll(Object.assign({}, S0, { rows: split.rows }));
-  /* rowDetails is the in-year subset of split.rows, in order — rebuild that index map so a
-     detail can be traced back to the voyage number its source row belongs to */
-  const keep=[]; split.rows.forEach((row,i)=>{ if(vwInYear(row,y)) keep.push(i); });
-  const order=[], byVoy=new Map();
-  R.rowDetails.forEach((d,j)=>{
-    const src = split.rows[keep[j]];
-    /* keyed on the SEGMENT INDEX, never on the voyage number - after the 2026-07-23e
-       normalisation two non-adjacent segments can share a number (5 -> 6 -> 5 is three
-       voyages, two of them called "5"), and keying by number would wrongly weld those two
-       "5"s back into one voyage. */
-    const si  = split.owner[keep[j]];
-    const seg = (si!=null && segs[si]) ? segs[si] : null;
-    const key = (si==null) ? "none" : ("#"+si);
-    let g=byVoy.get(key);
-    if(!g){ g={ voy: seg? seg.voy : "", raws: seg? seg.raws : [], dets:[], srcs:[],
-                tStart:null, tEnd:null, seg:seg }; byVoy.set(key,g); order.push(g); }
-    /* carry the split marker from the source row onto the detail so the table can flag it */
-    if(src && src.vwSplitOf>1){ d.vwSplit=src.vwSplitPart; d.vwSplitOf=src.vwSplitOf; }
-    g.dets.push(d); g.srcs.push(src);
-    if(d.tStart && (!g.tStart || d.tStart<g.tStart)) g.tStart=d.tStart;
-    if(d.tEnd   && (!g.tEnd   || d.tEnd  >g.tEnd  )) g.tEnd  =d.tEnd;
-  });
+
+  /* group the split-row indices by their owner SEGMENT (never by the voyage number — two
+     non-adjacent segments can share a number, e.g. 5 → 6 → 5) and find each group's end date */
+  const keyOf = i => (split.owner[i]==null) ? "none" : ("#"+split.owner[i]);
+  const grpIdx = new Map();
+  split.rows.forEach((row,i)=>{ const k=keyOf(i); if(!grpIdx.has(k)) grpIdx.set(k,[]); grpIdx.get(k).push(i); });
+  const grpEnd = new Map();
+  for(const [k,idxs] of grpIdx){
+    let endISO=null; for(const i of idxs){ const t=split.rows[i].tEnd||split.rows[i].tStart; if(t && (!endISO||t>endISO)) endISO=t; }
+    grpEnd.set(k, { endISO, endYear: vwEndYear(endISO, fallbackY) });
+  }
+
+  /* 2026-07-24 (Aurvin): Voyage-Wise has its OWN, multi-year date range. A voyage is INCLUDED
+     when its END date falls in the range, and each voyage is graded under the rules of its
+     end-date year. Rows are computed one end-year bucket at a time (ignoreYearFilter) so a
+     voyage carries all its consumption — even a part that spilled into the previous calendar
+     year — under its end-year's rules. */
+  const vf = S0.voyDateFilter;
+  const vfOn = !!(vf && vf.active && vf.fromISO && vf.toISO);
+  const inRange = (endISO)=>{ if(!vfOn || !endISO) return true;
+                              return _utcms(endISO)>=_utcms(vf.fromISO) && _utcms(endISO)<=_utcms(vf.toISO); };
+  const keptKeys = [...grpIdx.keys()].filter(k=>inRange(grpEnd.get(k).endISO));
+  const byYear = new Map();
+  for(const k of keptKeys){ const yy=grpEnd.get(k).endYear; if(!byYear.has(yy)) byYear.set(yy,[]); byYear.get(yy).push(k); }
+
+  const order=[];
+  for(const [yy,keys] of byYear){
+    const idxs=[]; for(const k of keys) idxs.push(...grpIdx.get(k));
+    idxs.sort((a,b)=>a-b);
+    const subRows  = idxs.map(i=>split.rows[i]);
+    const subOwner = idxs.map(i=>split.owner[i]);
+    const R = computeAll(Object.assign({}, S0, { rows:subRows, year:yy, ignoreYearFilter:true,
+                                                 dateFilter:{active:false}, voyDateFilter:{active:false} }));
+    const byVoy=new Map();
+    R.rowDetails.forEach((d,j)=>{                 // 1:1 with subRows (ignoreYearFilter keeps all)
+      const src = subRows[j], si = subOwner[j];
+      const seg=(si!=null && segs[si]) ? segs[si] : null;
+      const key=(si==null) ? "none" : ("#"+si);
+      let g=byVoy.get(key);
+      /* 2026-07-26d (Task 3, Aurvin): each group carries the CII reference of ITS OWN END-YEAR
+         (`cii: R.cii`, where R is this bucket's per-year computeAll above). This matters:
+         the required CII and the A-E band edges tighten every year via the Z factor, so a
+         2025 voyage and a 2026 voyage must be rated on different bands. Taking it from the
+         engine's own per-year result rather than recomputing it here means the Voyage-Wise
+         rating can never drift from the Results tab's for the same year. */
+      if(!g){ g={ voy: seg? seg.voy : "", raws: seg? seg.raws : [], dets:[], srcs:[],
+                  tStart:null, tEnd:null, seg:seg, endYear:yy, cii:R.cii }; byVoy.set(key,g); order.push(g); }
+      if(src && src.vwSplitOf>1){ d.vwSplit=src.vwSplitPart; d.vwSplitOf=src.vwSplitOf; }
+      g.dets.push(d); g.srcs.push(src);
+      if(d.tStart && (!g.tStart || d.tStart<g.tStart)) g.tStart=d.tStart;
+      if(d.tEnd   && (!g.tEnd   || d.tEnd  >g.tEnd  )) g.tEnd  =d.tEnd;
+    });
+  }
   order.sort((a,b)=>(a.tStart||"")<(b.tStart||"")?-1:(a.tStart||"")>(b.tStart||"")?1:0);
   const sumOf=(g,k)=>g.dets.reduce((s,d)=>s+(Number(d[k])||0),0);
   let carry=0, carryLegs=0;
   for(const g of order){
     g.dist=sumOf(g,"dist"); g.cargo=sumOf(g,"cargo"); g.hours=sumOf(g,"hours");
     g.E=sumOf(g,"E"); g.feuCB=sumOf(g,"feuCB"); g.feuPenalty=sumOf(g,"feuPenalty");
-    g.co2=sumOf(g,"co2"); g.euas=sumOf(g,"euas"); g.ukCO2e=sumOf(g,"ukCO2e");
+    g.co2=sumOf(g,"co2"); g.etsCO2=sumOf(g,"etsCO2"); g.etsCO2e=sumOf(g,"etsCO2e"); g.totalCO2=sumOf(g,"totalCO2"); g.totalCO2e=sumOf(g,"totalCO2e"); g.euas=sumOf(g,"euas"); g.ukCO2e=sumOf(g,"ukCO2e");
     g.sccTtW=sumOf(g,"sccTtW"); g.sccWtW=sumOf(g,"sccWtW");
     g.tw=g.dets.reduce((s,d)=>s+(d.kind==="voyage"?(Number(d.tw)||0):0),0);
     g.sccNoFactor=g.dets.some(d=>d.sccNoFactor);
@@ -2950,7 +4031,12 @@ function vwGroups(state){
     if(g.tw>0 && !g.sccNoFactor){ g.sccNumerator=num; g.eeoi=num*1e6/g.tw; carry=0; carryLegs=0; }
     else { g.sccNumerator=null; g.eeoi=null; carry=num; carryLegs+=g.dets.filter(d=>d.kind==="voyage").length; }
   }
-  return { groups:order, segs, R, trailingBallast:carry, split };
+  /* representative computeAll (all kept rows) — used only for the SCC GWP label & context;
+     per-voyage figures above are the authoritative per-end-year values. */
+  const keptIdx=[]; for(const k of keptKeys) keptIdx.push(...grpIdx.get(k));
+  const Rrep = computeAll(Object.assign({}, S0, { rows: keptIdx.map(i=>split.rows[i]),
+                          year:fallbackY, ignoreYearFilter:true, dateFilter:{active:false} }));
+  return { groups:order, segs, R:Rrep, trailingBallast:carry, split };
 }
 
 /* ---- Voyage-Wise table ------------------------------------------------------------------
@@ -2968,9 +4054,71 @@ function vwGroups(state){
                 14 Elig. mt  15 Energy  16 Elig. energy  17 CB  18 Penalty (FuelEU)
    The grid TRACKS were reordered to match, so each column keeps its own width. */
 /* Same widening as BR_GRID (see the note there). 18 tracks, total minimum ≈ 1856px. */
-const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(96px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.85fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+/* 2026-07-25n (Aurvin, owner instruction): same SCC reorder as BR_GRID above — TtW, WtW,
+   Cargo, T-Work, EEOI (was Cargo, T-Work, TtW, WtW, EEOI), each column keeping its own width
+   in its new spot.
+   2026-07-26 (Aurvin, owner instruction): TtW (AR6) column REMOVED from this on-screen table,
+   same as Leg-Wise — its track dropped below, every later grid-column shifts down by 1. Still
+   calculated internally and still in the Voyage-Wise Excel export.
+   2026-07-26d (Task 3, Aurvin, owner instruction): the same IMO section added to Leg-Wise is
+   added HERE TOO, in the same place (as of 2026-07-26e, immediately LEFT of Fuel metrics) — rendered by the
+   same shared `ciiCellHtml` / `eeoiCellHtml` helpers, so the two tabs look identical. 18
+   tracks → 20. Unlike Leg-Wise, the Sea Cargo Charter section STAYS on this tab (the owner
+   removed it from Leg-Wise only), so this table now carries TWO EEOI columns:
+     • IMO section — EEOI, gCO₂/t·nm, tank-to-wake, CO₂ only (MEPC.1/Circ.684)
+     • SCC section — EEOI, gCO₂e/t·nm, well-to-wake AR6, with ballast carry-in
+   They are told apart by their section header and their unit line; both tooltips say
+   explicitly which is which. New column order:
+     1 chk | 2 Voyage & timeframe | 3 Voyage No | 4 Dist |
+     5-6 IMO (CII, EEOI) | 7-8 FUEL METRICS | 9-12 SEA CARGO CHARTER (WtW, Cargo, T-Work, EEOI) |
+     13-14 EU ETS | 15 UK ETS | 16-20 FuelEU
+     (2026-07-26e, Aurvin: IMO moved to the LEFT of Fuel metrics — same swap as Leg-Wise;
+      columns 9+ unchanged.)
+   The two new IMO tracks use the SAME narrowed widths as Leg-Wise (90px / 78px). Every other
+   track keeps its own width, just carried to its new position.
+   2026-07-26l (Aurvin, owner instruction): CII 90px→150px, matching the same Leg-Wise change
+   and for the same reason — the cell's new 3rd number (attained CII / AER) needs the room;
+   EEOI (78px) is untouched, per the owner's explicit choice.
+   2026-07-26m (Aurvin, owner instruction): CII 150px→126px, matching the same Leg-Wise change
+   — the pill's own padding was tightened and both numbers now carry a hard character cap, so
+   its maximum width is small and predictable and no longer needs the extra room. */
+/* 2026-07-26q3 (Aurvin, owner instruction): reordered so Fuel metrics (Fuel type, Cons.,
+   Total CO2e) is now ONE CONTIGUOUS 3-column group again, matching Leg-Wise's own group
+   shape — fixes the "two separate Fuel metrics tags" mistake from 2026-07-26p, where Total
+   CO2e sat isolated after the whole Sea Cargo Charter block. Only the Total-CO2e track
+   (was position 12, "minmax(96px,0.7fr)") and the four Sea Cargo Charter tracks (were
+   8-11: WtW/Cargo/T-Work/EEOI) swapped places — every other track, including everything
+   from EUAs (13) onward, keeps its EXACT same width and position; the physical column count
+   (20) and every individual track's px/fr value are UNCHANGED, so no column got any wider
+   or narrower — only the ORDER of these five tracks moved. */
+const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(126px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
 let VW_LAST = null;
+
+/* 2026-07-26d (Task 3, Aurvin): the Voyage-Wise IMO figures. Same formulas and the same
+   implausibility cut-offs as the Leg-Wise ones — they go through the shared `ciiFrom` core —
+   but scoped to a WHOLE VOYAGE GROUP rather than a single leg.
+   Owner instruction was that this "goes as per the selected period of the voyage", so the
+   numerator is `g.co2`: the CII-basis CO₂ (all fuel, CO₂ only) of EVERY row in the group —
+   its sea legs AND the port stays that belong to it. Leg-Wise deliberately differs: there a
+   berth stay is its own row with no distance, so its CO₂ is in no leg's CII at all. The
+   practical effect, worth knowing when comparing the two tabs:
+     • a voyage's CII reads slightly WORSE here than the same legs do in Leg-Wise
+     • the Voyage-Wise TOTAL sits much closer to the annual CII on the Results tab
+   The bands come from `g.cii`, the group's OWN end-year CII reference (attached in vwGroups
+   from that year's computeAll), never a fallback year — required CII tightens every year. */
+function vwGroupCII(g){
+  if(!g || !(g.dist>0)) return null;
+  return ciiFrom(Number(g.co2)||0, g.dist, g.cii, S);
+}
+/* IMO EEOI (MEPC.1/Circ.684) for a whole voyage: tank-to-wake, CO₂ only, the voyage's own
+   CO₂ over its own transport work. Nothing carried in from a preceding ballast voyage —
+   that carry-in belongs to the Sea Cargo Charter EEOI four columns to the right, not here. */
+function vwGroupEEOI(g){
+  if(!g || !(g.tw>0)) return null;
+  const v = (Number(g.co2)||0)*1e6/g.tw;
+  return isFinite(v) ? v : null;
+}
 
 /* the ports a whole voyage group ran between: first leg's origin → last leg's destination */
 function vwGroupPorts(g){
@@ -3012,38 +4160,72 @@ function voyageGrid(R, tips){
     <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("vw")}</div>
       <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Voyage &amp; timeframe</div>
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:700;color:#0f172a;text-align:right">Voyage No ${tips.voy}</div>
-      <div style="grid-column:4;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">Dist. (nm)</div>
-      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#ecf6f7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:7 / span 5;grid-row:1;padding:6px 10px;background:#fdf3e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:12 / span 2;grid-row:1;padding:6px 10px;background:#eef2fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f4f1fa;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:15 / span 5;grid-row:1;padding:6px 10px;background:#f0f7ef;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
-      <div style="grid-column:5;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
-      ${th(5,colHdr("Cons.","mt"),"border-right:1px solid #e2e8f0;padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
-      ${th(6,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
-      ${th(7,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
-      ${th(8,colHdr("TtW","mt (AR6)"),"","Tank-to-wake CO₂e (tonnes) — what comes out of the funnel")}
+      <!-- 2026-07-26g (Aurvin, owner instruction): same Report-Wise-matched restyle as
+           Leg-Wise (see breakdownGrid) — Voyage No left-aligned, uppercase/grey/10.5px, flat
+           #f8fafc background. Voyage-Wise has no standalone Cargo column at this position
+           (its "Cargo" lives inside the Sea Cargo Charter group further right) so only Voyage
+           No and Dist. are touched here. -->
+      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
+      <!-- 2026-07-26h (Aurvin, owner instruction): "nm" shown the same way as Leg-Wise's Cargo
+           "mt" — its own smaller, muted line under "DIST" (via colHdr). -->
+      <div style="grid-column:4;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right">${colHdr("Dist","nm")}</div>
+      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#d9f2e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#1d7a5f;white-space:nowrap">IMO ${tips.imo}</div>
+      ${/* 2026-07-26q3 (Aurvin, owner instruction): fixes a mistake from 2026-07-26p, spotted by
+           the owner in a screenshot — this view showed TWO separate "Fuel metrics" header tags
+           (Fuel type/Cons. here, and an isolated Total CO2e tag after Sea Cargo Charter), while
+           Leg-Wise has always shown Fuel metrics as ONE group. Total CO2e moved back next to
+           Fuel type/Cons. so this is one contiguous 3-column group again, matching Leg-Wise's
+           shape; Sea Cargo Charter's own 4 columns (WtW/Cargo/T-Work/EEOI) shifted one column
+           to the right to make room, EU ETS/UK ETS/FuelEU keep their EXACT same column numbers
+           (14/15/16-20) — this reorder only touches columns 7-13. See HANDOFF_LOG.md. */""}
+      <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#ddecf3;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:10 / span 4;grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
+      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#e1ebf4;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1e6f5;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#def2e0;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      ${/* 2026-07-26e: IMO pair, identical treatment to Leg-Wise, now LEFT of Fuel metrics. Both
+           are VOYAGE-level and span the fuel sub-rows. See the IMO info icon for the caveat. */""}
+      ${/* 2026-07-26 (Task, Aurvin): header text centred over this column instead of the
+           th() default right-align, so "CII" sits above the rating-letter (middle) segment of
+           the pill in the cell below rather than hugging the right wall. Name unchanged
+           (Leg-Wise got "CII / Performance"; Voyage-Wise stays "CII" per owner instruction).
+           Column width (VW_GRID) untouched — text-align only. */""}
+      ${th(4,colHdr("CII",""),"text-align:center;","INDICATIVE CII for this voyage: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, rated on THIS voyage's own end-year bands. CII is a whole-year, whole-ship metric in law. See the IMO section's ⓘ.")}
+      ${th(5,colHdr("EEOI","gCO₂/t·nm"),"border-right:1px solid #e2e8f0;","IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — this voyage's own CO₂ (its legs AND its port stays) ÷ its transport work. NOT the Sea Cargo Charter EEOI four columns to the right, which is well-to-wake CO₂e with ballast carry-in.")}
+      <div style="grid-column:7;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
+      ${th(7,colHdr("Cons.","mt"),"padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
+      ${/* 2026-07-26q3: Total CO2e moved here, next to Cons., now that Fuel metrics is one
+           contiguous group again (see the header-tag comment above) — same value/tooltip as
+           before, just relocated from the old isolated column 12. */""}
+      ${th(8,colHdr(R.year>=2026?"Total CO₂e":"Total CO₂",euEUAsUnit),"white-space:nowrap;border-right:1px solid #e2e8f0;",R.year>=2026?"Total CO₂e of ALL fuel consumed on this voyage (CO₂+CH₄/N₂O, "+euEUAsUnit+") — the full amount burned, NOT scaled by EU ETS coverage. See EUAs (EU ETS group) for the EU-ETS-eligible/scoped figure.":"Total CO₂ of ALL fuel consumed on this voyage (CO₂ only before 2026) — the full amount burned, NOT scaled by EU ETS coverage.")}
       ${th(9,colHdr("WtW","mt (AR6)"),"","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
-      ${th(10,colHdr("EEOI","gCO₂e/t·nm"),"border-right:1px solid #e2e8f0;")}
-      ${th(11,colHdr("CO₂","mt"),"","white-space:nowrap")}
-      ${th(12,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
-      ${th(13,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
-      ${th(14,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
-      ${th(15,colHdr("Energy","10⁶ MJ"))}
-      ${th(16,colHdr("Elig. energy","10⁶ MJ"))}
-      ${th(17,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
-      ${th(18,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
+      ${th(10,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
+      ${th(11,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
+      ${th(12,colHdr("EEOI","gCO₂e/t·nm"),"border-right:1px solid #e2e8f0;","Sea Cargo Charter EEOI: WELL-TO-WAKE CO₂e (AR6) including emissions carried in from preceding ballast legs. NOT the IMO EEOI in the IMO section — that one is tank-to-wake, CO₂ only, with nothing carried in.")}
+      ${th(13,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
+      ${th(14,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
+      ${th(15,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
+      ${th(16,colHdr("Energy","10⁶ MJ"))}
+      ${th(17,colHdr("Elig. energy","10⁶ MJ"))}
+      ${th(18,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
+      ${th(19,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
     </div>`;
 
   let zi=0;
   const body=G.map((g,i)=>{
-    const lines=g.fuels.length?g.fuels:[{label:"—",tonnes:0,eligibleEU:0,energy:0,E:0,feuCB:0,feuPenalty:0,co2:0,euas:0,ukCO2e:0,sccTtW:0,sccWtW:0}];
+    const lines=g.fuels.length?g.fuels:[{label:"—",tonnes:0,eligibleEU:0,energy:0,E:0,feuCB:0,feuPenalty:0,co2:0,etsCO2:0,etsCO2e:0,totalCO2:0,totalCO2e:0,euas:0,ukCO2e:0,sccTtW:0,sccWtW:0}];
     const span=Math.max(1,lines.length);
-    const bg=(zi++%2===1)?"#fafcfd":"#ffffff";
+    /* 2026-07-25 (Aurvin, owner instruction): zebra striping removed from Voyage-Wise — every
+       row is now plain white. Row emphasis is done on demand via the click-to-highlight .hi-on
+       class (see .hirow rules in css/styles.css). zi kept but no longer used for tinting. */
+    const bg="#ffffff"; void zi;
     const [pa,pb]=vwGroupPorts(g);
     const nLegs=g.dets.filter(d=>d.kind==="voyage").length, nBerth=g.dets.length-nLegs;
-    const cell=(col,row,extra,val)=>`<div style="grid-column:${col+1};grid-row:${row};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+    /* 2026-07-25n (Aurvin, owner instruction): cell() is only ever used for the LEG/VOYAGE-
+       level figures (Dist., Cargo, T-Work, EEOI) that span every fuel sub-row via
+       "1 / span N" — added flex centring so their value sits vertically in the middle of
+       that span instead of pinned to its top edge on a multi-fuel voyage. */
+    const cell=(col,row,extra,val)=>`<div style="grid-column:${col+1};grid-row:${row};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
     const fl=(col,get,extra)=>lines.map((f,k)=>`<div style="grid-column:${col+1};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${get(f)}</div>`).join("");
     /* the SCC ⊕ marker: this voyage absorbed a preceding wholly-ballast voyage's emissions */
     const eeoiCell = g.sccNoFactor ? brNoFactor
@@ -3070,12 +4252,12 @@ function voyageGrid(R, tips){
     if(g.seg&&g.seg.retimed) flags.push(`<span style="color:#9a6b1f;cursor:help" title="The MDA file first showed this voyage number on the report at ${esc(g.seg.atReport)}, which is the same day or the day after a departure — so the change was re-timed back to that departure (${esc(g.seg.viaDeparture)}).">re-timed</span>`);
     if(g.dets.some(d=>d.vwSplit)) flags.push(`<span style="color:#9a6b1f;cursor:help" title="A sea leg in this voyage was split because the voyage number changed mid-passage with no departure on the same or the previous day (an abrupt charterer change).">leg split</span>`);
     const head=`
-      <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
-        <div style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("vw",i)}</div>
-        <div style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
+      <div class="hirow" style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+        <div class="hicell" style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("vw",i)}</div>
+        <div class="hicell" style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
             <div style="position:absolute;top:0;bottom:0;left:50%;width:3px;background:#e2e8ec;transform:translateX(-50%);z-index:0"></div>
-            <div style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${ICON_VOYAGE}</div>
+            <div class="hicell" style="position:relative;background:${bg};z-index:1;line-height:0;padding:4px 0">${ICON_VOYAGE}</div>
           </div>
           <div style="flex:1 1 auto;min-width:0;padding:10px 12px 10px 0">
             <div>${portLine(pa,true)}${portLine(pb,false)}</div>
@@ -3091,23 +4273,37 @@ function voyageGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
+        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
         ${cell(3,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#475569;",brNum(g.dist,0))}
-        ${fl(4,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
-        ${fl(5,f=>brNum(f.tonnes,1),"border-right:1px solid #e2e8f0;padding-left:4px;color:#334155;")}
-        ${cell(6,"1 / span "+span,"color:#475569;",g.cargo>0?fmtF(g.cargo,0):`<span style="color:#94a3b8" title="No cargo on any leg of this voyage — a ballast voyage. Its WtW CO₂e carries into the next voyage that loads (SCC Appendix 3).">ballast</span>`)}
-        ${cell(7,"1 / span "+span,"color:#475569;",g.tw>0?fmtF(g.tw/1e6,2):brDash)}
-        ${fl(8,f=>brNum(f.sccTtW,2),"color:#334155;")}
+        ${fl(6,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
+        ${fl(7,f=>brNum(f.tonnes,1),"padding-left:4px;color:#334155;")}
+        ${/* 2026-07-26d (Task 3, Aurvin): the IMO pair — VOYAGE-level, so they span the fuel
+             sub-rows like Dist./Cargo/T-Work do. Both use the WHOLE GROUP's CO₂ (g.co2 sums
+             every det in the group, its sea legs AND its port stays) per the owner's
+             instruction that this "goes as per the selected period of the voyage". That is a
+             deliberate difference from Leg-Wise, where a berth stay is its own row and is
+             excluded — so a voyage's CII here reads slightly WORSE than the same legs do in
+             Leg-Wise, and the Voyage-Wise TOTAL sits much closer to the annual CII. Rated on
+             g.cii, THIS voyage's own end-year bands, never the fallback year's. */""}
+        ${cell(4,"1 / span "+span,"",ciiCellHtml(vwGroupCII(g)))}
+        ${cell(5,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#1d7a5f;font-weight:600;",
+               eeoiCellHtml(vwGroupEEOI(g),"No transport work on this voyage — no cargo was carried on any of its legs, so there are no tonne-miles to divide by."))}
+        ${/* 2026-07-26q3: Total CO2e relocated here, next to Cons. — Fuel metrics is one
+             contiguous group again (fixes the "two Fuel metrics tags" mistake from 2026-07-26p;
+             full fuel burned, NOT EU-ETS-coverage-scoped, same as before). Sea Cargo Charter's
+             own WtW/Cargo/T-Work/EEOI (below) each shifted one column right to make room. */""}
+        ${fl(8,f=>brNum(R.year>=2026?f.totalCO2e:f.totalCO2,2),"border-right:1px solid #e2e8f0;")}
         ${fl(9,f=>f.noFactor?brNoFactor:brNum(f.sccWtW,2),"color:#9a6b1f;")}
-        ${cell(10,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#9a6b1f;font-weight:600;",eeoiCell)}
-        ${fl(11,f=>brNum(f.co2,2))}
-        ${fl(12,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
-        ${fl(13,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
-        ${fl(14,f=>brNum(f.eligibleEU,1))}
-        ${fl(15,f=>brNum(f.energy,2))}
-        ${fl(16,f=>brNum(f.E/1e6,2))}
-        ${fl(17,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
-        ${fl(18,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${cell(10,"1 / span "+span,"color:#475569;",g.cargo>0?fmtF(g.cargo,0):`<span title="No cargo on any leg of this voyage — a ballast voyage. Its WtW CO₂e carries into the next voyage that loads (SCC Appendix 3).">0</span>`)}
+        ${cell(11,"1 / span "+span,"color:#475569;",g.tw>0?fmtF(g.tw/1e6,2):brDash)}
+        ${cell(12,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#9a6b1f;font-weight:600;",eeoiCell)}
+        ${fl(13,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${fl(14,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${fl(15,f=>brNum(f.eligibleEU,1))}
+        ${fl(16,f=>brNum(f.energy,2))}
+        ${fl(17,f=>brNum(f.E/1e6,2))}
+        ${fl(18,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
+        ${fl(19,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
       </div>`;
     return head;
   }).join("");
@@ -3140,6 +4336,42 @@ function vwTotalsHtml(){
   const twTot=good.reduce((a,g)=>a+(Number(g.tw)||0),0);
   const numTot=good.reduce((a,g)=>a+(Number(g.sccWtW)||0),0);
   const eeoiTot=twTot>0? numTot*1e6/twTot : null;
+  /* 2026-07-26i (Aurvin, EXPLICIT owner instruction, this session, after a clarifying-question
+     round): the TOTAL row's CII/EEOI numerator now sums CO₂ from EVERY ticked voyage GROUP —
+     including "n/a"-voyage groups that are pure berth stays with no voyage/distance of their
+     own — matching the real annual attained CII (which counts every tonne of CO₂ regardless
+     of whether it happened underway or at berth). Previously (2026-07-26d) the numerator was
+     built only from distance-bearing groups, so a standalone berth-only group's CO₂ was
+     dropped entirely, not just its distance. INDIVIDUAL voyage-group rows are unchanged —
+     vwGroupCII/vwGroupEEOI still return null for a group with no distance / no transport
+     work, per the owner's instruction ("if no distance then no CII/EEOI to show, if no cargo
+     then no EEOI to show") — this only touches the TOTAL row.
+       TOTAL CII  = Σ ALL ticked groups' CO₂ ÷ (capacity × Σ ticked DISTANCE-bearing groups' distance)
+       TOTAL EEOI = Σ ALL ticked groups' CO₂ ÷ Σ ticked groups' transport work
+     never a sum or a mean of the per-voyage intensities. Distance/transport-work denominators
+     are unchanged — a berth-only group never has either.
+     ONE EXTRA CARE this tab needs and Leg-Wise does not: Voyage-Wise is MULTI-YEAR, and the
+     required CII and its A-E band edges tighten every year (owner: "the calculation year rule
+     of CII is as per the end date of a row"). The year-consistency check now spans EVERY
+     ticked group (yearsAllTot), not just the distance-bearing ones, so a ticked berth-only
+     group from a different end-year still correctly forces the mixed-year dash rather than
+     silently blending two years' CO₂ into one ratio. The EEOI total is year-independent, so
+     it is always shown. */
+  const co2AllTot = sum("co2");
+  const yearsAllTot = [...new Set(sel.map(g=>g.endYear))];
+  const imoSel=sel.filter(g=>g.dist>0);
+  const imoCap=ciiCapacityOf(S);
+  const imoDist=imoSel.reduce((a,g)=>a+(Number(g.dist)||0),0);
+  const ciiTot = (yearsAllTot.length===1 && imoSel.length && imoDist>0)
+    ? ciiFrom(co2AllTot, imoDist, imoSel[0].cii, S)
+    : null;
+  const ciiTotCell = ciiTot ? ciiCellHtml(ciiTot)
+    : (yearsAllTot.length>1
+        ? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="The ticked voyages/stays end in ${yearsAllTot.length} different years (${yearsAllTot.sort().join(", ")}). The required CII and its A–E band edges tighten every year, so a single combined rating across them would be misleading. Narrow the date range to one end-year to see a rating. The weighted attained value over this mixed selection would be ${imoCap>0&&imoDist>0? fmtF(co2AllTot*1e6/(imoCap*imoDist),2) : "n/a"} gCO₂/${esc((R.cii||{}).capUnit||"DWT")}·nm.">—</span>`
+        : brDash);
+  const twImo=sel.filter(g=>g.tw>0);
+  const twImoTot=twImo.reduce((a,g)=>a+g.tw,0);
+  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null;
   const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   const k=ROWSEL.vw.sel.size;
   const label=k? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
@@ -3150,20 +4382,24 @@ function vwTotalsHtml(){
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(label)}</div>
       <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
-      ${cell(5,"border-right:1px solid #e2e8f0;padding-left:4px;",fmtF(sumFu("tonnes"),1))}
-      ${cell(6,"color:#475569;",fmtF(sum("cargo"),0))}
-      ${cell(7,"color:#475569;",fmtF(sum("tw")/1e6,2))}
-      ${cell(8,"color:#334155;",fmtF(sum("sccTtW"),2))}
+      <div style="grid-column:5;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTotCell}</div>
+      ${cell(5,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash)}
+      ${cell(7,"padding-left:4px;",fmtF(sumFu("tonnes"),1))}
+      ${/* 2026-07-26q3: Total CO2e relocated here, next to Cons. — full fuel burned, not
+           EU-ETS-coverage-scoped, same figure as before, just moved next to Fuel metrics'
+           other two columns instead of sitting isolated after Sea Cargo Charter. */""}
+      ${cell(8,"border-right:1px solid #e2e8f0;",fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
       ${cell(9,"color:#9a6b1f;",fmtF(sum("sccWtW"),2))}
-      ${cell(10,"border-right:1px solid #e2e8f0;color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
-      ${cell(11,"",fmtF(sum("co2"),2))}
-      ${cell(12,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
-      ${cell(13,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
-      ${cell(14,"",fmtF(sumFu("eligibleEU"),1))}
-      ${cell(15,"",fmtF(sumFu("energy"),2))}
-      ${cell(16,"",fmtF(sum("E")/1e6,2))}
-      ${cell(17,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
-      ${cell(18,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
+      ${cell(10,"color:#475569;",fmtF(sum("cargo"),0))}
+      ${cell(11,"color:#475569;",fmtF(sum("tw")/1e6,2))}
+      ${cell(12,"border-right:1px solid #e2e8f0;color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
+      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
+      ${cell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
+      ${cell(15,"",fmtF(sumFu("eligibleEU"),1))}
+      ${cell(16,"",fmtF(sumFu("energy"),2))}
+      ${cell(17,"",fmtF(sum("E")/1e6,2))}
+      ${cell(18,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
+      ${cell(19,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
     </div>`;
 }
 function downloadVoyageXlsx(){
@@ -3172,10 +4408,25 @@ function downloadVoyageXlsx(){
   const sel=rowselActive("vw",vg.groups.length).map(i=>vg.groups[i]);
   /* 2026-07-23f/g (Aurvin, owner instruction): column order mirrors the reordered on-screen
      Voyage-Wise table — Fuel metrics, Sea Cargo Charter, then EU ETS, UK ETS, then FuelEU. */
+  /* 2026-07-26 (Aurvin, owner instruction): "CO2 mt" now follows the same year-specific basis
+     as the on-screen Voyage-Wise table — CO2 only before 2026, CO2e (incl. CH4/N2O, GWP set
+     from Settings) from 2026 onward. Voyage-Wise can span MULTIPLE calendar years in one
+     export, so the basis is decided per voyage group by ITS OWN end-year (g.endYear, same
+     year the group's own etsCO2/etsCO2e were computed with) rather than one export-wide
+     year — a 2025 voyage in the same file as a 2026 voyage keeps its own CO2-only figure.
+     2026-07-26p (Aurvin, owner instruction): this is now the Fuel-metrics TOTAL CO2e — full
+     fuel burned, NOT scaled by EU ETS coverage — matching the on-screen column's move out of
+     the EU ETS group. Column relabelled "Total CO2 mt" and fed from f.totalCO2e/f.totalCO2
+     instead of the EU-ETS-eligible f.etsCO2e/f.etsCO2. See HANDOFF_LOG.md.
+     2026-07-26q3 (Aurvin, owner instruction): "Total CO2 mt" moved to sit right after
+     "Consumption mt" (was after the 4 SCC columns) so this export's column order matches the
+     corrected on-screen order — Fuel metrics (Fuel, Consumption, Total CO2) as one contiguous
+     block, THEN Sea Cargo Charter (Cargo, Transport work, TtW CO2e, WtW CO2e, SCC numerator,
+     EEOI). Only that one column's position moved; every other column and value is unchanged. */
   const rows=[["Voyage No","From","To","Start (GMT)","End (GMT)","Legs","Port stays","Distance nm",
-               "Fuel","Consumption mt",
+               "Fuel","Consumption mt","Total CO2 mt (CO2e incl. CH4/N2O from 2026 — see Notes)",
                "Cargo mt","Transport work t.nm","TtW CO2e mt","WtW CO2e mt","SCC numerator mt","EEOI gCO2e/t.nm",
-               "CO2 mt","EUAs tCO2e","UKAs tCO2e",
+               "EUAs tCO2e","UKAs tCO2e",
                "Eligible mt","Energy 10^6 MJ","Eligible energy 10^6 MJ","FuelEU CB tCO2eq","FuelEU penalty EUR","Notes"]];
   for(const g of sel){
     const [pa,pb]=vwGroupPorts(g);
@@ -3183,15 +4434,16 @@ function downloadVoyageXlsx(){
     const note=[ g.seg&&g.seg.retimed? "voyage-number change re-timed to departure "+g.seg.viaDeparture : "",
                  g.dets.some(d=>d.vwSplit)? "contains a leg split at an abrupt mid-sea voyage change" : "",
                  g.sccNoFactor? "SCC excluded — fuel without a Table 8 factor" : "",
-                 g.sccBallastIn>0? "includes "+Math.round(g.sccBallastIn*100)/100+" t WtW carried in from preceding ballast leg(s)" : ""
+                 g.sccBallastIn>0? "includes "+Math.round(g.sccBallastIn*100)/100+" t WtW carried in from preceding ballast leg(s)" : "",
+                 g.endYear>=2026? "CO2 column is CO2e (incl. CH4/N2O) for this voyage's own end-year "+g.endYear : ""
                ].filter(Boolean).join("; ");
     g.fuels.forEach((f,i)=>{
       rows.push([ i?"":(g.voy||"n/a"), i?"":(pa.label||""), i?"":(pb.label||""), i?"":(g.tStart||""), i?"":(g.tEnd||""),
                   i?"":nLegs, i?"":(g.dets.length-nLegs), i?"":round2(g.dist),
-                  f.label, round2(f.tonnes),
+                  f.label, round2(f.tonnes), round2(g.endYear>=2026? f.totalCO2e : f.totalCO2),
                   i?"":round2(g.cargo), i?"":round2(g.tw), round2(f.sccTtW), f.noFactor?"n/a":round2(f.sccWtW),
                   i?"":(g.sccNumerator==null?"":round2(g.sccNumerator)), i?"":(g.eeoi==null?"":round2(g.eeoi)),
-                  round2(f.co2), round2(f.euas), round2(f.ukCO2e),
+                  round2(f.euas), round2(f.ukCO2e),
                   round2(f.eligibleEU), round2(f.energy), round2(f.E/1e6),
                   round2(f.feuCB/1e6), round2(f.feuPenalty),
                   i?"":note ]);
@@ -3204,12 +4456,33 @@ function round2(v){ return (v==null||isNaN(v))? "" : Math.round(Number(v)*100)/1
 function renderVoyage(){
   const el=document.getElementById("tab-voy"); if(!el) return;
   const vg=vwGroups(S);
-  const R={ groups:vg.groups, year:Number(S.year)||2026 };
+  /* 2026-07-27 (Aurvin, owner instruction): this R never carried R.ets (unlike Leg-Wise's own
+     R, which is the full computeAll(S) result) — so the "Total CO2/CO2e" header's unit line
+     (euEUAsUnit, in voyageGrid) always fell back to "tCO2 (CO2 only)" no matter the year, while
+     the header's LABEL text (a few lines below, in voyageGrid) switched on R.year>=2026 alone —
+     for 2026+ that produced a self-contradicting header: "Total CO2e" above "(CO2 only)". Fixed
+     by giving R the SAME gwp lookup Leg-Wise's full computeAll(S) exposes as R.ets.gwp —
+     euetsGwp(state) (js/engine.js) is a cheap, pure Settings lookup (state.arSet -> AR5/AR4),
+     not a re-run of the whole compute pipeline, so this is safe to add here without recomputing
+     anything voyage-specific. Label and unit now read off the exact same euAR value, so they
+     can never disagree again. */
+  const R={ groups:vg.groups, year:Number(S.year)||2026, ets:{ gwp: euetsGwp(S) } };
   const iVoy=info(`The <b>VOYAGE_NUMBER</b> from the MDA file, with the change point corrected.<br><br>Vessel staff type this by hand, so the number often flips a report or two <b>after</b> the departure it belongs to — sometimes on an SOSP report. Rule applied here (owner instruction, 2026-07-23):<br><br>• When the number changes, the calculator looks back for a derived <b>DEPARTURE</b> on the <b>same day or the day before</b>. If it finds one, the change is re-timed to that departure and the row is marked <i>re-timed to departure</i>.<br><br>• If there is no such departure, the charterer genuinely changed mid-passage — that is accepted as a new voyage starting at that report, and the sea leg is <b>split</b> at that point (marked <i>leg split</i>).<br><br>• Either way the report at the boundary keeps its own consumption on the <b>old</b> voyage; the new voyage accumulates from the next report onward.<br><br>Blank voyage numbers (bunkering and fuel-stock reports carry none) are ignored rather than treated as a change.`);
   const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Calculations tab. Eligible energy = eligible mass × 10⁶ × LCV.");
   const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. The annual balance/penalty is shared out by each row's in-scope energy and then summed to the voyage — <b>indicative only</b>, FuelEU is period-based in law.<br><br>Per Task 4 the coverage-% columns are not shown on this tab; they remain on the ⛵ Leg-Wise and 📋 Report-Wise tabs.");
   const iEUETS=info("<b>EUAs</b> = covered CO₂e × phase-in (euets-art3gb), summed over the voyage's legs and port stays. Coverage is applied per leg by the engine — EEA↔EEA and at-berth EEA 100%, EEA↔other 50% — and the resulting allowances are what you see here.<br><br>Per Task 4 the coverage-% column is not shown on this tab.");
   const iUKETS=info("<b>UKAs</b> = tCO₂e for UK→UK voyages and UK in-port activity (ukets-sch2a-p7), GWP CH₄ 28 / N₂O 265 (ukets-sch2a-p35). Obligation from scheme year 2026.<br><br>Per Task 4 the coverage-% column is not shown on this tab.");
+  /* 2026-07-26d (Task 3, Aurvin): the Voyage-Wise IMO icon. Same substance as the Leg-Wise
+     one, with the three things that genuinely differ on this tab spelled out: the whole
+     voyage (port stays included) is the numerator, each voyage is rated on its OWN end-year
+     bands, and there are now two EEOI columns on screen that must not be confused. */
+  const iVwIMO=info(`<b>IMO</b> — the two IMO carbon-intensity measures, shown for each voyage.<br><br>
+    <span class="flag">Indicative only</span> <b>CII is a whole-year, whole-ship metric in law</b> (imo-a6-reg28 / imo-g1-s4). A single voyage has no CII. What is shown is what the ship's CII <b>would</b> be if the whole year looked like this voyage — measured against the real required CII and A–E bands of <b>that voyage's own end-year</b> (they tighten every year via the Z factor, so a 2025 and a 2026 voyage are rated differently, exactly as the Voyage-Wise CO₂/CO₂e column already works). <b>A green rating on one voyage is not a compliance position.</b><br><br>
+    <b>CII column</b> — one pill reading <b>% of required · rating · AER</b>. CII Percentage = attained ÷ required × 100, so <b>below 100% is better than required</b>. AER ("Attained CII") is that same attained figure on its own, gCO₂ per capacity unit·nm, to 2 decimals. Attained = the voyage's CO₂ ÷ (capacity × its distance).<br><br>
+    <b>The whole voyage counts here</b> — its sea legs <b>and</b> the port stays that belong to it. This differs from the ⛵ <b>Leg-Wise</b> tab, where a berth stay is its own row with no distance and so is excluded. So the same voyage reads slightly <b>worse</b> here than its legs do there, and the TOTAL on this tab sits much closer to the annual CII on the Results tab. Neither is wrong — they answer different questions.<br><br>
+    <b>EEOI</b> (gCO₂/t·nm, <b>MEPC.1/Circ.684</b>) = the voyage's CO₂ ÷ its transport work (cargo × laden distance). <b>Tank-to-wake, CO₂ only.</b> <b>Do not confuse it with the EEOI in the Sea Cargo Charter section</b> to its right, which is <b>well-to-wake CO₂e (AR6)</b> and also folds in emissions carried over from preceding ballast voyages. Nothing is carried in or out of this one.<br><br>
+    <b>A dash means withheld, not zero</b> — hover it for the reason. Besides ballast voyages, a figure is withheld when it is <b>implausible</b>: over ${CII_PCT_IMPLAUSIBLE}% of required for CII, or over ${EEOI_IMPLAUSIBLE} gCO₂/t·nm for EEOI, which happens when a very short distance has a lot of fuel behind it. The consumption is still counted in every total.<br><br>
+    Both <b>TOTAL</b> figures are <b>weighted</b> over the ticked voyages (Σ CO₂ ÷ Σ capacity·distance, and Σ CO₂ ÷ Σ transport work), never an average. If the ticked voyages end in <b>more than one year</b> the TOTAL rating is withheld — one set of bands cannot fairly rate voyages from different years; narrow the date range to a single end-year.`,"right");
   const iSCC=info(`<b>Sea Cargo Charter — computed per voyage number</b> (owner decision, 2026-07-23), not by summing the per-leg figures.<br><br>
     <b>Numerator</b> = all well-to-wake CO₂e inside the voyage: its sea legs <b>and</b> its port stays (loading, discharging, bunkering, waiting). SCC counts the lot.<br><br>
     <b>Denominator</b> = the voyage's own transport work, Σ (cargo × laden distance). Ballast distance never enters it.<br><br>
@@ -3220,7 +4493,10 @@ function renderVoyage(){
     The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-voyage values.`,"right");
   const nSplit=vg.split.rows.filter(r=>r.vwSplitOf>1).length;
   const nRetimed=vg.segs.filter(s=>s.retimed).length;
-  const iTable=info(`Exactly one line per <b>voyage number</b>. Every figure is rolled up from the <b>same engine values</b> the ⛵ Leg-Wise tab renders, so the two tabs can never disagree — open ⛵ Leg-Wise to see the individual legs and port stays inside a voyage.<br><br>All figures rounded to 2 decimal places. — indicates no obligation (out of scope, or the OMR derogation until 2030). CB = FuelEU compliance balance; negative values are deficits.<br><br>Per Task 4 this tab omits the regulation eligibility-% columns and the cargo port-of-call icon — both remain on ⛵ Leg-Wise and 📋 Report-Wise.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU and ETS surrender are period-based in law; the per-voyage balance and penalty are the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded.`,"right");
+  /* 2026-07-25b (owner instruction): the "multi-year OK · voyages counted by end date, graded
+     by end-date year" caption that used to sit as its own label in the date bar is folded into
+     this tooltip instead, so the bar only carries the Year/From/To controls. */
+  const iTable=info(`Exactly one line per <b>voyage number</b>. Every figure is rolled up from the <b>same engine values</b> the ⛵ Leg-Wise tab renders, so the two tabs can never disagree — open ⛵ Leg-Wise to see the individual legs and port stays inside a voyage.<br><br><b>Multi-year OK</b> — voyages are counted by their <b>end date</b> and graded by that end-date's year (unlike Report-Wise/Leg-Wise, this tab's date range is not locked to a single Year).<br><br>All figures rounded to 2 decimal places. — indicates no obligation (out of scope, or the OMR derogation until 2030). CB = FuelEU compliance balance; negative values are deficits.<br><br>Per Task 4 this tab omits the regulation eligibility-% columns and the cargo port-of-call icon — both remain on ⛵ Leg-Wise and 📋 Report-Wise.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU and ETS surrender are period-based in law; the per-voyage balance and penalty are the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded.`,"right");
   /* 2026-07-23d (Aurvin, owner instruction): this summary note used to sit ABOVE the table,
      pushing it down the screen. It is context, not a headline, so it now sits UNDERNEATH —
      the table starts immediately under the heading and gets the vertical space instead.
@@ -3228,12 +4504,14 @@ function renderVoyage(){
   const banner = (!S.mdaReports||!S.mdaReports.length)
     ? `<div class="note" style="flex:0 0 auto;margin:10px 0 0">No MDA reports in this workspace, so there are no voyage numbers to group by — everything is shown as a single <b>n/a</b> voyage. Import an MDA event-log export to see real voyage numbers.</div>`
     : `<div class="note" style="flex:0 0 auto;margin:10px 0 0">${vg.segs.length} voyage number(s) found in the imported reports${nRetimed?` · <b>${nRetimed}</b> change(s) re-timed back to a departure`:""}${nSplit?` · <b>${nSplit}</b> leg part(s) created by an abrupt mid-voyage change`:""}${vg.trailingBallast>0?` · ${fmtF(vg.trailingBallast,2)} t WtW CO₂e on a trailing ballast voyage with no following laden voyage in ${R.year} — carried out of these figures per SCC Appendix 3`:""}. Each row is one voyage number; the legs and port stays inside it are on the <b>⛵ Leg-Wise</b> tab.</div>`;
+  /* 2026-07-25 (owner instruction): the "Voyage-Wise breakdown - {range}" header line is
+     removed — the tab bar already names this view — and its Excel button + info icon move
+     up onto the shared date-filter bar, freeing that vertical space for the table itself. */
+  const voyIcons = `<button class="pill hbtn noprint" onclick="downloadVoyageXlsx()">⬇ Excel</button>${iTable}`;
   el.innerHTML=`
+  ${renderDateFilterBar('voy', voyIcons)}
   <div class="card panelA">
-    <h2>Voyage-Wise breakdown - ${R.year}
-      <button class="pill hbtn noprint" style="float:right" onclick="downloadVoyageXlsx()">⬇ Excel</button>
-      <span style="float:right;margin-right:8px">${iTable}</span></h2>
-    ${voyageGrid(R,{voy:iVoy,lcv:iLCV,feu:iFEU,euets:iEUETS,ukets:iUKETS,scc:iSCC})}
+    ${voyageGrid(R,{voy:iVoy,lcv:iLCV,feu:iFEU,euets:iEUETS,ukets:iUKETS,scc:iSCC,imo:iVwIMO})}
     ${banner}
   </div>`;
 }
@@ -3273,14 +4551,32 @@ function renderCalcs(){
     <b>Transport work</b> is shown in <b>10⁶ tonne-miles</b> to keep the column narrow.<br><br>
     <b>EEOI</b> (gCO₂e/t·nm, Technical Guidance Eq. 2) = WtW CO₂e of the ballast + laden legs, all port consumption included, ÷ (cargo × <b>laden distance only</b>). A ballast leg has no EEOI of its own — its emissions fold into the following laden voyage (Appendix 3); <b>⊕</b> marks a folded voyage, hover the row for the split. The TOTAL row is the <b>weighted</b> fleet figure (Σ numerator ÷ Σ transport work), not an average of the per-leg values. Lower is better — enter the year's required 'Minimum'/'Striving' intensities on the Workspace SCC card to see the alignment Δ.`,"right");
   const iBrVoy=info(`The <b>VOYAGE_NUMBER</b> from the MDA file, matched to each leg by time — the SAME derivation the <b>Voyage-Wise</b> tab uses (leading zeros and a leading V/VOY are ignored; a change is re-timed to the nearest departure). Because a leg is <b>not</b> split here the way Voyage-Wise splits it, a single leg that straddles an abrupt mid-sea voyage-number change shows <b>both</b> numbers, comma-separated. Blank where the file carries no voyage numbers.`,"right");
-  const brInner=breakdownGrid(R,{lcv:iLCV,euets:iEUETS,ukets:iUKETS,feu:iFEU,scc:iSCC,voy:iBrVoy});
+  /* 2026-07-26o (Aurvin, owner instruction): standalone ELIGIBILITY group info icon — copied
+     from the Report-Wise Eligibility tooltip (reportTraceTable), reworded for a LEG instead of
+     a report since Leg-Wise has no "matched report" step (the leg IS the calculated row). */
+  const iEligibility=info(`Share of this leg's energy in scope for each regulation — the SAME coverage rule as the EU ETS / UK ETS columns to the right (<code>euCoverage</code> / <code>ukCoverage</code>, js/engine.js). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#3a5157;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#6f8d94;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope`,"right");
+  /* 2026-07-26c (Task 2, Aurvin): the IMO section's info icon. Its main job is to be honest
+     that a per-leg CII is NOT a regulatory figure, and to explain why these leg numbers look
+     better than the annual CII on the Results tab. */
+  const iIMO=info(`<b>IMO</b> — the two IMO carbon-intensity measures, shown for each leg.<br><br>
+    <span class="flag">Indicative only</span> <b>CII is a whole-year, whole-ship metric in law</b> (imo-a6-reg28 / imo-g1-s4). A single leg has no CII. What is shown is what the ship's CII <b>would</b> be if the entire year looked like this one leg — measured against ${R.year}'s real required CII (<b>${fmtF((R.cii||{}).ciiReq,2)}</b> gCO₂/${esc((R.cii||{}).capUnit||"DWT")}·nm, Z=${(R.cii||{}).Z}%) and its real A–E bands, which come from ship type + capacity + year and so are legitimately ship-level. <b>A green A on one fast leg is not a compliance position.</b><br><br>
+    <b>CII column</b> — one pill reading <b>% of required · rating · AER</b>: the CII Percentage, then the coloured rating letter, then the attained CII itself ("AER"), to 2 decimals. <b>CII Percentage = attained ÷ required × 100</b>, so <b>below 100% is better than required</b> and above 100% is worse. Attained = leg CO₂ ÷ (capacity × leg distance), rated on the same A–E bands as the Results tab. On a voyage leg, a small line under the pill also shows the leg's equivalent HFO fuel consumption per nautical mile — see "kg/nm" below.<br><br>
+    <b>A dash in either column</b> means the figure was withheld, not that it is zero — hover the dash and it tells you why. Besides port stays and ballast legs, a figure is withheld when it is <b>implausible</b>: over ${CII_PCT_IMPLAUSIBLE}% of required for CII, or over ${EEOI_IMPLAUSIBLE} gCO₂/t·nm for EEOI. That happens when a very short distance carries a lot of fuel behind it (a brief shift with long port stays attached), so the ratio reflects the tiny denominator rather than the ship. <b>The consumption is still counted in every total and in the annual CII</b> — only the ratio is hidden.<br><br>
+    <b>Port stays show an equivalent HFO fuel/day figure instead of a dash</b> — a port stay has no distance, so it has no CII of its own; the CII cell shows, e.g., "<b>2.4 t/d</b>": all fuel actually burned during the stay, converted to how much HFO would carry the same energy (tonnes × each fuel's own LCV, ÷ HFO's LCV), divided by the stay's duration (tEnd − tStart, fractional, 24-hour basis). <b>Informational only — not a regulatory figure</b>, and separate from CII/EU ETS/UK ETS/FuelEU, which are unaffected. The stay's CO₂ still counts towards the ship's ANNUAL CII, so these leg figures read <b>better</b> than the annual one and <b>do not sum to it</b>. Compare against the Results tab, not against each other.<br><br>
+    <b>kg/nm, under a voyage leg's CII pill</b> — the same idea as the port-stay t/d figure, one line lower: e.g. <b>"83.6 kg/nm"</b> means all fuel actually burned on this leg, converted to how much HFO would carry the same energy, divided by the leg's own distance. <b>Informational only — not a regulatory figure</b>, calculated the same way as t/d (just ÷ distance instead of ÷ duration, and in kilograms rather than tonnes since a per-mile figure is naturally much smaller). Unlike the CII pill above it, <b>kg/nm has no implausibility cut-off</b> — it still shows its raw value even on a leg whose CII pill is itself withheld.<br><br>
+    <b>Why t/d, kg/nm and the CII pill/dash all line up in one column</b> — the pill's own three segments resize per row, so its rating letter doesn't sit at a fixed pixel spot; rather than chase that, the whole CII cell is centred, so port-stay and voyage rows share one visual centre line down the column.<br><br>
+    <b>EEOI</b> (gCO₂/t·nm, <b>MEPC.1/Circ.684</b>) = leg CO₂ ÷ its own transport work (cargo × laden distance). <b>Tank-to-wake, CO₂ only</b> — this is the classic operational EEOI, deliberately <b>not</b> the Sea Cargo Charter intensity, which is well-to-wake CO₂e (AR6) and also folds in the preceding ballast leg and the port stays. Nothing is carried in or out here. A ballast leg or port stay has no transport work, so it shows a dash. The SCC view of the same voyages is on the <b>Voyage-Wise</b> tab.<br><br>
+    Both <b>TOTAL</b> figures are <b>weighted</b> over the ticked legs (Σ CO₂ ÷ Σ capacity·distance, and Σ CO₂ ÷ Σ transport work) — never an average of the per-leg values, which would be meaningless for an intensity.`,"right");
+  const brInner=breakdownGrid(R,{lcv:iLCV,euets:iEUETS,ukets:iUKETS,feu:iFEU,scc:iSCC,voy:iBrVoy,imo:iIMO,eligibility:iEligibility});
   const iBreakdown=info(`All figures rounded to 2 decimal places (LCV: 4).<br><br>— indicates no obligation (out of scope or OMR derogation until 2030).<br><br>CB = FuelEU compliance balance; negative values are deficits.<br><br>📦 = Port of Call (Cargo Activity) — hover it for the loading / discharging operation recorded in the MDA file.<br><br>OMR = outermost region.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU (and ETS surrender) are period-based in law; per-row balance/penalty is the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded (see Workspace badges).`,"right");
   const iPool=info(`Pool = all MRV-monitored fuel (incl. the uncovered half of 50% voyages), per fuel × consumer class. Optimal fills the scope cleanest-first by effective intensity (WtW ÷ RWD); grey rows stay unallocated. GHGIE = Σ allocated·WtW ÷ (Σ allocated·RWD + OPS)${f.fwind<1?" × f<sub>wind</sub> "+f.fwind:""}.`);
+  /* 2026-07-25 (owner instruction): the "Leg-Wise breakdown - {year}" header line is removed
+     — the tab bar already names this view — and its Excel button + info icon move up onto
+     the shared date-filter bar, freeing that vertical space for the table itself. */
+  const legWiseIcons = `<button class="pill hbtn noprint" onclick="downloadBreakdownXlsx()">⬇ Excel</button>${iBreakdown}`;
   el.innerHTML=`
+  ${renderDateFilterBar('year', legWiseIcons)}
   <div class="card panelA" onclick="closeWorkingsIfOpen()">
-    <h2>Leg-Wise breakdown - ${R.year}
-      <button class="pill hbtn noprint" style="float:right" onclick="downloadBreakdownXlsx()">⬇ Excel</button>
-      <span style="float:right;margin-right:8px">${iBreakdown}</span></h2>
     ${brInner}
   </div>
 
@@ -3314,13 +4610,23 @@ function renderCalcs(){
 /* ---------- REPORT TRACE TAB (MDA granularity) ---------- */
 function renderTrace(){
   const el=document.getElementById("tab-trace"); if(!el) return;
-  const reps=S.mdaReports||[];
-  const traceInfo=info(`${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.<br><br>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)<br><br><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)<br><br>Eligibility % = share of the report's energy in scope for EU ETS / FuelEU / UK ETS, computed the same way as your totals elsewhere in the app (— = no confident match to a calculated voyage/port entry)<br><br>All consumption, ROB and bunker values as ingested`,"right");
+  const allReps=S.mdaReports||[];
+  /* 2026-07-24: the shared date range filters which reports are shown/counted here too.
+     All uploaded reports stay in S.mdaReports (memory); only in-range ones are displayed. */
+  const reps = dateFilterActive()? allReps.filter(repInRange) : allReps;
+  /* 2026-07-25 (owner instruction): the "Showing X of Y report(s) inside the range" line that
+     used to sit above the table as its own note is now folded into this info icon's opening
+     line instead, and the icon itself moved up onto the date-filter bar — frees a full row of
+     vertical space for the table. */
+  const countLine = (dateFilterActive() && allReps.length)
+    ? `Showing <b>${reps.length}</b> of <b>${allReps.length}</b> report(s) inside the selected From/To range — the rest stay in memory and return when you widen or clear the range.<br><br>`
+    : "";
+  const traceInfo=info(`${countLine}${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.<br><br>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)<br><br><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)<br><br>Eligibility % = share of the report's energy in scope for EU ETS / FuelEU / UK ETS, computed the same way as your totals elsewhere in the app (— = no confident match to a calculated voyage/port entry)<br><br>All consumption, ROB and bunker values as ingested`,"right");
   el.innerHTML=`
+  ${renderDateFilterBar('year', traceInfo)}
   <div class="card panelB">
-    ${reps.length?`
-    <div style="display:flex;justify-content:flex-end;margin-bottom:6px">${traceInfo}</div>
-    ${reportTraceTable(reps)}`
+    ${allReps.length?`
+    ${reps.length? reportTraceTable(reps) : `<p class="note">No reports fall inside the selected From/To range — widen or clear the range on the bar above.</p>`}`
     :`<p class="note">No report-level data in this workspace. Import an MDA event-log export (.xlsx or .csv) — the raw reports are retained at import (since 2026-07-16). Manually entered rows and DNV-OVD/THETIS imports appear only in the voyage &amp; berth breakdown above.</p>`}
   </div>`;
 }
@@ -3334,8 +4640,11 @@ function renderVessel(){
     <div class="card">
       <h2>Vessel particulars</h2>
       <div class="inline"><div><label>Vessel name</label><input value="${esc(S.ship.name||"")}" onchange="upd('ship.name',this.value)"></div>
-      <div><label>IMO number</label><input value="${esc(S.ship.imo||"")}" onchange="upd('ship.imo',this.value)"></div>
-      <div><label>Reporting year</label><select onchange="upd('year',Number(this.value));renderVessel()">${[2024,2025,2026,2027,2028,2029,2030].map(y=>`<option ${y===S.year?"selected":""}>${y}</option>`).join("")}</select></div></div>
+      <div><label>IMO number</label><input value="${esc(S.ship.imo||"")}" onchange="upd('ship.imo',this.value)"></div></div>
+      <!-- 2026-07-26 (Aurvin, owner instruction): "Reporting year" removed from Settings — it is
+           redundant with the Year picker already on the Workspace blue band and the
+           Report-Wise/Leg-Wise/Voyage-Wise date-filter bars (all write the same S.year via
+           dfYear()/voyYear()), so the owner no longer needs it duplicated here. -->
       <div class="inline">
         <div><label>Ship type (CII G2)</label><select onchange="upd('ship.typeId',this.value);renderVessel()">${SHIP_TYPES.map(t=>`<option value="${t.id}" ${t.id===S.ship.typeId?"selected":""}>${t.name}</option>`).join("")}</select></div>
         <div><label>Capacity (${type.capUnit})</label><input type="number" step="any" min="0" value="${S.ship.capacity??""}" oninput="upd('ship.capacity',num(this.value))"></div>
@@ -4029,10 +5338,10 @@ function renderHelp(){
       <tr><td>AT_SEA</td><td>Noon report on the ORIGIN→DESTINATION leg (consumption covers the period since the previous report, same as OVD)</td></tr>
       <tr><td>IN_PORT</td><td>At-berth/anchorage stay at the CURRENT port between the <b>derived</b> arrival and departure; a missing LOCODE is filled with the last known port (noted at import). A stay with no berth / anchorage / drifting / bunkering period at all (e.g. canal transit, MANOEUVRING only) is pure transit — merged into the voyage, no port row</td></tr>
       <tr><td>FUEL_OIL_BUNKER / FUEL_STOCK</td><td>Stock movements — skipped for consumption and transparent to the derivation logic (they never break a condition chain)</td></tr>
-      <tr><td>Port of call</td><td><b>Derived, not read from the file:</b> a stay is a POC only if cargo operations occurred (ASSOCIATED_ACTIVITY = CARGO_LOADING/_DISCHARGING incl. STS, or fallback: CARGO_QTY changed by &gt;5% of DWT or 0↔loaded between EOSP and SOSP → orange ❗) AND no report in the derived window has OUTSIDE_PORT_LIMIT = TRUE (STS outside limits = transit). The file's own POC column is ignored; a disagreement is flagged with a yellow ⚠. Non-POC stays are excluded from EU ETS / UK ETS / FuelEU (CII/SCC still count them). Toggle on the row to override</td></tr>
+      <tr><td>Port of call</td><td><b>Derived, not read from the file:</b> a stay is a POC only if cargo operations occurred (ASSOCIATED_ACTIVITY = CARGO_LOADING/_DISCHARGING incl. STS, or fallback: CARGO_QTY changed by &gt;5% of DWT or 0↔loaded between EOSP and SOSP → orange ❗) AND no report in the derived window has OUTSIDE_PORT_LIMIT = TRUE (STS outside limits = transit). <b>Exception:</b> if the OPL flags are inconsistent within the stay (some TRUE, some FALSE) and cargo was worked AT_BERTH, the stray OPL flag is treated as misreporting and the call is kept (a genuine outside-limits transfer is at anchor, never at berth; an all-TRUE window still counts as transit). The file's own POC column is ignored; a disagreement is flagged with a yellow ⚠. Non-POC stays are excluded from EU ETS / UK ETS / FuelEU (CII/SCC still count them). Toggle on the row to override</td></tr>
       <tr><td>Fuel names in FUEL_CONSUMPTION</td><td>Every fuel-oil grade → HFO, except ULSFO → LFO; MGO/HSMGO/LSMGO/ULSMGO/HSD → MGO; MDO/DO → MDO; LNG, LPG, methanol, ethanol pass through. Unknown names are flagged as skipped, never guessed</td></tr>
       <tr><td>MAIN/AUXILIARY/BOILER _ENGINE_CONSUMPTION</td><td><b>Machinery split</b> per fuel grade (same mapping); the unassigned remainder per fuel type goes to <b>Other</b> (machines exceeding the total are scaled down and flagged). View/edit via the ⚙ toggle; for LNG the ME/AE shares take their slip class from the two consumer dropdowns in Settings — Boiler and Other are slip-free</td></tr>
-      <tr><td>Rows crossing 31 Dec (multi-year file)</td><td>Split into per-year parts, <b>report-exactly</b> (a report period straddling midnight is pro-rated by time). POC derivation works across the boundary. The Settings reporting year decides which parts count in ALL KPIs; the other year's rows stay greyed in the list</td></tr>
+      <tr><td>Rows crossing 31 Dec (multi-year file)</td><td>Split into per-year parts — each report is counted <b>whole</b> in the year of its own date (no proration across midnight); the first report of a year keeps its real time. POC derivation works across the boundary. The Settings reporting year decides which parts count in ALL KPIs; the other year's rows stay greyed in the list</td></tr>
       <tr><td>FUEL_ROB · LATITUDE/LONGITUDE · CURRENT_PORT/COUNTRY/REGION</td><td>Retained per report (not used in calculations) — feed the report-level trace on the <b>📋 Report-Wise</b> tab and the OVD-format Excel download (header)</td></tr>
     </table>
     <p class="note">Files without an OPERATING_CONDITION column import with the legacy mapping (EOSP = arrival, SOSP = departure, POC column passthrough) and a note. Stays cut off by the file boundary are derived from the available side and flagged <b>incomplete</b> — upload ±1 month around year ends where possible.</p>
@@ -4123,6 +5432,289 @@ function runSelfTests(){
   ck("G4 example: bulk req 10 → superior 8.6", TYPE_BY_ID["bulk"].dd[0]*10, 8.6, 1e-9);
   ck("G4 example: bulk req 10 → inferior 11.8", TYPE_BY_ID["bulk"].dd[3]*10, 11.8, 1e-9);
   ck("SCC example: 1233.2t / 76.98 Mtnm → 16.02", 1233.2e6/76.98e6, 16.02, 0.01);
+  /* 2026-07-26 (Task 1): CII Percentage = attained x 100 / required */
+  ck("CII Percentage: 8.6 attained / 10 required → 86%", ciiPctOfRequired({attained:8.6,ciiReq:10}), 86, 1e-9);
+  ck("CII Percentage: 11.8 attained / 10 required → 118%", ciiPctOfRequired({attained:11.8,ciiReq:10}), 118, 1e-9);
+  ckT("CII Percentage null when attained missing", ciiPctOfRequired({attained:null,ciiReq:10})===null);
+  ckT("CII Percentage null when required is 0", ciiPctOfRequired({attained:5,ciiReq:0})===null);
+  const sCII={year:2025,ship:{typeId:"bulk",capacity:60000},rows:[{kind:"voyage",from:"EEA",to:"EEA",dist:50000,cargo:0,fuels:[{fuelId:"HFO",tonnes:3000}]}]};
+  const cCII=computeAll(sCII).cii;
+  ck("CII Percentage matches attained/required from computeAll", ciiPctOfRequired(cCII), cCII.attained*100/cCII.ciiReq, 1e-9);
+  /* 2026-07-26c (Task 2): per-leg IMO CII and EEOI for the Leg-Wise table.
+     The single most important check is the FIRST one: fed the whole year's voyage totals,
+     the per-leg formula must reproduce the engine's own annual attained CII exactly. That is
+     what proves the UI helper has not drifted from js/engine.js. */
+  (function(){
+    const sIMO={year:2025,ship:{typeId:"bulk",capacity:50000},rows:[
+      {kind:"voyage",label:"L1",from:"EEA",to:"EEA",dist:2000,cargo:30000,tStart:"2025-02-01T00:00",tEnd:"2025-02-05T00:00",fuels:[{fuelId:"HFO",tonnes:100}]},
+      {kind:"voyage",label:"L2",from:"EEA",to:"EEA",dist:3000,cargo:0,tStart:"2025-02-06T00:00",tEnd:"2025-02-10T00:00",fuels:[{fuelId:"HFO",tonnes:120}]}]};
+    const rIMO=computeAll(sIMO), c2=rIMO.cii, L1=rIMO.rowDetails[0], L2=rIMO.rowDetails[1];
+    const capI=50000;
+    /* (1) leg formula, summed over the year's voyages, == the engine's annual attained CII.
+       Exact here because this state has NO berth stays — with berth stays the annual figure
+       is HIGHER (berth CO₂, no distance), which is the caveat the IMO tooltip states. */
+    const allCO2=L1.co2+L2.co2, allDist=L1.dist+L2.dist;
+    ck("Leg CII formula reproduces the engine's ANNUAL attained CII (no berth stays)",
+       allCO2*1e6/(capI*allDist), c2.attained, 1e-9);
+    /* (2) each leg's own attained figure and its rating band */
+    ck("Leg 1 attained CII = leg CO2 x 1e6 / (capacity x leg distance)",
+       legCII(L1,c2,sIMO).attained, L1.co2*1e6/(capI*2000), 1e-9);
+    ckT("Leg CII rating uses the same A-E ladder as the engine",
+        legCII(L1,c2,sIMO).rating === ciiRatingOf(L1.co2*1e6/(capI*2000), c2.bounds));
+    ckT("Leg CII percentage = attained x 100 / required",
+        Math.abs(legCII(L1,c2,sIMO).pct - (L1.co2*1e6/(capI*2000))*100/c2.ciiReq) < 1e-9);
+    /* (3) berth stays and zero-distance rows have no leg CII */
+    ckT("Berth stay has no leg CII", legCII({kind:"port",dist:0,co2:5},c2,sIMO)===null);
+    ckT("Zero-distance voyage has no leg CII", legCII({kind:"voyage",dist:0,co2:5},c2,sIMO)===null);
+    ckT("No capacity set → no leg CII", legCII(L1,c2,{ship:{capacity:0}})===null);
+    /* (4) IMO EEOI: TtW, CO2 only, leg's own CO2 over its own transport work */
+    ck("Leg IMO EEOI = leg CO2 x 1e6 / transport work", legEEOI(L1), L1.co2*1e6/L1.tw, 1e-9);
+    ck("Leg IMO EEOI denominator is cargo x laden distance", L1.tw, 30000*2000, 1e-9);
+    ckT("Ballast leg (no cargo) has no IMO EEOI", legEEOI(L2)===null);
+    ckT("Berth stay has no IMO EEOI", legEEOI({kind:"port",tw:0,co2:5})===null);
+    /* (5) the IMO EEOI is NOT the Sea Cargo Charter intensity — CO2 only vs WtW CO2e, and no
+       ballast/port carry-in. L1 here has a ballast leg after it, so the SCC figure differs. */
+    ckT("IMO EEOI (TtW CO2) differs from the SCC EEOI (WtW CO2e) on the same leg",
+        L1.eeoi!=null && Math.abs(legEEOI(L1)-L1.eeoi) > 1e-6);
+    ckT("IMO EEOI is lower than the SCC EEOI (CO2 only vs WtW CO2e + carry-in)",
+        legEEOI(L1) < L1.eeoi);
+    /* (6) weighted TOTALs — the aggregation the sticky TOTAL row uses */
+    const wCO2=L1.co2+L2.co2, wDist=L1.dist+L2.dist;
+    ck("Weighted TOTAL CII = sum CO2 / (capacity x sum distance)",
+       wCO2*1e6/(capI*wDist), c2.attained, 1e-9);
+    ck("Weighted TOTAL EEOI = sum CO2 / sum transport work (laden legs only)",
+       L1.co2*1e6/L1.tw, legEEOI(L1), 1e-9);
+    ckT("Weighted TOTAL CII is NOT the mean of the leg CIIs (intensities don't average)",
+        Math.abs(c2.attained - (legCII(L1,c2,sIMO).attained + (L2.co2*1e6/(capI*3000)))/2) > 1e-9);
+    /* 2026-07-26d: implausibility guard — "if the distance is zero or the percentage/EEOI is
+       too high, let's put a dash" (owner). A real figure must NOT be suppressed; a runaway
+       one must be, and must still carry its raw value so the tooltip can show it. */
+    ckT("A normal leg is NOT suppressed", legCII(L1,c2,sIMO).suppressed===false);
+    (function(){
+      /* 1 nm of distance behind a leg's worth of fuel — the pathological case */
+      const tiny={kind:"voyage",dist:1,co2:L1.co2};
+      const r=legCII(tiny,c2,sIMO);
+      ckT("A leg whose CII exceeds the cut-off is suppressed", r!==null && r.suppressed===true);
+      ckT("A suppressed CII still carries its raw attained + pct for the tooltip",
+          r.pct>CII_PCT_IMPLAUSIBLE && isFinite(r.attained) && r.rating===null);
+      ckT("A suppressed CII renders as a dash, not a rating box",
+          ciiCellHtml(r).indexOf("—")>-1 && ciiCellHtml(r).indexOf("border-radius:4px")<0);
+    })();
+    ckT("An EEOI over the cut-off renders as a dash", eeoiCellHtml(EEOI_IMPLAUSIBLE+1,"").indexOf("—")>-1);
+    ckT("An EEOI under the cut-off renders as a number", eeoiCellHtml(12.34,"")==="12.34");
+    ckT("Cut-offs are generous enough not to hide a genuine E rating",
+        CII_PCT_IMPLAUSIBLE > 200 && EEOI_IMPLAUSIBLE > 500);
+    /* 2026-07-26l (Aurvin, owner instruction): the cell is now a 3-SEGMENT PILL — % of
+       required, then the rating letter, then the attained CII ("AER") — replacing the old
+       2-item [percentage text][rating box] layout (2026-07-26d), which is why this test no
+       longer checks a "border-radius:4px" substring ordering (both outer segments now carry
+       their own corner radius, so that substring appears before the "%" text too). Checked
+       instead via the three ciipill-* class markers, which unambiguously mark each segment
+       regardless of inline-style details. */
+    (function(){
+      const legRes = legCII(L1,c2,sIMO);
+      const h=ciiCellHtml(legRes);
+      ckT("CII cell puts the % segment BEFORE the rating segment BEFORE the AER segment",
+          h.indexOf('ciipill-seg') > -1 &&
+          h.indexOf('ciipill-seg') < h.indexOf('ciipill-rat') &&
+          h.indexOf('ciipill-rat') < h.lastIndexOf('ciipill-seg'));
+      ckT("CII cell shows the attained CII (AER) to 2 decimals",
+          h.indexOf(fmtF(legRes.attained,2)) > -1);
+    })();
+    /* 2026-07-26m (Aurvin, owner instruction): character caps INSIDE a shown pill, separate
+       from the CII_PCT_IMPLAUSIBLE/suppressed-CELL logic above (which withholds the WHOLE
+       cell). % must never render more than 3 digits (≥1000 → dash) and AER never more than
+       "xx.xx" (whole part ≥100 → dash), even for an otherwise-valid, non-suppressed figure. */
+    (function(){
+      const hugePct = ciiPillHtml(1234, "E", 5.5);
+      ckT("A % of required needing 4+ digits shows a dash, not the number",
+          hugePct.indexOf("1234")<0 && hugePct.indexOf("—")>-1);
+      const normalPct = ciiPillHtml(375, "E", 5.5);
+      ckT("A 3-digit % of required still renders normally", normalPct.indexOf("375")>-1);
+      const hugeAer = ciiPillHtml(120, "E", 104.5);
+      ckT("An AER of 100 or more shows a dash, not the number",
+          hugeAer.indexOf("104.5")<0 && hugeAer.indexOf("—")>-1);
+      const normalAer = ciiPillHtml(120, "E", 26.9);
+      ckT("A 2-digit-or-fewer AER still renders to 2 decimals", normalAer.indexOf("26.90")>-1);
+    })();
+  })();
+  /* 2026-07-26u (Aurvin, owner instruction): the PORT STAY CII-column figure — equivalent HFO
+     fuel consumption per day. Property-based where possible (e.g. "a pure-HFO stay's
+     equivalent tonnes equal its actual tonnes") rather than hand-computed numbers, so the
+     tests don't just re-encode the formula they're checking. */
+  (function(){
+    /* (1) a stay burning ONLY HFO converts to itself — the cleanest sanity check of the
+       energy-equivalent formula, independent of any particular LCV value. */
+    const pureHfo = {kind:"port", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-03T00:00:00Z", // 2 days
+                      fuels:[{id:"HFO", tonnes:100}]};
+    ck("Pure-HFO port stay: equivalent tonnes/day = actual tonnes / days",
+       legHfoEqPerDay(pureHfo), 100/2, 1e-9);
+    /* (2) a fuel with a HIGHER energy content than HFO (LNG, 0.0491 vs HFO's 0.0405 MJ/g)
+       must convert to MORE than its own tonnes of HFO-equivalent — same energy, denser fuel
+       needs less HFO mass to carry it, so more HFO tonnes are needed to match the LNG's
+       energy... i.e. equivalent HFO tonnes > actual LNG tonnes when LNG's LCV > HFO's LCV. */
+    const lngOnly = {kind:"port", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-02T00:00:00Z", // 1 day
+                      fuels:[{id:"LNG", tonnes:10}]};
+    const lngRate = legHfoEqPerDay(lngOnly);
+    ckT("A higher-LCV fuel (LNG) converts to MORE HFO-equivalent tonnes than its own mass",
+        lngRate > 10);
+    ck("LNG equivalent matches the energy-ratio formula (LNG LCV / HFO LCV)",
+       lngRate, 10*(FUEL_BY_ID.LNG.lcv/FUEL_BY_ID.HFO.lcv), 1e-9);
+    /* (3) mixed fuels sum their energy before converting — not a simple mass sum */
+    const mixed = {kind:"port", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-02T00:00:00Z",
+                    fuels:[{id:"HFO", tonnes:50}, {id:"LNG", tonnes:10}]};
+    const expectMixed = (50*FUEL_BY_ID.HFO.lcv + 10*FUEL_BY_ID.LNG.lcv)/FUEL_BY_ID.HFO.lcv;
+    ck("Mixed-fuel stay sums ENERGY across fuels before converting to HFO-equivalent",
+       legHfoEqPerDay(mixed), expectMixed, 1e-9);
+    /* (4) null (dash) cases: nothing to show */
+    ckT("A voyage leg (not a port stay) has no HFO-equivalent figure",
+        legHfoEqPerDay({kind:"voyage", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-02T00:00:00Z", fuels:[{id:"HFO",tonnes:10}]})===null);
+    ckT("A port stay with no fuel recorded has no HFO-equivalent figure",
+        legHfoEqPerDay({kind:"port", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-02T00:00:00Z", fuels:[]})===null);
+    ckT("A port stay with no usable start/end has no HFO-equivalent figure (can't measure days)",
+        legHfoEqPerDay({kind:"port", tStart:null, tEnd:null, fuels:[{id:"HFO",tonnes:10}]})===null);
+    ckT("A port stay where end is not after start has no HFO-equivalent figure",
+        legHfoEqPerDay({kind:"port", tStart:"2026-01-02T00:00:00Z", tEnd:"2026-01-01T00:00:00Z", fuels:[{id:"HFO",tonnes:10}]})===null);
+    /* (5) NO implausibility cutoff on this figure (owner instruction, unlike CII/EEOI above) —
+       even a very short, fuel-heavy stay must still show its raw computed rate. */
+    const veryShort = {kind:"port", tStart:"2026-01-01T00:00:00Z", tEnd:"2026-01-01T00:06:00Z", // 6 minutes
+                        fuels:[{id:"HFO", tonnes:50}]};
+    const shortRate = legHfoEqPerDay(veryShort);
+    ckT("A very short, fuel-heavy stay is NOT suppressed — it shows its (large) raw rate",
+        shortRate!=null && shortRate > 1000);
+    /* (6) cell rendering: dash with a title for null, value + small 't/d' unit otherwise */
+    ckT("Null HFO-equivalent renders as a dash with an explanatory title",
+        hfoEqCellHtml(null).indexOf("—")>-1 && hfoEqCellHtml(null).indexOf("title=")>-1);
+    const cellHtml = hfoEqCellHtml(2.44);
+    ckT("A real HFO-equivalent value renders to 1 decimal place",
+        cellHtml.indexOf(">"+fmtF(2.44,1)+"<")>-1 || cellHtml.indexOf(fmtF(2.44,1))>-1);
+    ckT("The 't/d' unit is present and marked smaller than the number",
+        cellHtml.indexOf("t/d")>-1 && cellHtml.indexOf("font-size:70%")>-1);
+  })();
+  /* 2026-07-26v (Task 1, Aurvin, owner instruction): the VOYAGE-leg equivalent HFO fuel/nm
+     figure — same energy-equivalent core as t/d above (legHfoEqTonnes), owner-confirmed to
+     reuse that recipe, just ÷ leg distance instead of ÷ duration, and in kg instead of
+     tonnes. Owner also confirmed (this session) NO suppression tie-in with the CII pill's own
+     implausibility cut-off — kg/nm always shows its raw value. */
+  (function(){
+    /* (1) same pure-HFO sanity check as t/d: a leg burning ONLY HFO converts to its own mass
+       in kg, independent of any particular LCV constant. */
+    const pureHfo = {kind:"voyage", dist:100, fuels:[{id:"HFO", tonnes:1}]}; // 1t = 1000kg
+    ck("Pure-HFO voyage leg: equivalent kg/nm = actual kg / distance",
+       legHfoEqPerNm(pureHfo), 1000/100, 1e-9);
+    /* (2) shares legHfoEqTonnes with t/d — a higher-LCV fuel (LNG) converts to more than its
+       own mass, same property as the port-stay test above, now on the ÷distance/kg path. */
+    const lngOnly = {kind:"voyage", dist:50, fuels:[{id:"LNG", tonnes:10}]};
+    const lngRate = legHfoEqPerNm(lngOnly);
+    ckT("A higher-LCV fuel (LNG) still converts to MORE HFO-equivalent mass than its own",
+        lngRate > (10*1000)/50);
+    ck("LNG kg/nm matches the energy-ratio formula (LNG LCV / HFO LCV), in kg",
+       lngRate, (10*1000*(FUEL_BY_ID.LNG.lcv/FUEL_BY_ID.HFO.lcv))/50, 1e-9);
+    /* (3) mixed fuels sum energy before converting, same as t/d */
+    const mixed = {kind:"voyage", dist:200, fuels:[{id:"HFO", tonnes:50}, {id:"LNG", tonnes:10}]};
+    const expectMixedTonnes = (50*FUEL_BY_ID.HFO.lcv + 10*FUEL_BY_ID.LNG.lcv)/FUEL_BY_ID.HFO.lcv;
+    ck("Mixed-fuel leg sums ENERGY across fuels before converting, then ÷ distance, in kg",
+       legHfoEqPerNm(mixed), (expectMixedTonnes*1000)/200, 1e-9);
+    /* (4) legHfoEqTonnes is the SAME shared core t/d uses — a pure-HFO stay/leg with matching
+       tonnes must agree on the intermediate HFO-equivalent tonnes regardless of which of the
+       two final functions is called, proving the two figures can't drift apart on that step. */
+    ck("t/d and kg/nm agree on the shared HFO-equivalent-tonnes step for identical fuel",
+       legHfoEqTonnes({fuels:[{id:"HFO",tonnes:1}]}), legHfoEqTonnes({fuels:[{id:"HFO",tonnes:1}]}), 1e-9);
+    /* (5) null (dash) cases */
+    ckT("A port stay (not a voyage leg) has no kg/nm figure",
+        legHfoEqPerNm({kind:"port", dist:0, fuels:[{id:"HFO",tonnes:10}]})===null);
+    ckT("A voyage leg with no distance has no kg/nm figure",
+        legHfoEqPerNm({kind:"voyage", dist:0, fuels:[{id:"HFO",tonnes:10}]})===null);
+    ckT("A voyage leg with no fuel recorded has no kg/nm figure",
+        legHfoEqPerNm({kind:"voyage", dist:100, fuels:[]})===null);
+    /* (6) NO implausibility cutoff (owner instruction, this session) — a very short leg with
+       a lot of fuel behind it must still show its raw (large) kg/nm rate, unlike the CII pill
+       above it which WOULD be withheld at that same distance/fuel ratio. */
+    const veryShort = {kind:"voyage", dist:0.01, fuels:[{id:"HFO", tonnes:50}]};
+    const shortRate = legHfoEqPerNm(veryShort);
+    ckT("A very short, fuel-heavy leg's kg/nm is NOT suppressed — shows its (large) raw rate",
+        shortRate!=null && shortRate > 100000);
+    /* (7) cell rendering: dash with title for null, value + small 'kg/nm' unit otherwise, and
+       — the key visual requirement this session — rendered as its OWN block (so it stacks
+       under the CII pill instead of sitting beside it). */
+    ckT("Null kg/nm renders as a dash with an explanatory title",
+        hfoEqPerNmCellHtml(null).indexOf("—")>-1 && hfoEqPerNmCellHtml(null).indexOf("title=")>-1);
+    const nmHtml = hfoEqPerNmCellHtml(83.6);
+    ckT("A real kg/nm value renders to 1 decimal place with a 'kg/nm' unit, marked smaller",
+        nmHtml.indexOf(fmtF(83.6,1))>-1 && nmHtml.indexOf("kg/nm")>-1 && nmHtml.indexOf("font-size:70%")>-1);
+    ckT("Both the dash and the value render as their own block (stacks under the CII pill)",
+        hfoEqPerNmCellHtml(null).indexOf("display:block")>-1 && nmHtml.indexOf("display:block")>-1);
+  })();
+  /* 2026-07-26v (Task 2, Aurvin, owner instruction): the CII column cell (col 9 only) is now
+     CENTERED, not right-aligned, so a port stay's t/d sits on the same visual line as it did
+     before. The EEOI column (col 10) is untouched.
+     2026-07-26w (Aurvin, owner instruction, this session): SUPERSEDES the voyage-row half of
+     the above — the port-stay (isBerth) branch still uses the centered flex-column layout
+     checked below, but voyage rows now use the SAME absolute-position technique as the
+     Eligibility cell (columns 6-8: pill pinned at top:50%, caption pinned at a fixed
+     center+22px offset, min-height:70px guard) so the two banners share one literal baseline
+     instead of two independent centering rules — see the long comment on imoLeg in
+     breakdownGrid. This is a light styling-string check, not a pixel/layout test — jsdom in
+     these self-tests does not compute real layout — but it does lock down each branch's
+     technique so a future edit can't silently revert one or mix the two up. */
+  (function(){
+    const sCenter={year:2025,ship:{typeId:"bulk",capacity:50000},rows:[
+      {kind:"port",dist:0,cargo:0,tStart:"2025-03-01T00:00",tEnd:"2025-03-02T00:00",fuels:[{fuelId:"HFO",tonnes:5}]},
+      {kind:"voyage",from:"EEA",to:"EEA",dist:1000,cargo:5000,tStart:"2025-03-01T00:00",tEnd:"2025-03-02T00:00",fuels:[{fuelId:"HFO",tonnes:50}]}]};
+    const rCenter=computeAll(sCenter);
+    BR_LAST=null; // force a clean render, same pattern breakdownGrid's other tests rely on
+    const html=breakdownGrid(rCenter,{lcv:"",euets:"",ukets:"",feu:"",scc:"",voy:"",imo:"",eligibility:""});
+    /* bound each check to ONE leg row's own col-9 block (from "grid-column:9;grid-row:1" up
+       to that same row's "grid-column:10") rather than searching the whole html string —
+       there are two such blocks here (the port-stay row, then the voyage row), and both
+       "position:relative;min-height:70px" and "top:50%;left:50%;transform:translate(-50%,-50%)"
+       also appear, unrelated, in the Eligibility cell's own markup, so an unbounded search
+       could pass for the wrong reason. */
+    const col9Blocks = [...html.matchAll(/grid-column:9;grid-row:1[\s\S]*?(?=grid-column:10)/g)].map(m=>m[0]);
+    ckT("CII column (grid-column:9), PORT-STAY row: still centered flex-column layout",
+        col9Blocks.some(t=>/flex-direction:column;align-items:center/.test(t)));
+    ckT("CII column (grid-column:9), VOYAGE row: pill+caption now use the SAME absolute-position/min-height:70px anchors as the Eligibility cell",
+        col9Blocks.some(t=>/position:relative;min-height:70px/.test(t) &&
+                            /top:50%;left:50%;transform:translate\(-50%,-50%\)/.test(t) &&
+                            /top:calc\(50% \+ 22px\);left:50%;transform:translateX\(-50%\)/.test(t)));
+    ckT("EEOI column (grid-column:10) cell is unaffected — still right-aligned, single line",
+        /grid-column:10;grid-row:1[^"]*justify-content:flex-end/.test(html));
+  })();
+  /* 2026-07-26d (Task 3): Voyage-Wise IMO figures. A voyage GROUP includes its port stays,
+     which is the documented difference from Leg-Wise. */
+  (function(){
+    const cii={ciiReq:10,bounds:{sup:8.6,low:9.4,up:10.6,inf:11.8},capUnit:"DWT"};
+    /* vwGroupCII reads the LIVE app state for capacity (that is deliberate — it is the same
+       source js/engine.js uses), so pin S.ship for this block and restore it afterwards. */
+    const shipKeep = S.ship; S.ship = {typeId:"bulk", capacity:50000};
+    const st={ship:{capacity:50000}};
+    const g={dist:2000,co2:900,tw:60e6,cii,endYear:2026};
+    ck("Voyage CII = group CO2 x 1e6 / (capacity x group distance)",
+       vwGroupCII(g).attained, 900*1e6/(50000*2000), 1e-9);
+    ck("Voyage CII percentage = attained x 100 / that year's required",
+       vwGroupCII(g).pct, (900*1e6/(50000*2000))*100/10, 1e-9);
+    ckT("Voyage CII uses the SAME A-E ladder as a leg and the engine",
+        vwGroupCII(g).rating === ciiRatingOf(900*1e6/(50000*2000), cii.bounds));
+    ck("Voyage IMO EEOI = group CO2 x 1e6 / group transport work",
+       vwGroupEEOI(g), 900*1e6/60e6, 1e-9);
+    ckT("A ballast voyage (no transport work) has no IMO EEOI", vwGroupEEOI({dist:100,co2:5,tw:0,cii})===null);
+    ckT("A zero-distance voyage has no CII", vwGroupCII({dist:0,co2:5,tw:1,cii})===null);
+    ckT("Voyage CII obeys the same implausibility cut-off as a leg",
+        vwGroupCII({dist:1,co2:900,tw:1e6,cii}).suppressed===true);
+    /* the band year matters: the SAME voyage rated on a later, tighter year must not get a
+       better letter. 2026's required is lower than 2025's, so the percentage must rise. */
+    const cii2025={ciiReq:12,bounds:{sup:10.32,low:11.28,up:12.72,inf:14.16}};
+    const cii2026={ciiReq:10,bounds:{sup:8.6,low:9.4,up:10.6,inf:11.8}};
+    const a25=vwGroupCII(Object.assign({},g,{cii:cii2025})), a26=vwGroupCII(Object.assign({},g,{cii:cii2026}));
+    ck("Same voyage, same attained CII whichever year's bands are used", a25.attained, a26.attained, 1e-12);
+    ckT("…but a tighter later year gives a HIGHER percentage of required", a26.pct > a25.pct);
+    ckT("…and never a better rating letter", "ABCDE".indexOf(a26.rating) >= "ABCDE".indexOf(a25.rating));
+    /* Voyage-Wise includes port stays; Leg-Wise does not. Prove the direction of the gap. */
+    const legOnly=ciiFrom(700, 2000, cii, st);      // same voyage, sea-leg CO2 only
+    ckT("Including the voyage's port stays makes its CII worse than legs alone",
+        vwGroupCII(g).attained > legOnly.attained);
+    S.ship = shipKeep;
+  })();
   ck("FuelEU target 2025", fueleuTarget(2025), 89.3368, 1e-9);
   ck("FuelEU target 2030", fueleuTarget(2030), 85.6904, 1e-9);
   ck("EU ETS phase-in 2024", etsPhaseIn(2024), 0.4, 0);
@@ -4184,6 +5776,40 @@ function runSelfTests(){
     ckT("Year filter: 2024-dated rows excluded from a 2025 computation (with warning)",
         (()=>{ const r=computeAll({year:2025, ship:{typeId:"bulk",capacity:45000}, rows:o.rows});
                return r.summary.dist===0 && r.warnings.some(w=>/EXCLUDED from ALL KPIs/.test(w)); })());
+    /* ---- shared From/To date-range filter (2026-07-24, Aurvin): fixture legs are
+       DEHAM→NLRTM 205 nm and NLRTM→BEANR 80 nm, spanning 2024-05-25..27 UTC ---- */
+    ckT("Date range OVERRIDES year: a 2024 range counts 2024 rows even under year 2025 (285 nm)",
+        (()=>{ const r=computeAll({year:2025, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-01T00:00",toISO:"2024-05-31T23:59",active:true}});
+               return Math.abs(r.summary.dist-285)<0.01; })());
+    ckT("Date range fully outside the data → nothing counted, range-worded warning",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2030-01-01T00:00",toISO:"2030-12-31T23:59",active:true}});
+               return r.summary.dist===0 && r.warnings.some(w=>/OUTSIDE the selected From\/To date range/.test(w)); })());
+    ckT("Date range edge leg counted IN FULL (leg1 starts before From but its 205 nm is kept → 285)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
+               return Math.abs(r.summary.dist-285)<0.01; })());
+    ckT("Date range drops a leg wholly before From (leg1 excluded, only leg2 80 nm remains)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-26T12:00",toISO:"2024-05-28T00:00",active:true}});
+               return Math.abs(r.summary.dist-80)<0.01; })());
+    ckT("Inactive date filter → year filter still governs (2024 rows under year 2024 = 285 nm)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"",toISO:"",active:false}});
+               return Math.abs(r.summary.dist-285)<0.01; })());
+    ckT("UI predicates: rowInRange / rowIsEdge / edgeRowCount handle inside, edge & outside",
+        (()=>{ const sRows=S.rows, sDF=S.dateFilter;
+               try{
+                 S.rows=[{kind:"voyage",tStart:"2026-03-01T00:00",tEnd:"2026-03-10T00:00",fuels:[]},   // fully inside
+                         {kind:"voyage",tStart:"2026-02-25T00:00",tEnd:"2026-03-02T00:00",fuels:[]},   // straddles From → edge
+                         {kind:"voyage",tStart:"2026-06-01T00:00",tEnd:"2026-06-02T00:00",fuels:[]}];  // outside
+                 S.dateFilter={fromISO:"2026-03-01T00:00",toISO:"2026-03-31T23:59",active:true};
+                 return rowInRange(S.rows[0]) && !rowIsEdge(S.rows[0])
+                     && rowInRange(S.rows[1]) &&  rowIsEdge(S.rows[1])
+                     && !rowInRange(S.rows[2]) && edgeRowCount()===1;
+               } finally { S.rows=sRows; S.dateFilter=sDF; }
+             })());
     /* per-row breakdown attribution */
     const rBr = computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows});
     const leg1det = rBr.rowDetails.find(d=>d.kind==="voyage");
@@ -4365,6 +5991,35 @@ function runSelfTests(){
     ckT("DERIVE notes: derivation + transit + qty fallback + OPL + mismatch all reported",
         md.notes.some(n=>/ARRIVAL\/DEPARTURE derived/.test(n)) && md.notes.some(n=>/pure transit/.test(n)) &&
         md.notes.some(n=>/quantity fallback/.test(n)) && md.notes.some(n=>/OUTSIDE port limits/.test(n)) && md.notes.some(n=>/disagrees/.test(n)));
+
+    /* ---- 2026-07-24b (owner rule): inconsistent OUTSIDE_PORT_LIMIT flags + cargo AT_BERTH →
+       the stray OPL flag is misreporting, keep the port of call. A uniformly-OPL=TRUE window
+       stays transit; a real STS (AT_ANCHOR OPL, "stay D" above) stays transit. ---- */
+    const OPLMIX_FIX=[DH,
+      /* stay at NLVLI: berth discharge, OPL flags MIXED (FALSE then a stray TRUE) → KEPT as POC */
+      ["2026-04-01 00:00","2026-03-31 12:00","2026-04-01 00:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","10000","ESALG","","NLVLI"],
+      ["2026-04-02 00:00","2026-04-01 00:00","2026-04-02 00:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"100","10000","ESALG","","NLVLI"],
+      ["2026-04-02 12:00","2026-04-02 00:00","2026-04-02 12:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 2}',"20","10000","ESALG","NLVLI","NLVLI"],
+      ["2026-04-03 00:00","2026-04-02 12:00","2026-04-03 00:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE","YES",'{"MGO": 1.0}',"0","4000","","NLVLI",""],
+      ["2026-04-03 12:00","2026-04-03 00:00","2026-04-03 12:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","TRUE","NO",'{"MGO": 0.5}',"0","0","","NLVLI",""],
+      ["2026-04-03 18:00","2026-04-03 12:00","2026-04-03 18:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.2}',"2","0","NLVLI","","GBLON"],
+      /* stay at GBLON: berth load but UNIFORMLY OPL=TRUE (not "mixed") → still transit */
+      ["2026-04-04 12:00","2026-04-03 18:00","2026-04-04 12:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 8}',"90","0","NLVLI","","GBLON"],
+      ["2026-04-04 18:00","2026-04-04 12:00","2026-04-04 18:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","0","NLVLI","GBLON","GBLON"],
+      ["2026-04-05 00:00","2026-04-04 18:00","2026-04-05 00:00","IN_PORT","AT_BERTH","CARGO_LOADING","TRUE","YES",'{"MGO": 0.8}',"0","5000","","GBLON",""],
+      ["2026-04-05 12:00","2026-04-05 00:00","2026-04-05 12:00","IN_PORT","AT_BERTH","CARGO_LOADING","TRUE","YES",'{"MGO": 0.4}',"0","5000","","GBLON",""],
+      ["2026-04-05 18:00","2026-04-05 12:00","2026-04-05 18:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.1}',"1","5000","GBLON","","ESALG"]
+    ];
+    const mo=mdaToOVD(OPLMIX_FIX, 20000), xo=parseOVD(mo.csv);
+    const opAt=c=>xo.rows.filter(r=>r.kind==="port").find(p=>p.port&&p.port.c===c);
+    const pV=opAt("NLVLI"), pL=opAt("GBLON");
+    ckT("DERIVE OPL-mixed + cargo AT_BERTH → kept as port of call (misreporting override), CASE_A, no red-badge flag",
+        pV && pV.poc===true && pV.deriveRule==="CASE_A" && !pV.oplCargo);
+    ckT("DERIVE OPL-uniform TRUE at berth → NOT 'mixed', stays transit (red-badge flag set)",
+        pL && pL.poc===false && pL.oplCargo===true);
+    ckT("DERIVE OPL override reported in import notes",
+        mo.notes.some(n=>/INCONSISTENT OUTSIDE_PORT_LIMIT/.test(n)));
+
     /* ---- 2026-07-20b (owner decision): drifting-only waiting is NOT a port stay ---- */
     const DRIFT_FIX=[DH,
       /* SGSIN→OMDQM with a drifting-only waiting window off OMDQM (no cargo evidence)
@@ -4477,40 +6132,75 @@ function runSelfTests(){
     updSplit(0,0,"AE","2.5");
     ck("Edit a machine: total follows the split (3+2.5+0.5+0)", S.rows[0].fuels[0].tonnes, 6, 0.001);
     S.rows=keepRows; save();
-    /* multi-year OVD: leg crossing 31 Dec splits report-exactly (straddling period pro-rated) */
+    /* multi-year OVD: leg crossing 31 Dec splits by WHOLE report — each report counted in the
+       year of its own date, NO proration across midnight (2026-07-25, Aurvin, owner instruction).
+       The 01 Jan 12:00 Noon report (period 31 Dec 12:00→01 Jan 12:00) belongs ENTIRELY to 2026. */
     const yCSV="Date_UTC,Time_UTC,Voyage_From,Voyage_To,Event,Distance,Cargo_Mt,ME_Consumption_HFO\n"+
       "2025-12-30,12:00,NLRTM,DEHAM,Departure,0,5000,2\n"+
       "2025-12-31,12:00,NLRTM,DEHAM,Noon,100,5000,10\n"+
-      "2026-01-01,12:00,NLRTM,DEHAM,Noon,100,5000,10\n"+     // covers 31Dec12:00→01Jan12:00 → half in each year
+      "2026-01-01,12:00,NLRTM,DEHAM,Noon,100,5000,10\n"+     // dated 01 Jan → wholly 2026 (no split of this report)
       "2026-01-02,12:00,NLRTM,DEHAM,Arrival,50,5000,5\n";
     const oy=parseOVD(yCSV);
     const parts=oy.rows.filter(r=>r.kind==="voyage");
     const fT2=(r,id)=>{ const f=(r&&r.fuels||[]).find(z=>z.fuelId===id); return f?f.tonnes:0; };
     ckT("Year split: one leg becomes 2025 + 2026 parts", parts.length===2 && parts[0].yearPart===2025 && parts[1].yearPart===2026 && parts.every(p=>p.splitYear));
-    ck("Year split 2025 part: 100 + half of the straddling period = 150 nm", parts[0].dist, 150, 0.2);
-    ck("Year split 2025 part HFO 10+5 t", fT2(parts[0],"HFO"), 15, 0.01);
-    ck("Year split 2026 part: 50 + half = 100 nm", parts[1].dist, 100, 0.2);
-    ck("Year split 2026 part HFO 5+5 t", fT2(parts[1],"HFO"), 10, 0.01);
+    ck("Year split 2025 part: only the 31 Dec Noon report = 100 nm", parts[0].dist, 100, 0.2);
+    ck("Year split 2025 part HFO 10 t (31 Dec Noon only)", fT2(parts[0],"HFO"), 10, 0.01);
+    ck("Year split 2026 part: 01 Jan Noon + 02 Jan Arrival = 150 nm", parts[1].dist, 150, 0.2);
+    ck("Year split 2026 part HFO 10+5 t", fT2(parts[1],"HFO"), 15, 0.01);
     ckT("Year split note reported", oy.notes.some(n=>/year boundary/.test(n)));
     const c25=computeAll({year:2025,ship:{typeId:"bulk",capacity:45000},rows:oy.rows}), c26=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:oy.rows});
-    ckT("Reporting-year selector: 2025 sees 150 nm, 2026 sees 100 nm", Math.abs(c25.summary.dist-150)<0.2 && Math.abs(c26.summary.dist-100)<0.2);
-    /* UK ETS report-exact 1 Jul 2026 split (2026-07-20, Aurvin): a UK↔UK leg straddling 1 Jul
-       with NON-uniform burn — 90 t before 1 Jul, 10 t across the cutoff (⅔ of that 10 t after).
-       Report-exact in-scope share = (10×⅔)/100 ≈ 0.067; the old leg-level time-proration would
-       have said ≈0.5. Proves the calc now uses actual per-report consumption, matching the badges. */
+    ckT("Reporting-year selector: 2025 sees 100 nm, 2026 sees 150 nm", Math.abs(c25.summary.dist-100)<0.2 && Math.abs(c26.summary.dist-150)<0.2);
+
+    /* 2026-07-25e (owner instruction): a HAND-ENTERED row (never through parseOVD, so no
+       yearPart) spanning 31 Dec must be time-prorated by computeAll itself — not counted
+       whole under both years. 21-day leg, 12 days in 2024 / 9 days in 2025. */
+    const handRow={ kind:"voyage", label:"hand-entered straddle", from:"EEA", to:"EEA",
+      tStart:"2024-12-20T00:00", tEnd:"2025-01-10T00:00", dist:210, cargo:1000,
+      fuels:[{fuelId:"HFO",tonnes:100,price:0}] };
+    const shipStub={ typeId:"bulk", capacity:45000 };
+    const h24=computeAll({year:2024,ship:shipStub,rows:[handRow],dateFilter:{active:false}});
+    const h25=computeAll({year:2025,ship:shipStub,rows:[handRow],dateFilter:{active:false}});
+    const fT3=(R)=>{ const d=R.rowDetails[0]; return d? (d.fuels.find(f=>f.id==="HFO")||{}).tonnes||0 : 0; };
+    ckT("Hand-entered straddling row: NOT double-counted (2024 dist 120, 2025 dist 90, sums to 210)",
+        h24.rowDetails.length===1 && h25.rowDetails.length===1 &&
+        Math.abs(h24.rowDetails[0].dist-120)<0.05 && Math.abs(h25.rowDetails[0].dist-90)<0.05);
+    ckT("Hand-entered straddling row: fuel prorated the same way (2024 57.14t, 2025 42.86t)",
+        Math.abs(fT3(h24)-57.143)<0.01 && Math.abs(fT3(h25)-42.857)<0.01);
+    /* Same check with the Year-locked date-filter bar ACTIVE (its default full-year window) —
+       this is the path that actually renders on Report-Wise/Leg-Wise/Workspace. Guards the
+       exact-midnight edge case: without the yearPart short-circuit in rowInYear's rangeOn
+       branch, the "any overlap counted in full" range rule would double-count the instant
+       where the two halves touch. */
+    const h24r=computeAll({year:2024,ship:shipStub,rows:[handRow],dateFilter:_fullYearRange(2024)});
+    const h25r=computeAll({year:2025,ship:shipStub,rows:[handRow],dateFilter:_fullYearRange(2025)});
+    ckT("Hand-entered straddling row with the Year-bar's date range ACTIVE: still split, not double-counted",
+        h24r.rowDetails.length===1 && h25r.rowDetails.length===1 &&
+        Math.abs(h24r.rowDetails[0].dist-120)<0.05 && Math.abs(h25r.rowDetails[0].dist-90)<0.05);
+    /* Voyage-Wise's own path (ignoreYearFilter) must stay untouched — it pre-splits/pre-buckets
+       rows itself and needs a strict 1:1 index match with rowDetails; this new calendar-year
+       split must not also fire there. */
+    const hVW=computeAll({year:2025,ship:shipStub,rows:[handRow],ignoreYearFilter:true,dateFilter:{active:false}});
+    ckT("Voyage-Wise path (ignoreYearFilter) is unaffected: still exactly 1 row, unsplit",
+        hVW.rowDetails.length===1 && Math.abs(hVW.rowDetails[0].dist-210)<0.05);
+    /* UK ETS report-by-date (2026-07-25, Aurvin, owner instruction): a UK↔UK leg with reports on
+       both sides of 1 Jul 2026. Each report is judged WHOLE by its own date — the 90 t report
+       dated 30 Jun is OUT of scope, the 10 t report dated 03 Jul is fully IN. In-scope share =
+       10/100 = 0.10. The old leg-level time-proration would have said ≈0.5; the pre-2026-07-25
+       report-time-proration would have said ≈0.067. Proves the calc now uses whole reports by date. */
     const ukCSV="Date_UTC,Time_UTC,Voyage_From,Voyage_To,Event,Distance,Cargo_Mt,ME_Consumption_HFO\n"+
       "2026-06-29,00:00,GBSOU,GBLIV,Departure,0,5000,0\n"+
-      "2026-06-30,00:00,GBSOU,GBLIV,Noon,100,5000,90\n"+       // 29→30 Jun: wholly before 1 Jul
-      "2026-07-03,00:00,GBSOU,GBLIV,Arrival,100,5000,10\n";    // 30 Jun→3 Jul: ⅔ after 1 Jul
+      "2026-06-30,00:00,GBSOU,GBLIV,Noon,100,5000,90\n"+       // dated 30 Jun → wholly OUT of UK ETS
+      "2026-07-03,00:00,GBSOU,GBLIV,Arrival,100,5000,10\n";    // dated 03 Jul → wholly IN UK ETS
     const uo=parseOVD(ukCSV);
     const uleg=uo.rows.find(r=>r.kind==="voyage");
-    ckT("UK ETS report-exact: straddling leg ukInFrac from actual burn (~0.067), not time (~0.5)",
-        uleg && Math.abs(uleg.ukInFrac-0.0667)<0.006 && ukSchemeFraction(uleg,2026)>0.4);
+    ckT("UK ETS report-by-date: straddling leg ukInFrac = 10/100 = 0.10 (whole reports by date), not time (~0.5)",
+        uleg && Math.abs(uleg.ukInFrac-0.10)<0.001 && ukSchemeFraction(uleg,2026)>0.4);
     const ukFull=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},
                     rows:[{kind:"voyage",from:"UK",to:"UK",dist:200,cargo:5000,fuels:[{fuelId:"HFO",tonnes:100}]}]}).ukets.tco2e;
     const ukRE=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:uo.rows}).ukets.tco2e;
-    ckT("UK ETS total scales by the report-exact share (≈ full×0.067), not time (full×0.5)",
-        Math.abs(ukRE - ukFull*0.0667) < ukFull*0.02);
+    ckT("UK ETS total scales by the whole-report-by-date share (full×0.10), not time (full×0.5)",
+        Math.abs(ukRE - ukFull*0.10) < ukFull*0.01);
     /* MDA per-machine columns + raw report retention */
     const MH=["DATE_TIME_GMT","REPORT_TYPE","OPERATING_CONDITION","FUEL_CONSUMPTION","MAIN_ENGINE_CONSUMPTION","AUXILIARY_ENGINE_CONSUMPTION","BOILER_CONSUMPTION","FUEL_ROB","LATITUDE","LONGITUDE","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"];
     const MFIX=[MH,
@@ -4602,11 +6292,10 @@ function runSelfTests(){
       ckT("DERIVE no-EOSP fallback: file opening AT BERTH still yields one berth row, no phantom leg",
           rAb.rows.filter(r=>r.kind==="port").length===1);
     }
-    /* Report-Wise tab UK ETS badge uses the engine's own scheme-window logic per REPORT (2026-07-20,
-       Aurvin): one UK↔UK stay straddling 1 Jul 2026 — a June report is dash (not applicable), a
-       report straddling 1 Jul shows the time-pro-rated in-scope % (matching the totals), and a
-       July report shows 100%. Guards the granularity bug where June days inside a straddling stay
-       showed 100%. */
+    /* Report-Wise tab UK ETS badge judges each report WHOLE by its own date (2026-07-25, Aurvin,
+       owner instruction): a report dated before 1 Jul 2026 is out of scope (dash), a report dated
+       on/after 1 Jul 2026 is fully in (100%). A report dated 01 Jul 12:00 whose PERIOD reaches
+       back into 30 Jun is still fully IN — it is dated in July. No per-report time-proration. */
     {
       const _rows=S.rows, _year=S.year;
       S.year=2026;
@@ -4615,8 +6304,8 @@ function runSelfTests(){
       const cStraddle=trCoverage({t:"2026-07-01T12:00",ts:"2026-06-30T12:00",te:"2026-07-01T12:00"});
       const cAfter   =trCoverage({t:"2026-08-02T00:00",ts:"2026-08-01T00:00",te:"2026-08-02T00:00"});
       S.rows=_rows; S.year=_year;
-      ckT("UK ETS reports badge: June dash, 1 Jul straddle 50%, July 100% (same logic as totals)",
-          cBefore.uk===null && Math.abs(cStraddle.uk-50)<0.01 && cAfter.uk===100);
+      ckT("UK ETS reports badge: June dash, 01 Jul report 100% (whole by date), July 100%",
+          cBefore.uk===null && cStraddle.uk===100 && cAfter.uk===100);
     }
     /* async tail: write an xlsx with our offline writer, read it back with the app's own reader */
     (async ()=>{
@@ -4757,6 +6446,88 @@ function runSelfTests(){
     ckT("Voyage-Wise SCC: the ballast voyage's WtW is carried into the next laden voyage",
         bg2.groups[1].sccBallastIn>0 &&
         Math.abs(bg2.groups[1].sccNumerator-(bg2.groups[1].sccWtW+bg2.groups[0].sccWtW))<0.01);
+
+    /* (i2b) 2026-07-26i (Aurvin, EXPLICIT owner instruction, this session, after a
+       clarifying-question round): the Voyage-Wise TOTAL row's CII/EEOI numerator must include
+       CO₂ from a voyage GROUP that has NO distance of its own — e.g. a voyage number assigned
+       to a period the ship spent entirely in port, never sailing under it. Before this fix,
+       the TOTAL's numerator was built only from distance-bearing groups (`sel.filter(g=>
+       g.dist>0)`), so a zero-distance group's real CO₂ was silently dropped from the total —
+       not just its (zero) distance — understating the TOTAL relative to the real annual
+       attained CII, the same class of bug already fixed on Leg-Wise for at-berth rows. */
+    const zeroDistState={ year:2026, ship:{typeId:"bulk",capacity:45000}, mdaReports:[
+        rep("2026-02-01T00:00","70",{rt:"IN_PORT",role:"DEPARTURE"}), rep("2026-02-10T00:00","70"),
+        rep("2026-05-01T00:00","96",{rt:"IN_PORT",role:"DEPARTURE"}), rep("2026-05-10T00:00","96") ],
+      rows:[
+        {kind:"voyage",label:"A",from:"EEA",to:"EEA",dist:1200,cargo:40000,
+         tStart:"2026-02-01T00:00",tEnd:"2026-02-10T00:00",fuels:[{fuelId:"HFO",tonnes:120}]},
+        {kind:"port",label:"P96",zone:"EEA",poc:true,hours:216,
+         tStart:"2026-05-01T00:00",tEnd:"2026-05-10T00:00",fuels:[{fuelId:"MDO",tonnes:12}]}]};
+    const zg=vwGroups(zeroDistState);
+    ckT("Voyage-Wise: a voyage number spent entirely in port still forms its own group — real CO₂, zero distance",
+        zg.groups.length===2 && zg.groups.some(g=>g.dist===0 && g.co2>0));
+    const zeroDistEl=document.getElementById("tab-voy");
+    if(zeroDistEl){
+      const keepS2=S.rows, keepR2=S.mdaReports, keepY2=S.year;
+      S.rows=zeroDistState.rows; S.mdaReports=zeroDistState.mdaReports; S.year=2026;
+      renderVoyage();
+      const co2All=zg.groups.reduce((s,g)=>s+(Number(g.co2)||0),0);
+      const distAll=zg.groups.filter(g=>g.dist>0).reduce((s,g)=>s+g.dist,0);
+      const distGroup=zg.groups.find(g=>g.dist>0);
+      const wantPctStr = (distGroup && distGroup.cii && distGroup.cii.ciiReq)
+        ? fmtF(co2All*1e6/(45000*distAll)*100/distGroup.cii.ciiReq,0)+"%" : null;
+      const totTxt=(document.getElementById("vwTotals")||{}).textContent||"";
+      ckT("Voyage-Wise TOTAL row's CII % includes the zero-distance group's CO₂",
+          wantPctStr!=null && totTxt.indexOf(wantPctStr)>-1,
+          "want "+wantPctStr+" in: "+totTxt.slice(-140));
+      S.rows=keepS2; S.mdaReports=keepR2; S.year=keepY2;
+      try{renderVoyage();}catch(e){}
+    }
+
+    /* (i3) 2026-07-24 (Aurvin): Voyage-Wise multi-year — each voyage graded under the rules of
+       its END-date year, and the tab's own date range includes voyages by their end date. */
+    const vyBase={ ship:{typeId:"bulk",capacity:45000}, euaPrice:80, year:2026,
+      voyDateFilter:{fromISO:"",toISO:"",active:false}, mdaReports:[
+        rep("2025-11-01T00:00","90",{rt:"IN_PORT",role:"DEPARTURE"}), rep("2025-11-20T00:00","90"),
+        rep("2026-02-01T00:00","91",{rt:"IN_PORT",role:"DEPARTURE"}), rep("2026-02-20T00:00","91") ],
+      rows:[
+        {kind:"voyage",label:"V90",from:"EEA",to:"EEA",dist:1000,cargo:20000,
+         tStart:"2025-11-01T00:00",tEnd:"2025-11-20T00:00",fuels:[{fuelId:"HFO",tonnes:100}]},
+        {kind:"voyage",label:"V91",from:"EEA",to:"EEA",dist:1000,cargo:20000,
+         tStart:"2026-02-01T00:00",tEnd:"2026-02-20T00:00",fuels:[{fuelId:"HFO",tonnes:100}]}]};
+    const vyG=vwGroups(vyBase);
+    const g90=vyG.groups.find(g=>g.voy==="90"), g91=vyG.groups.find(g=>g.voy==="91");
+    const r25=computeAll({year:2025,ship:{typeId:"bulk",capacity:45000},rows:[Object.assign({},vyBase.rows[0])]});
+    const r26=computeAll({year:2026,ship:{typeId:"bulk",capacity:45000},rows:[Object.assign({},vyBase.rows[1])]});
+    const sumEuas=R=>R.rowDetails.reduce((s,d)=>s+(Number(d.euas)||0),0);
+    ckT("Voyage-Wise per-end-year: V90 (ends 2025) graded with 2025 rules (0.7 phase-in)",
+        g90 && near(g90.euas, sumEuas(r25)));
+    ckT("Voyage-Wise per-end-year: V91 (ends 2026) graded with 2026 rules (full phase-in)",
+        g91 && near(g91.euas, sumEuas(r26)));
+    ckT("Voyage-Wise per-end-year: identical fuel gives different EUAs across the two years",
+        g90 && g91 && (g91.euas-g90.euas)>1);
+    const vyR=vwGroups(Object.assign({},vyBase,{voyDateFilter:{fromISO:"2026-01-01T00:00",toISO:"2026-12-31T23:59",active:true}}));
+    ckT("Voyage-Wise range: only voyages whose END date is in range are shown (V91 only)",
+        vyR.groups.length===1 && vyR.groups[0].voy==="91");
+    const vyR2=vwGroups(Object.assign({},vyBase,{voyDateFilter:{fromISO:"2025-01-01T00:00",toISO:"2026-12-31T23:59",active:true}}));
+    ckT("Voyage-Wise range: a multi-year range includes voyages from both years",
+        vyR2.groups.length===2);
+
+    /* (i4) 2026-07-24: year-lock defaults for Workspace / Report-Wise / Leg-Wise */
+    ckT("initDateFilters: Year defaults to the latest year present in the rows, window = that year",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter;
+          try{ S.rows=[{kind:"voyage",tStart:"2024-05-01T00:00",tEnd:"2024-05-02T00:00",fuels:[]},
+                       {kind:"voyage",tStart:"2026-05-01T00:00",tEnd:"2026-05-02T00:00",fuels:[]}];
+               initDateFilters();
+               return S.year===2026 && S.dateFilter.active
+                   && S.dateFilter.fromISO==="2026-01-01T00:00" && S.dateFilter.toISO==="2026-12-31T23:59";
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; } })());
+    ckT("Year-lock: dfSet clamps a From before the year start up to 1 Jan of the year",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter;
+          try{ S.rows=[]; S.year=2026; S.dateFilter=_fullYearRange(2026);
+               dfSet('fromISO','2025-06-01T00:00');
+               return S.dateFilter.fromISO==='2026-01-01T00:00' && S.dateFilter.active;
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; try{renderWorkspace();}catch(e){} } })());
 
     /* (i2) 2026-07-23e — voyage-number spelling is normalised, but only across CONTINUITY.
        Owner's rule: 6, 06, 006, V6, V06, V006 are one and the same voyage. */
@@ -4967,7 +6738,7 @@ function runSelfTests(){
   const el=document.getElementById("testout"); el.style.display=""; el.textContent=out.join("\n")+"\n\n"+g;
 }
 
-renderWorkspace(); renderVessel();
+initDateFilters(); renderWorkspace(); renderVessel();
 
 /* ---------- access gate (deterrent-level; daily rotating code) ---------- */
 (function(){

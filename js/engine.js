@@ -316,6 +316,61 @@ function machineParts(fr, f, t, state){
   return out;
 }
 
+/* 2026-07-25e (owner instruction): imported multi-year files already split a leg/stay that
+   crosses 31 Dec into per-year parts at import (parseOVD's _byYear buckets, 2026-07-16) — but
+   a row added BY HAND on the Workspace tab never goes through that pass, so a hand-entered
+   voyage or port stay spanning a calendar-year boundary was being counted IN FULL under
+   whichever year was selected (and again in full under the other year too) instead of only
+   its rightful share. This expands any such row into per-year virtual parts, time-prorated
+   (owner's chosen method — same fallback vwPartWeight/tf() already uses on the Voyage-Wise
+   tab when there's no report data to weight by), each carrying `yearPart` so the EXISTING
+   year-filter logic below (`rowInYear`) picks only the part matching the selected year — no
+   change needed there. NEVER mutates `state.rows`: Workspace's own row list renders straight
+   from state.rows, so the original single row stays visible and editable as one entity; only
+   this internal, recomputed-every-call array feeds the aggregation loop (and hence
+   R.rowDetails, which is what the Leg-Wise breakdown table and Workspace's live KPI panel
+   both read) — so the other year's share is invisible there and never double-counted.
+   Cargo is deliberately NOT prorated (kept whole on every part), matching the import-time
+   split: cargo is a snapshot quantity carried by the leg, not something consumed over time;
+   only distance/hours/fuel — quantities that accrue over the row's duration — are prorated. */
+/* Same UTC-forcing parse as computeAll's _ms(): app timestamps are UTC "YYYY-MM-DDTHH:mm"
+   with no zone suffix, and Date.parse() on a zone-less string is LOCAL time in Node/browsers
+   alike — without this, the split fractions above would silently drift by the host's UTC
+   offset. Duplicated here (not shared with computeAll's closure) because this function must
+   also be callable before `state`/`y` exist in scope. */
+function _splitMs(s){ if(!s) return NaN; s=String(s); if(s.length===16) s+=":00"; if(!/[zZ]$/.test(s) && !/[+-]\d\d:?\d\d$/.test(s)) s+="Z"; return Date.parse(s); }
+function splitRowAcrossYears(row){
+  if(row.yearPart) return [row];                       // already split at import — leave alone
+  if(!row.tStart || !row.tEnd) return [row];            // undated — no span to detect
+  const t0=_splitMs(row.tStart), t1=_splitMs(row.tEnd);
+  if(!isFinite(t0) || !isFinite(t1) || t1<=t0) return [row];
+  const y0=new Date(t0).getUTCFullYear(), y1=new Date(t1).getUTCFullYear();
+  if(y0===y1) return [row];                             // whole row already sits in one year
+  const cuts=[];
+  for(let yy=y0+1; yy<=y1; yy++){
+    const c=Date.UTC(yy,0,1,0,0,0);
+    if(c>t0 && c<t1) cuts.push(c);
+  }
+  if(!cuts.length) return [row];
+  const bounds=[t0, ...cuts, t1];
+  const isoMin = (ms)=> new Date(ms).toISOString().slice(0,16);
+  const out=[];
+  for(let k=0;k<bounds.length-1;k++){
+    const a=bounds[k], b=bounds[k+1];
+    const w=Math.max(0, Math.min(1, (b-a)/(t1-t0)));
+    const c=Object.assign({}, row);
+    c.fuels=(row.fuels||[]).map(f=>Object.assign({}, f, { tonnes:(Number(f.tonnes)||0)*w }));
+    if(row.kind==="voyage") c.dist=(Number(row.dist)||0)*w;   // cargo intentionally untouched
+    if(row.hours!=null) c.hours=(Number(row.hours)||0)*w;
+    c.tStart=isoMin(a); c.tEnd=isoMin(b);
+    c.yearPart=new Date(a).getUTCFullYear();
+    c.splitYear=true; c.autoYearSplit=true;               // autoYearSplit: computed here, not at import
+    delete c.ukInFrac;   // a per-report ratio for the WHOLE row isn't valid for a time slice of it
+    out.push(c);
+  }
+  return out;
+}
+
 /* ---------- MAIN ---------- */
 function computeAll(state){
   annotateVoyageContinuity(state.rows);   // 2026-07-20: non-call stays don't end the voyage
@@ -338,8 +393,38 @@ function computeAll(state){
   /* Reporting-year filter (2026-07-16, Aurvin): multi-year imports keep all rows; only
      rows dated inside the selected reporting year count — in ALL KPIs. Imports split
      rows at the year boundary report-exactly, so a row belongs to exactly one year.
-     Rows without dates (manual entry) always count. */
+     Rows without dates (manual entry) always count.
+
+     2026-07-24 (Aurvin, explicit request): a shared From/To DATE-RANGE filter
+     (state.dateFilter, "YYYY-MM-DDTHH:mm" UTC) OVERRIDES this year filter when active. A
+     row then counts if its own UTC period overlaps [from,to] at all — the owner's rule is
+     "include every report that falls in/on the selected dates", counted IN FULL (no
+     proration at the range edge). The reporting year `y` is kept ONLY for regulatory
+     parameters (CII bands, the UK ETS 1-Jul-2026 window, FuelEU targets); while a range is
+     active it no longer decides row inclusion. This mirrors rowInRange() in ui.js — engine.js
+     loads before ui.js, so the tiny UTC/overlap helper is inlined here rather than shared. */
+  const _df = state.dateFilter;
+  const rangeOn = !!(_df && _df.active && _df.fromISO && _df.toISO);
+  const _ms = (s)=>{ if(!s) return NaN; s=String(s); if(s.length===16) s+=":00"; if(!/[zZ]$/.test(s) && !/[+-]\d\d:?\d\d$/.test(s)) s+="Z"; return Date.parse(s); };
   const rowInYear = (row)=>{
+    /* 2026-07-24: the Voyage-Wise tab computes one end-year bucket at a time and pre-filters
+       the rows itself, so it asks the engine to count every row it passes (each voyage graded
+       under the rules of its end-date year, y). */
+    if(state.ignoreYearFilter) return true;
+    if(rangeOn){
+      /* 2026-07-25e: a year-boundary split part (yearPart set — either from the import-time
+         split or from splitRowAcrossYears below) belongs to EXACTLY one calendar year. Its
+         two halves touch at the same midnight instant, so without this check the generic
+         "any overlap = counted in full" range rule below would also match the OTHER year's
+         half at that single instant (its tEnd/tStart sit exactly on the window's edge) and
+         double-count it. A yearPart mismatch is a hard exclude, decided before any range math. */
+      if(row.yearPart!=null && Number(row.yearPart)!==y) return false;
+      const a = row.tStart? _ms(row.tStart) : null;
+      const b = row.tEnd?   _ms(row.tEnd)   : null;
+      if(a==null && b==null) return true;                          // undated rows can't be range-filtered
+      const st=(a!=null?a:b), en=(b!=null?b:a);
+      return st<=_ms(_df.toISO) && en>=_ms(_df.fromISO);           // any overlap = counted in full
+    }
     if(row.yearPart) return Number(row.yearPart)===y;   // year-boundary split parts carry their year explicitly
     const a = row.tStart? String(row.tStart).slice(0,4) : null;
     const b = row.tEnd?   String(row.tEnd).slice(0,4)   : null;
@@ -350,6 +435,10 @@ function computeAll(state){
   /* ---- aggregate per row ---- */
   let cii_g=0, totalDist=0, fuelCostAll=0, nOutOfYear=0, nUkPartial=0;
   let ets_t_co2=0, ets_t_co2e=0, uk_co2=0, uk_ch4=0, uk_n2o=0;
+  /* 2026-07-26p (Aurvin, owner instruction): "Total CO2e" — a Fuel-metrics figure, NOT an EU
+     ETS eligibility number. See the per-machine block below (near the EU ETS block) for the
+     formula and HANDOFF_LOG.md 2026-07-26 entry for the reasoning. */
+  let tot_t_co2=0, tot_t_co2e=0;
   const feuPool = [];              // FuelEU allocation pool (essf-ws1-2-5): one entry per fuel × consumer
   let E_scope = 0;                 // FuelEU energy scope, MJ (Σ row energy × coverage)
   const sccVoyages = [];
@@ -357,7 +446,13 @@ function computeAll(state){
   const rowDetails = [];
   const sum = { hoursSea:0, hoursPort:0, cargo:0, tw:0, co2Sea:0, co2Berth:0, fuelByType:{}, fuelTotal:0, tMin:null, tMax:null };
 
-  for(const row of state.rows||[]){
+  /* 2026-07-25e: expand any hand-entered row spanning a calendar-year boundary into its
+     per-year parts before aggregating (see splitRowAcrossYears above). Skipped when
+     ignoreYearFilter is set — that's Voyage-Wise calling in with its OWN pre-split, pre-
+     bucketed rows one end-year at a time (vwGroups), which must stay a 1:1 index match with
+     rowDetails; Voyage-Wise groups by voyage, not by calendar year, by explicit design. */
+  const _aggRows = state.ignoreYearFilter ? (state.rows||[]) : (state.rows||[]).flatMap(splitRowAcrossYears);
+  for(const row of _aggRows){
     if(!rowInYear(row)){ nOutOfYear++; continue; }
     const covEU = euCoverage(row);
     /* UK ETS 1 Jul 2026 window fraction: prefer the REPORT-EXACT share computed at import
@@ -369,7 +464,7 @@ function computeAll(state){
     if(y===2026 && ukCoverage(row)>0 && ukFrac<1) nUkPartial++;
     const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
-                  cargoSOSP: !!row.cargoSOSP, fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0,
+                  cargoSOSP: !!row.cargoSOSP, fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
                   /* SCC (2026-07-22c) — see SCC_WTW / sccTtWFactor above */
                   sccTtW:0, sccWtW:0, sccBio:0, sccNoFactor:false, tw:0,
                   sccNumerator:null, sccBallast:0, sccPort:0, sccGoesTo:null, eeoi:null };
@@ -389,7 +484,7 @@ function computeAll(state){
          no existing figure changes; it lets the Calculations tab show every column per fuel
          instead of only Fuel type / Cons. mt / Elig. mt / Energy. */
       const fe = { id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleUK: t*covUK,
-                   co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, E:0,
+                   co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
                    /* SCC (2026-07-22c): sccWtW stays null when Appendix 6 has no factor for
                       this fuel, so the UI can show a dash instead of a wrong number */
                    sccTtW:0, sccWtW:null, sccBio:0, sccNoFactor:false, sccLabel:null, sccGranular:false };
@@ -422,6 +517,23 @@ function computeAll(state){
           ets_t_co2 += mt*efCO2; ets_t_co2e += co2e;
           det.etsCO2 += mt*efCO2; det.etsCO2e += co2e;
           fe.etsCO2 += mt*efCO2; fe.etsCO2e += co2e;     // 2026-07-22: per-fuel mirror
+        }
+        /* 2026-07-26p (Aurvin, owner instruction): "Total CO2e" — Fuel metrics figure, moved
+           OUT of the EU ETS group. Same CO2+CH4/N2O GWP treatment EU ETS uses (GWP_EUETS —
+           user's AR5/AR4 choice from 2026, CO2-only before), but on the FULL tonnes this
+           consumer burned (p.t), NOT thinned by the EU ETS coverage factor (covEU: 100%
+           intra-EU / 50% extra-EU / 0% out-of-scope). Runs unconditionally, unlike the EU ETS
+           block above which is gated on covEU>0 — every tonne burned counts towards the total
+           regardless of EU ETS scope. This is NOT an EU ETS eligibility figure; do not feed it
+           into euas/etsCost. See HANDOFF_LOG.md 2026-07-26 entry. */
+        {
+          const zero = state.bioZeroRatedETS && (f.bio||f.rfnbo);
+          const efCO2 = zero?0:f.cf, efCH4 = zero?0:f.ch4, efN2O = zero?0:f.n2o;
+          const mNC = p.t*s;
+          const co2eFull = (p.t-mNC)*efCO2 + GWP_EUETS.ch4*((p.t-mNC)*efCH4 + (zero?0:mNC)) + GWP_EUETS.n2o*(p.t-mNC)*efN2O;
+          tot_t_co2 += p.t*efCO2; tot_t_co2e += co2eFull;
+          det.totalCO2 += p.t*efCO2; det.totalCO2e += co2eFull;
+          fe.totalCO2 += p.t*efCO2; fe.totalCO2e += co2eFull;
         }
         /* UK ETS (ukets-sch2a-p35) */
         if(covUK>0){
@@ -456,7 +568,9 @@ function computeAll(state){
     if(row.kind==="voyage" && det.cargo>0 && det.dist>0){ det.tw = det.cargo*det.dist; sum.tw += det.tw; }
     rowDetails.push(det);
   }
-  if(nOutOfYear) warn.push(nOutOfYear+" row(s) dated outside the "+y+" reporting year are EXCLUDED from ALL KPIs (multi-year import) — switch the reporting year in Settings to compute the other year. Rows are split at the year boundary at import, so nothing is double-counted.");
+  if(nOutOfYear) warn.push(rangeOn
+    ? nOutOfYear+" row(s) fall OUTSIDE the selected From/To date range and are EXCLUDED from ALL KPIs — they stay in the list (greyed) and return the moment you widen or clear the range."
+    : nOutOfYear+" row(s) dated outside the "+y+" reporting year are EXCLUDED from ALL KPIs (multi-year import) — switch the reporting year in Settings to compute the other year. Rows are split at the year boundary at import, so nothing is double-counted.");
 
   /* ---- FuelEU fuel allocation (essf-ws1-2-5 / extra-EEA worked examples) ----
      FuelEU prescribes no allocation method; MRV-reported fuels may be freely allocated
@@ -717,6 +831,9 @@ function computeAll(state){
     year:y, warnings:warn, rowDetails, summary,
     cii:{ type:type.name, capUnit:type.capUnit, ciiRef, Z, ciiReq, attained:attainedActual, bounds, rating, totalDist, co2_t:cii_g/1e6, g2 },
     ets:{ covered_t_co2:ets_t_co2, covered_t_co2e:ets_t_co2e, basis_t:etsBasis_t, phase, euas, cost:etsCost, basisLabel: y>=2026?"CO2e (CO2+CH4+N2O)":"CO2 only (CH4/N2O from 2026)", gwp:GWP_EUETS },
+    /* 2026-07-26p (Aurvin, owner instruction): Fuel metrics' own total CO2e — full fuel burned,
+       NOT EU ETS coverage-scoped. See engine.js per-machine loop and HANDOFF_LOG.md. */
+    fuelTotals:{ t_co2:tot_t_co2, t_co2e:tot_t_co2e, basis_t: y>=2026 ? tot_t_co2e : tot_t_co2 },
     ukets:{ active:ukActive, tco2e:ukets_t, co2:uk_co2, ch4:uk_ch4, n2o:uk_n2o, cost:ukCost },
     fueleu:{ target:T, targetPct:fueleuTargetPct(y), ghgie, E_total, E_fuel:feu.E_plain, opsMJ, cb, banked, poolCB, borrowUsed, borrowDebt, borrowLimit, cbFinal, penalty, penaltyBase, mult, surplusValue, fwind, terms:feu.terms,
              allocMethod, ghgieAlt, cbAlt, E_pool: pool.reduce((s,e)=>s+e.E,0) },
