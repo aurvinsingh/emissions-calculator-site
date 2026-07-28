@@ -47,7 +47,23 @@ function migrateState(s){
   if(s.showSplit===undefined) s.showSplit = false;
   if(!s.mdaReports) s.mdaReports = [];
   if(!s.dateFilter)    s.dateFilter    = { fromISO:"", toISO:"", active:false };   // 2026-07-24 within-year window
-  if(!s.voyDateFilter) s.voyDateFilter = { fromISO:"", toISO:"", active:false };   // 2026-07-24 Voyage-Wise multi-year range
+  /* 2026-07-28h (Aurvin, owner instruction) — MIGRATION for saved workspaces.
+     Between 2026-07-24 and 2026-07-28g the Voyage-Wise range could legally cross a year
+     boundary (e.g. From 2025-06-01 → To 2026-03-31), and that range is sitting in every
+     returning user's localStorage. It is no longer a legal range. Owner's decision when asked
+     what should happen on first load: "show the whole selected year" — so any saved range that
+     is blank, inactive, or not entirely inside the reporting year is discarded and replaced by
+     that year's full Jan 1 – Dec 31 window. A range that IS already inside the year is kept, so
+     nobody loses a legitimate within-year narrowing. */
+  {
+    const _y = Number(s.year) || 2026;
+    const _lo = `${_y}-01-01T00:00`, _hi = `${_y}-12-31T23:59`;
+    const _v = s.voyDateFilter;
+    const _inYear = !!(_v && _v.active && _v.fromISO && _v.toISO &&
+                       _v.fromISO >= _lo && _v.toISO <= _hi);
+    s.voyDateFilter = _inYear ? { fromISO:_v.fromISO, toISO:_v.toISO, active:true }
+                              : { fromISO:_lo, toISO:_hi, active:true };
+  }
   return s;
 }
 function save(){ try{ localStorage.setItem("emcalc_state", JSON.stringify(S)); }catch(e){} }
@@ -1380,7 +1396,10 @@ function applyImport(res, label, extraNotes, reports, vessel){
       /* multi-year awareness (2026-07-16): the displayed year stays user-driven */
       const yearsIn = [...new Set(res.rows.map(r=>String(r.tStart||r.tEnd||"").slice(0,4)).filter(x=>/^\d{4}$/.test(x)))].sort();
       initDateFilters();   // 2026-07-24: default Year to the latest year just imported; fill its window
-      if(yearsIn.length>1) notes.push("The file spans reporting years "+yearsIn.join(" and ")+". The Year selector now shows the latest ("+S.year+"); each year's rows are shown when that Year is picked (Workspace / Report-Wise / Leg-Wise). The Voyage-Wise tab has its own date picker that can span years.");
+      /* 2026-07-28h (Aurvin, owner instruction): the last sentence used to read "The Voyage-Wise
+         tab has its own date picker that can span years." That is no longer true — every tab is
+         year-locked now. Replaced with what Voyage-Wise actually does differently. */
+      if(yearsIn.length>1) notes.push("The file spans reporting years "+yearsIn.join(" and ")+". The Year selector now shows the latest ("+S.year+"); each year's rows are shown when that Year is picked. On the Voyage-Wise tab a voyage is counted in the year its END date falls in, so a voyage that began in "+yearsIn[0]+" and ended in "+yearsIn[yearsIn.length-1]+" is shown whole under "+yearsIn[yearsIn.length-1]+".");
       save(); renderAll(); showTab("work");
       if(res.annual){
         try{
@@ -1946,11 +1965,9 @@ function renderLive(){
     <div style="display:flex;gap:16px;align-items:center">
       <div id="ciiPctBox" title="Left: Attained CII × 100 ÷ Required CII (below 100% = better than required). Middle: IMO A–E rating. Right: attained CII itself, aka AER, gCO₂ per ${c.capUnit}·nm.">
         ${ciiPillHtml(ciiPctOfRequired(c), c.rating, c.attained, "lg")}
-        <div style="margin-top:4px;font-size:9.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.4px;text-align:center">% of required · rating · AER</div>
       </div>
-      <div style="flex:1">
-        <div class="kv"><span>Attained CII (AER)</span><b>${fmtF(c.attained,2)} gCO₂/${c.capUnit}·nm</b></div>
-        <div class="kv"><span>Required (Z=${c.Z}% <span class="flag">FILL-IN</span>)</span><b>${fmtF(c.ciiReq,2)}</b></div>
+      <div style="margin-left:auto">
+        <div class="kv" style="justify-content:flex-start;gap:10px;border-bottom:none"><span>Required (Z=${c.Z}% <span class="flag">FILL-IN</span>)</span><b>${fmtF(c.ciiReq,2)}</b></div>
       </div>
     </div>
     ${ciiBarHtml(c)}
@@ -2969,7 +2986,36 @@ function dfRepaint(){
   try{ if(document.getElementById('tab-trace')) renderTrace(); }catch(e){}
 }
 function _fullYearRange(y){ return { fromISO:`${y}-01-01T00:00`, toISO:`${y}-12-31T23:59`, active:true }; }
-/* within-year narrowing on Workspace / Report-Wise / Leg-Wise (bounded to S.year) */
+
+/* ============================================================================================
+   2026-07-28h (Aurvin, owner instruction) — VOYAGE-WISE IS NOW YEAR-LOCKED LIKE EVERY OTHER TAB
+   --------------------------------------------------------------------------------------------
+   THIS DELIBERATELY REVERSES the 2026-07-24 decision (and the 2026-07-28 full-screen design
+   note 6) that gave Voyage-Wise its OWN independent, multi-year-capable range. The owner's
+   instruction today: "we are able to select multiple years from the date filter, which should
+   not be the case. As per the selected year, only the date filter should be allowed."
+
+   WHAT IS THE SAME: how a voyage is SELECTED and GRADED is untouched. vwGroups() still includes
+   a voyage when its END date falls inside the window — so a voyage that STARTED in the previous
+   calendar year is still shown in full, and is still graded under the rules of its end-date year
+   (the per-end-year computeAll buckets). That is exactly the behaviour the owner asked to keep.
+
+   WHAT CHANGED: there is now ONE Year control and ONE From/To window for the whole application.
+   S.voyDateFilter is no longer a separate, user-editable concept — it is kept as a MIRROR of
+   S.dateFilter, written by the three functions below. Keeping the mirror (rather than deleting
+   the field) means vwGroups() and its four engine self-tests never had to change: the engine
+   still honours whatever range it is handed, the UI simply can no longer hand it a range that
+   crosses a year boundary.
+
+   IF YOU EVER RESTORE MULTI-YEAR: give Voyage-Wise its own bar back in renderDateFilterBar('voy')
+   and stop mirroring here. Nothing in the engine needs touching.
+   ============================================================================================ */
+function _mirrorVoyFilter(){
+  const d = S.dateFilter || _fullYearRange(Number(S.year)||2026);
+  S.voyDateFilter = { fromISO:d.fromISO, toISO:d.toISO, active:true };
+}
+
+/* within-year narrowing on Workspace / Report-Wise / Leg-Wise / Voyage-Wise (bounded to S.year) */
 function dfSet(field, val){
   const y=Number(S.year)||2026, lo=`${y}-01-01T00:00`, hi=`${y}-12-31T23:59`;
   val = val || "";
@@ -2977,35 +3023,30 @@ function dfSet(field, val){
   if(!S.dateFilter || !S.dateFilter.active) S.dateFilter=_fullYearRange(y);
   S.dateFilter[field] = val || (field==="fromISO"?lo:hi);
   S.dateFilter.active = true;                             // always a within-year window
+  _mirrorVoyFilter();                                     // 2026-07-28h: Voyage-Wise follows it
   dfRepaint();
 }
 /* pick the reporting year → fill the picker to that whole year */
 function dfYear(v){
   const y=Number(v)||2026; S.year=y; S.dateFilter=_fullYearRange(y);
+  _mirrorVoyFilter();                                     // 2026-07-28h
   try{ renderVessel(); }catch(e){} dfRepaint();
 }
-/* 2026-07-25: "Clear" for the year-locked bar (Report-Wise / Leg-Wise) can't disable the
-   filter — it's always within-year — so it resets From/To back to that year's full range,
-   same as picking the Year dropdown but without touching S.year itself. */
+/* 2026-07-25: "Clear" for the year-locked bar can't disable the filter — it's always
+   within-year — so it resets From/To back to that year's full range, same as picking the Year
+   dropdown but without touching S.year itself. */
 function dfClearRange(){
-  const y=Number(S.year)||2026; S.dateFilter=_fullYearRange(y); dfRepaint();
+  const y=Number(S.year)||2026; S.dateFilter=_fullYearRange(y);
+  _mirrorVoyFilter();                                     // 2026-07-28h
+  dfRepaint();
 }
-/* Voyage-Wise ONLY: its own unbounded (multi-year) range */
-function voySet(field, val){
-  if(!S.voyDateFilter) S.voyDateFilter={ fromISO:"", toISO:"", active:false };
-  S.voyDateFilter[field] = val || "";
-  S.voyDateFilter.active = !!(S.voyDateFilter.fromISO && S.voyDateFilter.toISO);
-  save(); try{ renderVoyage(); }catch(e){}
-}
-function voyClear(){ S.voyDateFilter={ fromISO:"", toISO:"", active:false }; save(); try{ renderVoyage(); }catch(e){} }
-/* 2026-07-25: quick-pick a calendar year on the Voyage-Wise bar → fills From/To to that
-   year's full Jan1–Dec31 range (still editable afterwards; still multi-year capable). */
-function voyYear(v){
-  if(!v){ return; }
-  const y=Number(v)||new Date().getUTCFullYear();
-  S.voyDateFilter={ fromISO:`${y}-01-01T00:00`, toISO:`${y}-12-31T23:59`, active:true };
-  save(); try{ renderVoyage(); }catch(e){}
-}
+/* 2026-07-28h: voySet / voyClear / voyYear are kept ONLY as aliases, because ~a dozen call
+   sites (the old bar's inline onchange handlers, js/fullscreen.js's znfsVoy* wrappers and the
+   tools/ tests) reference them by name. They now do exactly what their df* twins do, so a
+   Voyage-Wise control can no longer write a range the other tabs disagree with. */
+function voySet(field, val){ dfSet(field, val); }
+function voyClear(){ dfClearRange(); }
+function voyYear(v){ if(v) dfYear(v); }
 /* latest calendar year present in the workspace rows (null if none) */
 function latestDataYear(){
   let mx=null;
@@ -3023,13 +3064,21 @@ function initDateFilters(){
   if(ly) S.year=ly; else if(!S.year) S.year=2026;
   const y=Number(S.year)||2026;
   S.dateFilter=_fullYearRange(y);
-  if(!S.voyDateFilter) S.voyDateFilter={ fromISO:"", toISO:"", active:false };
+  /* 2026-07-28h: Voyage-Wise no longer has a range of its own — it mirrors the one above, so an
+     import lands every tab (Voyage-Wise included) on the same whole reporting year. */
+  _mirrorVoyFilter();
 }
-/* the bar's HTML. mode "voy" → Voyage-Wise multi-year picker; otherwise the year-locked bar.
+/* the bar's HTML — ONE year-locked bar for every data tab.
    2026-07-25 (owner instruction): each tab's title/Excel/info icons that used to sit in the
    tab's own <h2> now live in this same sticky row instead, passed in as `extraHtml` and
    right-aligned via margin-left:auto — this frees the vertical space the old header row
-   took, without duplicating date-range controls per tab. */
+   took, without duplicating date-range controls per tab.
+   2026-07-28h (Aurvin, owner instruction): the `mode==="voy"` branch that drew Voyage-Wise its
+   own UNBOUNDED, multi-year picker has been REMOVED — see the long note on _mirrorVoyFilter().
+   The `mode` argument is retained because all three call sites pass it ('voy' / 'year') and the
+   tools/ tests read those call sites, but it no longer changes what is drawn. Every tab now gets
+   the same Year + min/max-bounded From/To, so a range crossing a year boundary cannot be typed
+   in on any tab. Voyage-Wise still SELECTS voyages by END date (vwGroups), unchanged. */
 function renderDateFilterBar(mode, extraHtml){
   const y=Number(S.year)||2026;
   const extra = extraHtml? `<span class="dfextra" style="margin-left:auto;display:flex;align-items:center;gap:8px">${extraHtml}</span>` : "";
@@ -3037,32 +3086,6 @@ function renderDateFilterBar(mode, extraHtml){
      Report-Wise / Leg-Wise / Voyage-Wise tabs too, the same as the Workspace blue band, so every
      data view is clearly labelled with the ship it is showing. */
   const vname = `<b class="bandvessel" style="font-size:13px">${esc((S.ship&&S.ship.name)||"Vessel")}</b><span class="bsep">·</span>`;
-  if(mode==="voy"){
-    const d=S.voyDateFilter||{}, on=!!(d.active&&d.fromISO&&d.toISO);
-    /* 2026-07-25b (owner instruction): layout now matches the year-mode bar — Year picker
-       first, then From/To — and the "multi-year OK..." caption is folded into the tab's own
-       info icon (passed in via extraHtml) instead of sitting as its own label in the bar.
-       2026-07-25f (owner instruction): when FULL DATA is shown (no single-year range — the range
-       is cleared / spans multiple years) the Year picker is left BLANK ("—") rather than showing
-       a year that isn't actually the filter. It shows a year only when From/To pin exactly one
-       calendar year. (Supersedes the 2026-07-25c default-to-S.year behaviour.) */
-    const voySelYear = (d.fromISO && d.toISO && d.fromISO.slice(0,4)===d.toISO.slice(0,4)) ? Number(d.fromISO.slice(0,4)) : null;
-    return `<div class="dfbar noprint">
-      ${vname}
-      <span class="dfld">Year</span>
-      <select title="Quick-pick a calendar year — fills From/To to that year's full Jan 1–Dec 31 range (still editable, still multi-year capable afterwards). Blank (—) when full data / a multi-year range is shown." onchange="voyYear(this.value)">
-        <option value="" ${voySelYear==null?"selected":""}>—</option>
-        ${[2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option ${yy===voySelYear?"selected":""}>${yy}</option>`).join("")}
-      </select>
-      <span class="dfld" style="margin-left:6px">📅 From</span>
-      <input type="datetime-local" lang="en-GB" value="${esc(d.fromISO||"")}" onchange="voySet('fromISO',this.value)" title="Voyage-Wise range start (UTC) — may span multiple years">
-      <span class="dfld">To</span>
-      <input type="datetime-local" lang="en-GB" value="${esc(d.toISO||"")}" onchange="voySet('toISO',this.value)" title="Voyage-Wise range end (UTC) — may span multiple years">
-      <span class="dfutc">UTC</span>
-      ${on?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the range — show all voyages" onclick="voyClear()">✕ Clear</button>`:''}
-      ${extra}
-    </div>`;
-  }
   const d=S.dateFilter||{};
   const lo=`${y}-01-01T00:00`, hi=`${y}-12-31T23:59`;
   const narrowed = (d.fromISO||lo)!==lo || (d.toISO||hi)!==hi;
@@ -3974,11 +3997,18 @@ function vwGroups(state){
     grpEnd.set(k, { endISO, endYear: vwEndYear(endISO, fallbackY) });
   }
 
-  /* 2026-07-24 (Aurvin): Voyage-Wise has its OWN, multi-year date range. A voyage is INCLUDED
-     when its END date falls in the range, and each voyage is graded under the rules of its
-     end-date year. Rows are computed one end-year bucket at a time (ignoreYearFilter) so a
-     voyage carries all its consumption — even a part that spilled into the previous calendar
-     year — under its end-year's rules. */
+  /* 2026-07-24 (Aurvin): a voyage is INCLUDED when its END date falls in the range, and each
+     voyage is graded under the rules of its end-date year. Rows are computed one end-year bucket
+     at a time (ignoreYearFilter) so a voyage carries all its consumption — even a part that
+     spilled into the previous calendar year — under its end-year's rules.
+
+     2026-07-28h (Aurvin, owner instruction): THIS FUNCTION IS UNCHANGED, on purpose. What changed
+     is only WHAT RANGE THE UI CAN HAND IT. Voyage-Wise used to own an independent, multi-year
+     range; it now mirrors the year-locked S.dateFilter (see _mirrorVoyFilter above). The engine
+     stays range-agnostic — it will still correctly bucket a multi-year range by end-year if one is
+     passed in programmatically, which is what the four Voyage-Wise self-tests below do — so no
+     regulatory logic was touched to make the UI change, and none of those tests needed editing.
+     In normal use byYear therefore ends up with exactly one bucket: the reporting year. */
   const vf = S0.voyDateFilter;
   const vfOn = !!(vf && vf.active && vf.fromISO && vf.toISO);
   const inRange = (endISO)=>{ if(!vfOn || !endISO) return true;
@@ -4496,23 +4526,37 @@ function renderVoyage(){
   /* 2026-07-25b (owner instruction): the "multi-year OK · voyages counted by end date, graded
      by end-date year" caption that used to sit as its own label in the date bar is folded into
      this tooltip instead, so the bar only carries the Year/From/To controls. */
-  const iTable=info(`Exactly one line per <b>voyage number</b>. Every figure is rolled up from the <b>same engine values</b> the ⛵ Leg-Wise tab renders, so the two tabs can never disagree — open ⛵ Leg-Wise to see the individual legs and port stays inside a voyage.<br><br><b>Multi-year OK</b> — voyages are counted by their <b>end date</b> and graded by that end-date's year (unlike Report-Wise/Leg-Wise, this tab's date range is not locked to a single Year).<br><br>All figures rounded to 2 decimal places. — indicates no obligation (out of scope, or the OMR derogation until 2030). CB = FuelEU compliance balance; negative values are deficits.<br><br>Per Task 4 this tab omits the regulation eligibility-% columns and the cargo port-of-call icon — both remain on ⛵ Leg-Wise and 📋 Report-Wise.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU and ETS surrender are period-based in law; the per-voyage balance and penalty are the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded.`,"right");
+  /* 2026-07-28d (Aurvin, owner instruction): the per-import summary line ("N voyage number(s)
+     found in the imported reports · … re-timed … · … leg part(s) … · trailing-ballast carry-out")
+     used to be a visible <div class="note"> UNDERNEATH the table (put there on 2026-07-23d). It is
+     context, not a headline, and at the very bottom of the ZeroNorth full-screen view it was both
+     the least-read line on the page and the one stealing a row of table height. It is now folded
+     INTO this tab's existing ⓘ icon — the one already sitting next to the ⬇ Download button on the
+     filter bar — as its opening paragraph. Same wording, same live counts, shown on demand.
+     Applies to BOTH the normal VOYAGES tab and the full-screen view because there is only one
+     renderVoyage(). The vertical space this frees is given to the top of the ZN view (see
+     .znfs-kpis / .znfs-tabs padding in css/styles.css). */
+  const iSummary = (!S.mdaReports||!S.mdaReports.length)
+    ? `<b>No MDA reports in this workspace</b>, so there are no voyage numbers to group by — everything is shown as a single <b>n/a</b> voyage. Import an MDA event-log export to see real voyage numbers.`
+    : `<b>This workspace:</b> ${vg.segs.length} voyage number(s) found in the imported reports${nRetimed?` · <b>${nRetimed}</b> change(s) re-timed back to a departure`:""}${nSplit?` · <b>${nSplit}</b> leg part(s) created by an abrupt mid-voyage change`:""}${vg.trailingBallast>0?` · ${fmtF(vg.trailingBallast,2)} t WtW CO₂e on a trailing ballast voyage with no following laden voyage in ${R.year} — carried out of these figures per SCC Appendix 3`:""}.`;
+  const iTable=info(`${iSummary}<br><br>Exactly one line per <b>voyage number</b>. Every figure is rolled up from the <b>same engine values</b> the ⛵ Leg-Wise tab renders, so the two tabs can never disagree — open ⛵ Leg-Wise to see the individual legs and port stays inside a voyage.<br><br><b>Counted by END date</b> — a voyage appears here when its <b>end date</b> falls inside the From/To window, and it is graded under the rules of that end date's year. So a voyage that <b>started in the previous calendar year</b> is still shown, in full, with all of its consumption. The window itself is locked to the reporting year, the same as 📋 Report-Wise and ⛵ Leg-Wise — there is one Year and one From/To for the whole tool.<br><br>All figures rounded to 2 decimal places. — indicates no obligation (out of scope, or the OMR derogation until 2030). CB = FuelEU compliance balance; negative values are deficits.<br><br>Per Task 4 this tab omits the regulation eligibility-% columns and the cargo port-of-call icon — both remain on ⛵ Leg-Wise and 📋 Report-Wise.<br><br><span class="flag">*Indicative attribution — not legally exact</span> FuelEU and ETS surrender are period-based in law; the per-voyage balance and penalty are the annual result shared by in-scope energy. Rows outside the ${R.year} reporting year are excluded.`,"right");
   /* 2026-07-23d (Aurvin, owner instruction): this summary note used to sit ABOVE the table,
-     pushing it down the screen. It is context, not a headline, so it now sits UNDERNEATH —
-     the table starts immediately under the heading and gets the vertical space instead.
-     flex:0 0 auto keeps it from stealing height from the scrolling table in the shell layout. */
-  const banner = (!S.mdaReports||!S.mdaReports.length)
-    ? `<div class="note" style="flex:0 0 auto;margin:10px 0 0">No MDA reports in this workspace, so there are no voyage numbers to group by — everything is shown as a single <b>n/a</b> voyage. Import an MDA event-log export to see real voyage numbers.</div>`
-    : `<div class="note" style="flex:0 0 auto;margin:10px 0 0">${vg.segs.length} voyage number(s) found in the imported reports${nRetimed?` · <b>${nRetimed}</b> change(s) re-timed back to a departure`:""}${nSplit?` · <b>${nSplit}</b> leg part(s) created by an abrupt mid-voyage change`:""}${vg.trailingBallast>0?` · ${fmtF(vg.trailingBallast,2)} t WtW CO₂e on a trailing ballast voyage with no following laden voyage in ${R.year} — carried out of these figures per SCC Appendix 3`:""}. Each row is one voyage number; the legs and port stays inside it are on the <b>⛵ Leg-Wise</b> tab.</div>`;
+     pushing it down the screen. It was then moved UNDERNEATH so the table started right under
+     the heading. 2026-07-28d (Aurvin, owner instruction): the visible note is now REMOVED
+     entirely — its text lives in the ⓘ icon on the filter bar (see iSummary above), so the
+     table keeps the full height in both the normal tab and the ZN full-screen view. */
   /* 2026-07-25 (owner instruction): the "Voyage-Wise breakdown - {range}" header line is
      removed — the tab bar already names this view — and its Excel button + info icon move
      up onto the shared date-filter bar, freeing that vertical space for the table itself. */
-  const voyIcons = `<button class="pill hbtn noprint" onclick="downloadVoyageXlsx()">⬇ Excel</button>${iTable}`;
+  /* 2026-07-28f (Aurvin, owner instruction): button label "⬇ Excel" → "⬇ Download". The handler,
+     the file it writes and its .xlsx extension are unchanged — this is the visible text only.
+     One edit covers BOTH views: the full-screen tab row does not build its own button, it MOVES
+     this exact node up out of the panel (znfsMountExtras in js/fullscreen.js). */
+  const voyIcons = `<button class="pill hbtn noprint" onclick="downloadVoyageXlsx()">⬇ Download</button>${iTable}`;
   el.innerHTML=`
   ${renderDateFilterBar('voy', voyIcons)}
   <div class="card panelA">
     ${voyageGrid(R,{voy:iVoy,lcv:iLCV,feu:iFEU,euets:iEUETS,ukets:iUKETS,scc:iSCC,imo:iVwIMO})}
-    ${banner}
   </div>`;
 }
 function renderCalcs(){
@@ -4573,7 +4617,9 @@ function renderCalcs(){
   /* 2026-07-25 (owner instruction): the "Leg-Wise breakdown - {year}" header line is removed
      — the tab bar already names this view — and its Excel button + info icon move up onto
      the shared date-filter bar, freeing that vertical space for the table itself. */
-  const legWiseIcons = `<button class="pill hbtn noprint" onclick="downloadBreakdownXlsx()">⬇ Excel</button>${iBreakdown}`;
+  /* 2026-07-28f (Aurvin, owner instruction): "⬇ Excel" → "⬇ Download", same as Voyage-Wise's
+     button above. Visible text only; downloadBreakdownXlsx() and its .xlsx output are untouched. */
+  const legWiseIcons = `<button class="pill hbtn noprint" onclick="downloadBreakdownXlsx()">⬇ Download</button>${iBreakdown}`;
   el.innerHTML=`
   ${renderDateFilterBar('year', legWiseIcons)}
   <div class="card panelA" onclick="closeWorkingsIfOpen()">
@@ -6528,6 +6574,66 @@ function runSelfTests(){
                dfSet('fromISO','2025-06-01T00:00');
                return S.dateFilter.fromISO==='2026-01-01T00:00' && S.dateFilter.active;
           } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; try{renderWorkspace();}catch(e){} } })());
+
+    /* (i5) 2026-07-28h (Aurvin, owner instruction) — VOYAGE-WISE IS YEAR-LOCKED TOO.
+       The owner's report: "in the voyages view, I see that we are able to select multiple years
+       from the date filter, which should not be the case." These tests pin the new rule from both
+       ends: the STATE can no longer hold a cross-year voyage range, and the CONTROL can no longer
+       offer one. The end-date selection rule (the part the owner asked to KEEP) is already covered
+       by the four (i3) tests above, which pass ranges straight to vwGroups and still pass. */
+    const _voyRestore = ()=>{ try{renderWorkspace();}catch(e){} try{renderVoyage();}catch(e){} };
+    ckT("Voyage year-lock: dfYear drags the voyage range onto the same whole year",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter,sV=S.voyDateFilter;
+          try{ S.rows=[]; dfYear(2025);
+               return S.voyDateFilter.active
+                   && S.voyDateFilter.fromISO==='2025-01-01T00:00'
+                   && S.voyDateFilter.toISO==='2025-12-31T23:59';
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; S.voyDateFilter=sV; _voyRestore(); } })());
+    ckT("Voyage year-lock: narrowing From/To narrows the voyage range identically (one window)",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter,sV=S.voyDateFilter;
+          try{ S.rows=[]; S.year=2026; S.dateFilter=_fullYearRange(2026);
+               dfSet('fromISO','2026-04-01T00:00'); dfSet('toISO','2026-06-30T23:59');
+               return S.voyDateFilter.fromISO===S.dateFilter.fromISO
+                   && S.voyDateFilter.toISO  ===S.dateFilter.toISO
+                   && S.voyDateFilter.fromISO==='2026-04-01T00:00';
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; S.voyDateFilter=sV; _voyRestore(); } })());
+    ckT("Voyage year-lock: voySet is an alias — a 2025 date typed under year 2026 is clamped, not accepted",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter,sV=S.voyDateFilter;
+          try{ S.rows=[]; S.year=2026; S.dateFilter=_fullYearRange(2026);
+               voySet('fromISO','2025-06-01T00:00');
+               return S.voyDateFilter.fromISO==='2026-01-01T00:00'
+                   && S.voyDateFilter.fromISO.slice(0,4)===S.voyDateFilter.toISO.slice(0,4);
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; S.voyDateFilter=sV; _voyRestore(); } })());
+    ckT("Voyage year-lock: voyClear resets to the whole reporting year, it no longer means 'all years'",
+        (()=>{ const sR=S.rows,sY=S.year,sD=S.dateFilter,sV=S.voyDateFilter;
+          try{ S.rows=[]; S.year=2026; S.dateFilter=_fullYearRange(2026);
+               voySet('fromISO','2026-04-01T00:00'); voyClear();
+               return S.voyDateFilter.active===true
+                   && S.voyDateFilter.fromISO==='2026-01-01T00:00'
+                   && S.voyDateFilter.toISO==='2026-12-31T23:59';
+          } finally { S.rows=sR; S.year=sY; S.dateFilter=sD; S.voyDateFilter=sV; _voyRestore(); } })());
+    ckT("Voyage year-lock: the Voyage-Wise bar renders the SAME year-bounded controls as the other tabs",
+        (()=>{ const sY=S.year; try{
+               S.year=2026;
+               const bar=renderDateFilterBar('voy','');
+               const maxes=(bar.match(/max="2026-12-31T23:59"/g)||[]).length;
+               return maxes===2                         // both From and To are bounded
+                   && /onchange="dfSet\('fromISO'/.test(bar)
+                   && /onchange="dfYear\(/.test(bar)
+                   && !/voySet\(/.test(bar) && !/voyYear\(/.test(bar)
+                   && !/<option value="" /.test(bar);   // no blank "—" multi-year year option left
+          } finally { S.year=sY; } })());
+    ckT("Voyage year-lock: a saved cross-year range is discarded on load and replaced by the whole year",
+        (()=>{ const m=migrateState({ year:2026, rows:[], fuels:[],
+                 voyDateFilter:{fromISO:'2025-06-01T00:00',toISO:'2026-03-31T23:59',active:true} });
+               return m.voyDateFilter.active===true
+                   && m.voyDateFilter.fromISO==='2026-01-01T00:00'
+                   && m.voyDateFilter.toISO==='2026-12-31T23:59'; })());
+    ckT("Voyage year-lock: a saved range that IS inside the year survives the migration untouched",
+        (()=>{ const m=migrateState({ year:2026, rows:[], fuels:[],
+                 voyDateFilter:{fromISO:'2026-04-01T00:00',toISO:'2026-06-30T23:59',active:true} });
+               return m.voyDateFilter.fromISO==='2026-04-01T00:00'
+                   && m.voyDateFilter.toISO==='2026-06-30T23:59'; })());
 
     /* (i2) 2026-07-23e — voyage-number spelling is normalised, but only across CONTINUITY.
        Owner's rule: 6, 06, 006, V6, V06, V006 are one and the same voyage. */

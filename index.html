@@ -30,12 +30,23 @@
 </header>
 <nav class="noprint">
   <button id="tb-work" class="on" onclick="showTab('work')">⚡ Workspace (live)</button>
-  <button id="tb-trace" onclick="showTab('trace')">📋 Report-Wise</button>
-  <button id="tb-calcs" onclick="showTab('calcs')">⛵ Leg-Wise</button>
-  <button id="tb-voy" onclick="showTab('voy')">🧭 Voyage-Wise</button>
+  <!-- 2026-07-28b (Aurvin, owner instruction): tab LABELS renamed Report-Wise -> REPORTS,
+       Leg-Wise -> LEGS, Voyage-Wise -> VOYAGES, and the emoji icons dropped, to match the
+       ZeroNorth view. The button IDs (tb-trace / tb-calcs / tb-voy) and the showTab keys
+       ('trace' / 'calcs' / 'voy') are UNCHANGED on purpose — they are referenced in ~200
+       places across js/ui.js, js/fullscreen.js and the test scripts. Only the visible text
+       changed. Owner's scope decision: tooltip / info-popup / Help wording still says
+       "Report-Wise" etc. and was deliberately left alone this session. -->
+  <button id="tb-trace" onclick="showTab('trace')">REPORTS</button>
+  <button id="tb-calcs" onclick="showTab('calcs')">LEGS</button>
+  <button id="tb-voy" onclick="showTab('voy')">VOYAGES</button>
   <button id="tb-vessel" style="margin-left:auto" onclick="showTab('vessel')">🚢 Settings</button>
   <button id="tb-constants" onclick="showTab('constants')">🧮 Calculations</button>
   <button id="tb-help" onclick="showTab('help')">❓ Help</button>
+  <!-- 2026-07-28 (Aurvin, owner instruction): full-screen ZeroNorth-style Vessel Overview.
+       Deliberately NOT part of TAB_IDS / showTab — it is an overlay, not a tab, so it must
+       not get a #tab-… panel or be switched off by showTab. See js/fullscreen.js. -->
+  <button id="tb-fs" onclick="znfsToggle()" title="Full screen — ZeroNorth-style Vessel Overview (KPI cards + the three data tables). Escape returns here.">⛶ Full screen</button>
 
 </nav>
 <main>
@@ -51,6 +62,9 @@
 <script src="js/ports_data.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ui.js"></script>
+<!-- must load AFTER ui.js: it wraps the global dfRepaint/renderLive so the full-screen
+     overlay repaints, without editing ui.js itself (2026-07-28) -->
+<script src="js/fullscreen.js"></script>
 
 </body>
 </html>
