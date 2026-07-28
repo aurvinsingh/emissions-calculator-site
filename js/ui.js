@@ -816,6 +816,11 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     }
     const startRaw=String(G(r,"REPORT_START_GMT")).trim(), endRaw=String(G(r,"REPORT_END_GMT")).trim();
     const oc=String(G(r,"OPERATING_CONDITION")).trim().toUpperCase();
+    /* 2026-07-28b TEMPORARY (MDA V1 compatibility — see the V1 block after pass 1): PORT_STATE
+       and CARGO_OP were never read before. They are captured here unconditionally (cheap, and
+       harmless for V3 files, which simply never consult them) so the V1 branch below can use
+       them. REVERT NOTE: these two fields may be deleted when the V1 branch is removed. */
+    const ps=String(G(r,"PORT_STATE")).trim().toUpperCase();
     /* 2026-07-23 (Task 3, Aurvin): keep whether CARGO_QTY was actually REPORTED, separately
        from the numeric value. `qty` stays numeric-with-||0 exactly as before — the frozen POC
        derivation (qtyE/qtyS/qtyTrig) still reads it unchanged. `qtyHas` is DISPLAY/EXPORT only:
@@ -826,7 +831,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
                 dist:parseFloat(G(r,"DISTANCE"))||0, qty:parseFloat(cargoRaw)||0, qtyHas:(cargoRaw!=="" && !isNaN(parseFloat(cargoRaw))), fuels, mach, rob,
                 lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon, org, cur, dst,
                 portN:String(G(r,"CURRENT_PORT")).trim(), ctry:String(G(r,"CURRENT_COUNTRY")).trim(), regn:String(G(r,"CURRENT_REGION")).trim(),
-                oc, aa:String(G(r,"ASSOCIATED_ACTIVITY")).trim().toUpperCase(),
+                oc, ps, cargoOp:truthy(G(r,"CARGO_OP")), aa:String(G(r,"ASSOCIATED_ACTIVITY")).trim().toUpperCase(),
                 /* display-only retention for the trace table (2026-07-17): voyage no */
                 voy:String(G(r,"VOYAGE_NUMBER")).trim(),
                 opl:truthy(G(r,"OUTSIDE_PORT_LIMIT")),
@@ -840,6 +845,76 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   /* period start: explicit REPORT_START_GMT, else the previous report's end */
   let prevEnd=null;
   for(const c of recs){ if(c.skip){ c.tStart=c.tEnd; continue; } c.tStart = c.tStartOwn || prevEnd || c.tEnd; if(c.rt!=="FUEL_STOCK") prevEnd=c.tEnd; }
+
+  /* ================== TEMPORARY: MDA "V1" FORMAT COMPATIBILITY (2026-07-28b) ==================
+     OWNER INSTRUCTION (Aurvin, this session): older "V1" MDA exports describe the same voyage
+     with a different vocabulary, which made the (frozen) arrival/departure ladder derive NOTHING
+     at all — every port stay fell through to PURE TRANSIT, so the Reports tab showed no ARRIVAL
+     and no DEPARTURE anywhere. Reported on olam_CORONA_9391971.csv (18 stays, 0 derived).
+
+     THIS IS EXPLICITLY A TEMPORARY BRANCH. The owner's instruction is to fix V1 files ONLY, leave
+     today's ("V3") logic untouched, and REMOVE this branch once V1 files are no longer imported.
+     Everything below is therefore gated on `isV1`; when `isV1` is false the code is a no-op and
+     V3 files are bit-identical to before (locked by verify_workspace_rows.js + the 338 self-tests).
+
+     WHAT DIFFERS IN V1 (measured on olam_CORONA vs the V3 Blumenthal reference):
+       1. Port state lives in PORT_STATE, not OPERATING_CONDITION.
+          V1 OPERATING_CONDITION carries ONLY sailing modes (BERTHING 104, ANCHORED 83,
+          NORMAL SAILING 206) — zero AT_BERTH / AT_ANCHOR, which are exactly the tokens the
+          ladder looks for. PORT_STATE carries AT_BERTH 87 / AT_ANCHOR 67 / MANOEUVRING 33.
+          NOT a simple rename: V1's BERTHING is a COARSER word that covers BOTH of V3's states —
+            V3: OC=AT_BERTH (90 rows) -> PORT_STATE AT_BERTH 100%        <- the ladder's rung
+                OC=BERTHING (38 rows) -> PORT_STATE MANOEUVRING 23, AT_BERTH 15  <- excluded
+            V1: OC=BERTHING (104)     -> PORT_STATE AT_BERTH 87, MANOEUVRING 17
+          Mapping BERTHING->AT_BERTH would therefore swallow the manoeuvring approach and make V1
+          port stays systematically LONGER than V3 stays for the same operation, moving fuel from
+          50% (at sea) to 100% (at berth) for EU ETS. Reading PORT_STATE reproduces V3's rung
+          exactly (in V3, OC=AT_BERTH <=> PORT_STATE=AT_BERTH on all 90 rows). Owner chose this.
+       2. Cargo operations: ASSOCIATED_ACTIVITY is 100% blank in V1, so Case A could never fire.
+          The cargo signal is the CARGO_OP boolean (True on 138 rows).
+       3. Port of Call: the file's POC tag is AUTHORITATIVE in V1 (owner instruction) instead of
+          being derived from cargo ops + OUTSIDE_PORT_LIMIT. OUTSIDE_PORT_LIMIT is 100% blank in
+          V1, so the OPL transit demotion is inert and cannot classify anything. Measured on this
+          file: POC=YES (138) <=> CARGO_OP=True (138), exact 1:1 with zero disagreement.
+
+     DETECTION (owner chose the single decisive test): a file is V1 when OPERATING_CONDITION
+     contains no AT_BERTH and no AT_ANCHOR anywhere. That IS the condition that breaks the ladder,
+     so detection and root cause are the same thing and a V3 file can never be misread as V1.
+
+     REVERT PLAN (when V1 imports are retired): delete this block, revert `ocD` -> `oc` and the
+     `v1*` guards in pass 2, drop `ps`/`cargoOp` from the pass-1 record, delete the V1 notes, and
+     delete tools/verify_v1_mda_format.js. All V1 behaviour is reachable only via these flags. */
+  const V1_FLIP_TO_OC_SYNONYMS = false;   // set true to use BERTHING/ANCHORED instead of PORT_STATE
+  const ocHasV3State = recs.some(c=>!c.skip && (c.oc==="AT_BERTH" || c.oc==="AT_ANCHOR"));
+  /* 2026-07-28b — NECESSARY TIGHTENING of the owner's chosen detection rule, found by the test
+     suite and reported to the owner. The literal rule ("OPERATING_CONDITION has no AT_BERTH /
+     AT_ANCHOR anywhere") ALSO matches a perfectly normal V3 file that simply never berthed or
+     anchored — e.g. the DRIFT_FIX self-test fixture, a drifting-only waiting window, which has no
+     PORT_STATE column at all. That misdetection switched the POC decision to the file's tag and
+     broke the self-test "DRIFT: drifting + cargo-qty change ... POC on, qty flag".
+     So V1 now additionally requires POSITIVE evidence that PORT_STATE supplies exactly what
+     OPERATING_CONDITION is missing. This is strictly safer and cannot change any V3 file:
+       • no PORT_STATE column, or no port-state tokens in it  -> not V1 -> untouched V3 path;
+       • OPERATING_CONDITION already carries the tokens       -> not V1 -> untouched V3 path.
+     A genuine V1 file always satisfies both halves (olam_CORONA: OC has neither token; PORT_STATE
+     has AT_BERTH 87 + AT_ANCHOR 67). */
+  const psHasV3State = recs.some(c=>!c.skip && (c.ps==="AT_BERTH" || c.ps==="AT_ANCHOR"));
+  const isV1 = hasOC && !ocHasV3State && psHasV3State;
+  /* V1 only: cargo ops come from CARGO_OP, but ONLY when ASSOCIATED_ACTIVITY is genuinely absent
+     file-wide — a V1 file that does populate the activity column keeps the normal Case A path. */
+  const v1NoActivity = isV1 && !recs.some(c=>!c.skip && c.aa);
+  /* V1 only: the POC tag is authoritative, but ONLY when the column actually carries YES/NO. */
+  const v1PocAuth = isV1 && ("POC" in col) && recs.some(c=>!c.skip && (c.pocFile==="YES" || c.pocFile==="NO"));
+  /* `ocD` = the condition the ladder reads. V3: identical to `oc` (guaranteed no-op). V1: the
+     PORT_STATE token, falling back to `oc` where PORT_STATE is blank (at-sea rows, FUEL_STOCK),
+     so nothing that used to break a condition chain stops breaking it. `oc` itself is left
+     EXACTLY as reported so the Reports trace table keeps showing the ship's own wording. */
+  for(const c of recs)
+    c.ocD = isV1 ? (V1_FLIP_TO_OC_SYNONYMS ? ({BERTHING:"AT_BERTH",ANCHORED:"AT_ANCHOR"}[c.oc] || c.oc)
+                                           : (c.ps || c.oc))
+                 : c.oc;
+  let nV1Poc=0;
+  /* ==================== end temporary V1 compatibility detection ==================== */
 
   /* ---- pass 2: port stays → derive ARRIVAL / DEPARTURE / POC ---- */
   const notes=[];
@@ -869,20 +944,24 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     for(const st of stays){
       const M=st.members;
       /* chain helpers — transparent rows are skipped, never break a chain */
+      /* `ocD` (not `oc`) throughout the ladder — see the temporary V1 block above. For V3 files
+         ocD === oc, so this is a rename with no behavioural change. */
       const effCond=(m)=>{                       // blank-condition cargo op: inherit when both neighbours agree
-        if(m.oc) return m.oc;
+        if(m.ocD) return m.ocD;
         const k=M.indexOf(m); let p=null,n=null;
-        for(let j=k-1;j>=0;j--) if(M[j].oc){ p=M[j].oc; break; }
-        for(let j=k+1;j<M.length;j++) if(M[j].oc){ n=M[j].oc; break; }
+        for(let j=k-1;j>=0;j--) if(M[j].ocD){ p=M[j].ocD; break; }
+        for(let j=k+1;j<M.length;j++) if(M[j].ocD){ n=M[j].ocD; break; }
         return (p&&n&&p===n)? p : null;
       };
       const chainStart=(idx,cond)=>{ let s=idx;
-        for(let j=idx-1;j>=0;j--){ if(M[j].transparent) continue; if(M[j].oc===cond) s=j; else break; }
+        for(let j=idx-1;j>=0;j--){ if(M[j].transparent) continue; if(M[j].ocD===cond) s=j; else break; }
         return s; };
       const chainEnd=(idx,cond)=>{ let e=idx;
-        for(let j=idx+1;j<M.length;j++){ if(M[j].transparent) continue; if(M[j].oc===cond) e=j; else break; }
+        for(let j=idx+1;j<M.length;j++){ if(M[j].transparent) continue; if(M[j].ocD===cond) e=j; else break; }
         return e; };
-      const ops=M.filter(m=>MDA_CARGO_ACT[m.aa]);
+      /* TEMPORARY V1: cargo ops from the CARGO_OP boolean when ASSOCIATED_ACTIVITY is absent
+         file-wide (v1NoActivity). V3 files keep the ASSOCIATED_ACTIVITY test unchanged. */
+      const ops=M.filter(m=> v1NoActivity ? m.cargoOp : MDA_CARGO_ACT[m.aa]);
       /* cargo-quantity fallback: EOSP vs SOSP CARGO_QTY — 0↔loaded or >5% of DWT
          (2026-07-20b: computed BEFORE the ladder — the DRIFTING rung now depends on it) */
       const qtyE = st.eosp? st.eosp.qty : (M.length? M[0].qty : 0);
@@ -895,7 +974,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         dep = M[ cl!=null? chainEnd(M.indexOf(l),cl)   : M.indexOf(l) ].tEnd;
         rule="CASE_A";
       } else {                                              /* Case B — fallback ladder */
-        const firstLast=(cond,name)=>{ const xs=M.filter(m=>!m.transparent && m.oc===cond); if(!xs.length) return false;
+        const firstLast=(cond,name)=>{ const xs=M.filter(m=>!m.transparent && m.ocD===cond); if(!xs.length) return false;
           arr=xs[0].tStart; dep=xs[xs.length-1].tEnd; rule=name; return true; };
         firstLast("AT_BERTH","AT_BERTH")
         || (()=>{ const bs=M.filter(m=>m.aa==="BUNKERING"); if(!bs.length) return false;
@@ -936,16 +1015,29 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
                even at berth (owner scoped the override to the inconsistent case only). */
         const winReports = M.filter(m=> m.rt!=="FUEL_STOCK" && m.tStart>=arr && m.tEnd<=dep);
         const oplMixed   = winReports.some(m=>m.opl) && winReports.some(m=>!m.opl);
-        const berthCargo = ops.some(m=> m.oc==="AT_BERTH");
+        const berthCargo = ops.some(m=> m.ocD==="AT_BERTH");
         const oplOverride = oplHit && oplMixed && berthCargo;
-        poc = cargoTest && (!oplHit || oplOverride);
-        if(poc && qtyTrig){ flags.push("QTY"); nQty++; }
-        if(oplOverride) nOplKept++;
+        /* TEMPORARY V1 (owner instruction 2026-07-28b): in a V1 file the POC tag is AUTHORITATIVE —
+           it decides Port of Call directly, and with it the OPL question, because OUTSIDE_PORT_LIMIT
+           is not populated in V1 and so can never demote anything. The ❗ cargo-quantity fallback and
+           the ⚠ MISMATCH comparison are both suppressed: a recorded tag beats an inference, and there
+           is nothing left to compare the tag against. The arrival/departure WINDOW is unaffected —
+           it still comes from the ladder (via CARGO_OP for Case A). */
+        if(v1PocAuth){
+          poc = M.some(m=>m.pocFile==="YES");
+          if(poc) nV1Poc++;
+        } else {
+          poc = cargoTest && (!oplHit || oplOverride);
+          if(poc && qtyTrig){ flags.push("QTY"); nQty++; }
+          if(oplOverride) nOplKept++;
+        }
         /* a stay that had cargo but is STILL demoted because of an OPL report (the override did
            NOT save it — uniform OPL=TRUE, or cargo not at berth like a real STS). The Leg-Wise
            view shows 📦 + a red OPL badge for these; an OVERRIDDEN stay (poc true) gets neither
            flag, so it renders as a clean port of call (owner decision 2026-07-24b). */
-        const oplCargo = oplHit && cargoTest && !poc;
+        /* TEMPORARY V1: with the POC tag authoritative the OPL demotion never applies, so a stay
+           can never be flagged "cargo outside port limits" on a V1 file. */
+        const oplCargo = !v1PocAuth && oplHit && cargoTest && !poc;
         /* 2026-07-23 (Aurvin, owner instruction): record WHICH cargo operation was seen at
            this stay (ASSOCIATED_ACTIVITY), for the breakdown's 📦 tooltip. Read-only — it
            does not take part in the arrival/departure ladder or the POC decision above.
@@ -956,7 +1048,9 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
           if(ops.some(m=>m.aa==="CARGO_LOADING_STS"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("STS");
         }
         if(oplCargo){ nOPL++; flags.push("OPLCARGO"); }
-        if("POC" in col){
+        /* TEMPORARY V1: no MISMATCH flag when the tag IS the source of truth (it would compare
+           the tag against itself and never fire). V3 behaviour unchanged. */
+        if("POC" in col && !v1PocAuth){
           const filePoc = M.some(m=>m.pocFile==="YES");
           if(filePoc!==poc){ flags.push("MISMATCH"); nMismatch++; }
         }
@@ -1129,8 +1223,13 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   }
   /* raw per-report retention (2026-07-16): foundation for the future OVD-format download.
      Not used by any calculation; saved with the workspace state at import. */
+  /* 2026-07-28j (Aurvin, owner instruction) — TEMPORARY V1, remove with the V1 branch.
+     `ocD` (the PORT_STATE-derived condition the ladder already uses) now travels with each
+     report record so the Report-Wise Condition COLUMN can display it too. `oc` is still the
+     ship's own raw wording and is what the Excel/CSV report download exports, so the source
+     data is never rewritten. For V3 files ocD === oc, so this is a no-op there. */
   const reports = recs.map(c=>({ rt:c.rt, role:c.role||"", t:c.dt? iso(c.dt):c.tEnd, ts:c.tStart||null, te:c.tEnd||null,
-    oc:c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, qtyHas:!!c.qtyHas, dist:c.dist||0,
+    oc:c.oc||"", ocD:c.ocD||c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, qtyHas:!!c.qtyHas, dist:c.dist||0,
     voy:c.voy||"",
     lat:c.lat??null, lon:c.lon??null, org:c.org||"", cur:c.cur||"", dst:c.dst||"",
     portN:c.portN||"", ctry:c.ctry||"", regn:c.regn||"",
@@ -1139,7 +1238,18 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   if(nInferred) notes.push(nInferred+" row(s) had a missing UN/LOCODE — the last known port was carried forward.");
   if(hasMachines) notes.push("Per-machine consumption (ME / AE / Boiler) imported; per fuel type the unassigned remainder went to 'Other'"+(nNegRemainder? " — "+nNegRemainder+" report(s) had ME+AE+Boiler exceeding the fuel-type total (Other clamped to 0 — verify the source data)":"")+". Toggle 'Machinery split' in the workspace to view or edit it.");
   if(hasOC){
-    if(nDerived) notes.push(nDerived+" port stay(s): regulatory ARRIVAL/DEPARTURE derived from the report chain (EOSP/SOSP are sea-passage markers, not the arrival/departure) — consumption before arrival / after departure is attributed to the voyage. The file's POC column was ignored; Port of Call was derived from cargo operations and port limits.");
+    /* TEMPORARY V1 compatibility notes (2026-07-28b) — remove with the V1 branch. */
+    if(isV1){
+      notes.push("⚠ OLDER \"V1\" MDA FORMAT DETECTED (OPERATING_CONDITION carries no AT_BERTH / AT_ANCHOR). "
+        +"Berth and anchorage periods were read from the PORT_STATE column instead"
+        +(V1_FLIP_TO_OC_SYNONYMS? " (synonym mode: BERTHING/ANCHORED mapped instead)":"")
+        +", which reproduces the normal rule exactly — V1's \"BERTHING\" also covers the manoeuvring approach, so it is not used directly. "
+        +"The Report-Wise Condition column shows this same derived condition (2026-07-28j, owner instruction), so it reads like a current-format vessel; each cell's tooltip still names the ship's own reported wording, and the report download still exports the raw OPERATING_CONDITION. "
+        +"This is a TEMPORARY compatibility path for legacy files; current-format files are unaffected.");
+      if(v1NoActivity) notes.push("V1 format: ASSOCIATED_ACTIVITY is empty throughout, so cargo operations were taken from the CARGO_OP column instead. Load vs discharge cannot be distinguished, so the 📦 tooltip does not name the operation.");
+      if(v1PocAuth) notes.push("V1 format: Port of Call was taken from the file's POC column, which is authoritative for this format (owner rule) — the cargo-quantity ❗ fallback and the ⚠ POC-mismatch check are both switched off. "+nV1Poc+" stay(s) tagged as a Port of Call."+(("OUTSIDE_PORT_LIMIT" in col) && !recs.some(c=>!c.skip&&c.opl) ? " OUTSIDE_PORT_LIMIT is empty in this file, so the outside-port-limits transit check could not run.":""));
+    }
+    if(nDerived) notes.push(nDerived+" port stay(s): regulatory ARRIVAL/DEPARTURE derived from the report chain (EOSP/SOSP are sea-passage markers, not the arrival/departure) — consumption before arrival / after departure is attributed to the voyage."+(v1PocAuth? "":" The file's POC column was ignored; Port of Call was derived from cargo operations and port limits."));
     if(nTransit) notes.push(nTransit+" stay(s) had no berth / anchorage / drifting / bunkering period — pure transit, merged into the adjacent voyage (no port-stay row).");
     if(nOPL) notes.push(nOPL+" stay(s) with cargo operations OUTSIDE port limits (e.g. STS) — classified as transit, not a port of call.");
     if(nOplKept) notes.push(nOplKept+" stay(s) had INCONSISTENT OUTSIDE_PORT_LIMIT flags but cargo recorded AT_BERTH — the stray OPL flag was treated as misreporting and the stay KEPT as a port of call (owner rule 2026-07-24b).");
@@ -1873,10 +1983,25 @@ function ciiPillHtml(pct, rating, attained, size){
   const midPad   = lg? "3px 10px" : "1px 6px";
   const segFont  = lg? "15px" : "11px";
   const midFont  = lg? "22px" : "12px";
+  /* 2026-07-28l (Aurvin, bug report): the two numeric segments (% and AER) were padding-only,
+     so the pill's overall width visibly changed leg to leg with the digit count ("99%"/"7.11"
+     vs "375%"/"26.90"). Owner wants the PILL uniform width regardless of content, WITHOUT
+     widening/narrowing whatever table column or KPI card holds it. Fixed WIDTH (not min-width)
+     added to just these two inner segments — deliberately NOT min-width, because the Leg-Wise
+     self-test "row backgrounds also span the full scrolled width" scans this table's rendered
+     HTML for every literal `min-width:Npx` and asserts they are ALL identical (the grid's own
+     column min-width); a second, different min-width value here would trip that assertion. The
+     OUTER <span class="ciipill"> stays auto-sized (display:inline-flex, no width set) exactly
+     as before, so the containing table cell / grid column / KPI card is untouched — only the
+     two inner boxes stop growing with their own text. Sized to the widest capped value each
+     size ever renders ("-99%"/"999%" at segFont, "-99.99"/"999.99" at segFont) with a little
+     headroom; text-align centres shorter values exactly as the old auto-width flex did. */
+  const segW = lg? 40 : 30;
+  const segBox = `box-sizing:border-box;width:${segW}px;flex:0 0 ${segW}px;overflow:hidden;text-align:center`;
   return `<span class="ciipill" style="display:inline-flex;align-items:stretch;gap:${gap}px;padding:${outerPad}px;background:${ratingColor(rating)};border-radius:${rad}px;font-variant-numeric:tabular-nums">`+
-         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${pctTxt}</span>`+
+         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;${segBox};padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${pctTxt}</span>`+
          `<span class="ciipill-rat" style="display:flex;align-items:center;justify-content:center;padding:${midPad};font-weight:800;font-size:${midFont};color:#fff">${rating||"—"}</span>`+
-         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${aerTxt}</span>`+
+         `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;${segBox};padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${aerTxt}</span>`+
          `</span>`;
 }
 
@@ -1884,7 +2009,9 @@ function ciiPillHtml(pct, rating, attained, size){
    and both their TOTAL rows, so the two tabs always look and read the same. NB: no min-width
    anywhere in ciiPillHtml on purpose — the Leg-Wise self-test "row backgrounds also span the
    full scrolled width" scans this tab for every `min-width:Npx` and requires them all to equal
-   the grid's own width, so a badge carrying its own min-width would break it. */
+   the grid's own width, so a badge carrying its own min-width would break it. (2026-07-28l: the
+   pill's two numeric segments DO now have a fixed size, via `width`/`flex:0 0 Npx` — deliberately
+   NOT the `min-width` property, for exactly the reason above — so this note still holds.) */
 function ciiCellHtml(res){
   if(!res) return `<span style="color:#94a3b8">—</span>`;
   if(res.suppressed){
@@ -2225,6 +2352,17 @@ const TR_ICONS = {
   box:'M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12',
   waves:'M2 9Q4 7 6 9Q8 11 10 9Q12 7 14 9Q16 11 18 9Q20 7 22 9 M2 16Q4 14 6 16Q8 18 10 16Q12 14 14 16Q16 18 18 16Q20 14 22 16'
 };
+/* 2026-07-28j (Aurvin, owner instruction) — ONE shared zebra tint for all three breakdown tabs
+   (Reports / Legs / Voyages), so they stripe identically. This REPLACES the per-fuel sub-band
+   that used to tint every second fuel line inside a single report row (the "MGO band"): banding
+   is now per COMPLETE row — a leg or voyage is one band across all of its fuel lines, however
+   many it has. #f8fafc is the same slate tint the Constants table already stripes with
+   (css/styles.css #tab-constants), deliberately lighter than the #f1f5f9 group-header grey so
+   header and body stay tellable apart, and far enough from the #d3ebee tick highlight
+   (.hirow.hi-on in css/styles.css) that a ticked row still reads as ticked on either stripe.
+   This supersedes the 2026-07-25j "zebra striping removed" decision for these three tabs. */
+const ZEBRA_BG = "#f8fafc";
+const ZEBRA = i => (i%2===1 ? ZEBRA_BG : "#ffffff");
 const TR_CONDS = {
   AT_ANCHOR:       { label:'Anchor',        icon:TR_ICONS.anchor, color:'#5b7fa6' },
   MANOEUVRING:     { label:'Manoeuvring',   icon:TR_ICONS.route,  color:'#6366f1' },
@@ -2293,7 +2431,10 @@ function trFuelLines(r){
       oth: hasSplit? Math.max(0,total-me-ae-blr).toFixed(1):"—",
       rob: (r.rob||{})[n]!=null? r.rob[n].toFixed(1):"—",
       hasBunk: bunk[n]!=null, bunk: bunk[n]!=null? "+"+bunk[n].toFixed(1):"",
-      bg: i%2===1? "#f1f5f9":"transparent" };
+      /* 2026-07-28j (Aurvin, owner instruction): the per-fuel sub-band is GONE — every fuel
+         line is transparent so it inherits its row's zebra stripe (see ZEBRA_BG). Previously
+         `i%2===1? "#f1f5f9"` banded the 2nd/4th fuel line (typically MGO) inside each row. */
+      bg: "transparent" };
   });
 }
 /* 2026-07-26x (Aurvin, owner instruction, this session): Leg-Wise ONLY — from a screenshot
@@ -2470,8 +2611,10 @@ function trTotalsAgg(reps){
   }
   return Object.keys(acc)
     .sort((a,b)=>((TR_FUEL_ORDER.indexOf(a)+1||99)-(TR_FUEL_ORDER.indexOf(b)+1||99))||(a<b?-1:1))
-    .map((n,i)=>Object.assign({name:n, oth:Math.max(0,acc[n].total-acc[n].me-acc[n].ae-acc[n].blr),
-                               bg:i%2===1?"#e2e8f0":"transparent"}, acc[n]));
+    /* 2026-07-28j (Aurvin, owner instruction): per-fuel sub-band removed here too, so the TOTAL
+       row's fuel lines sit on its own flat #eef2f7 (was `i%2===1?"#e2e8f0"` banding the 2nd fuel). */
+    .map(n=>Object.assign({name:n, oth:Math.max(0,acc[n].total-acc[n].me-acc[n].ae-acc[n].blr),
+                           bg:"transparent"}, acc[n]));
 }
 function trTotalsHtml(){
   const all = TR_LAST||[];
@@ -2515,16 +2658,30 @@ function reportTraceTable(reps){
   TR_LAST = reps;                                           // 2026-07-22: for the totals row
   rowselReset("tr", reps.length);
   const rows=reps.map((r,ri)=>{
-    const c=TR_CONDS[r.oc]||(r.oc?{label:r.oc.charAt(0)+r.oc.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.route,color:"#64748b"}:null);
+    /* 2026-07-28j (Aurvin, owner instruction) — TEMPORARY V1, remove with the V1 branch.
+       The Condition column reads the DERIVED condition `ocD` (PORT_STATE for a V1 file) instead
+       of the raw `oc`, so the column matches the arrival/departure derivation and reads the same
+       as a V3 vessel. For V3 files ocD === oc, so nothing changes. Older saved workspaces have
+       no ocD at all -> the `|| r.oc` fallback keeps them rendering exactly as before.
+       Where the two differ (V1 "BERTHING" -> AT_BERTH or MANOEUVRING) the ship's own reported
+       word is preserved in the cell's hover tooltip — see condTitle below. */
+    const rOc = r.ocD || r.oc;
+    const c=TR_CONDS[rOc]||(rOc?{label:rOc.charAt(0)+rOc.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.route,color:"#64748b"}:null);
     const acts=trActs(r).map(k=>TR_ACTS[k]||{label:k.charAt(0)+k.slice(1).toLowerCase().replace(/_/g," "),icon:TR_ICONS.clock,color:"#64748b"});
     const fuels=trFuelLines(r);
     const cov=trCoverage(r);
     const port=r.portN||r.cur||"";
     const z=r.cur? zoneOfLocode(r.cur):null;
     const zone=z==="EEA"?"EU":z==="UK"?"UK":null;
+    /* tooltip: normally just the full (unabbreviated) label; when the displayed condition was
+       derived from PORT_STATE and differs from the ship's reported OPERATING_CONDITION, name
+       both so the source value stays visible (2026-07-28j, owner instruction). */
+    const condTitle = c ? (r.ocD && r.oc && r.ocD!==r.oc
+        ? c.label+" — reported as "+r.oc
+        : c.label) : "";
     const condHtml = c? `<div style="display:flex;align-items:center;gap:6px">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${c.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="${c.icon}"></path></svg>
-          <span style="font-size:12px;color:#334155;font-weight:500" title="${esc(c.label)}">${esc(trCondLabel(c.label))}</span>
+          <span style="font-size:12px;color:#334155;font-weight:500" title="${esc(condTitle)}">${esc(trCondLabel(c.label))}</span>
           ${r.opl?'<span style="font-size:9.5px;font-weight:700;letter-spacing:0.05em;color:#b91c1c;background:#fee2e2;padding:1.5px 6px;border-radius:4px" title="OUTSIDE_PORT_LIMIT = TRUE">OPL</span>':""}
         </div>` : dash;
     const actHtml = acts.length? `<div style="display:flex;align-items:center;gap:5px">${acts.map(a=>
@@ -2574,9 +2731,14 @@ function reportTraceTable(reps){
           f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 4px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
         }<span>${f.rob}</span></div>`).join("")}</td>`
       : `<td style="padding:${pad};border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
-    return `<tr class="hirow" style="background:#ffffff"><!-- 2026-07-24: row divider moved to .trtable tbody td (border-separate ignores <tr> borders) -->
-      <td style="padding:${pad};vertical-align:middle;text-align:center;${TR_FREEZE_SEL}z-index:2;background:#ffffff;width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px">${selBox("tr",ri)}</td>
-      <td style="padding:${pad};vertical-align:top;white-space:nowrap;${TR_FREEZE_EVT}z-index:2;background:#ffffff;border-right:1px solid #f1f5f9">
+    /* 2026-07-28j (Aurvin, owner instruction): whole-row zebra. The stripe goes on the <tr> AND
+       on the two frozen (sticky) cells, which must carry their own opaque background or the body
+       would scroll visibly underneath them. The ticked-row highlight still wins over both —
+       `tr.hirow.hi-on>td` in css/styles.css is !important. */
+    const rowBg = ZEBRA(ri);
+    return `<tr class="hirow" style="background:${rowBg}"><!-- 2026-07-24: row divider moved to .trtable tbody td (border-separate ignores <tr> borders) -->
+      <td style="padding:${pad};vertical-align:middle;text-align:center;${TR_FREEZE_SEL}z-index:2;background:${rowBg};width:${TR_SELCOL_W}px;min-width:${TR_SELCOL_W}px">${selBox("tr",ri)}</td>
+      <td style="padding:${pad};vertical-align:top;white-space:nowrap;${TR_FREEZE_EVT}z-index:2;background:${rowBg};border-right:1px solid #f1f5f9">
         <div style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
           <span style="font-size:12px;font-weight:700;color:#334155;display:inline-flex;align-items:center;gap:6px">${r.rt==="IN_PORT"?berthIcon(r):""}${esc(reportTypeDisplay(r))}</span>
           <span style="font-size:11px;color:#64748b;font-family:${TR_FONT}">${esc(fmtTs(r.t))}</span>
@@ -2646,9 +2808,16 @@ function reportTraceTable(reps){
                explicit <br> makes both render identically and lets the column go narrower. -->
           <!-- 2026-07-24d: header padding mirrors the body cells' asymmetric wall/inner split
                (8px outer, 1px inner) so the header and the badges below it line up. -->
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:8px;padding-right:1px">EU<br>ETS</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:1px">FEU</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:8px">UK<br>ETS</th>
+          <!-- 2026-07-28l (Aurvin, bug report): explicit width added to each of these 3 sub-th so this
+               table's own ELIGIBILITY group matches the Leg-Wise/Voyage-Wise CSS-grid's fixed 55/48/55px
+               columns (BR_GRID/VW_GRID, same file) exactly. Before this, the group here had no pinned
+               width at all (a plain width:100% table auto-distributing space), so it rendered wider than
+               Leg-Wise and the header labels/percentage values sat visibly offset from Leg-Wise's. Only
+               these 3 sub-th carry the width — the group's own colspan=3 header/body td are unspanned by
+               any single column, so pinning the true columns here is what fixes the whole group. -->
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:8px;padding-right:1px;width:55px;min-width:55px;max-width:55px">EU<br>ETS</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:1px;width:48px;min-width:48px;max-width:48px">FEU</th>
+          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:8px;width:55px;min-width:55px;max-width:55px">UK<br>ETS</th>
           <th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>
           <th style="text-align:right;${thSub};font-weight:700;color:#475569">Total</th>
           <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">ME</th>
@@ -3302,20 +3471,28 @@ function breakdownGrid(R, tips){
       <div style="grid-column:5;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right">${colHdr("Dist","nm")}</div>
       <!-- 2026-07-26o (Aurvin, owner instruction): standalone ELIGIBILITY group, left of IMO —
            deliberately copies the Report-Wise Eligibility header EXACTLY (background, colour,
-           font, padding split, two-line EU/UK labels) rather than the colour-coded style the
-           other Leg-Wise group headers use, so the two tabs read as the same concept. -->
+           font, padding split, two-line EU/UK labels), so the two tabs read as the same concept.
+           2026-07-28j (Aurvin, owner instruction): every OTHER group header now matches it too.
+           The per-section tints are gone — IMO was green (#d9f2e7/#1d7a5f), Fuel metrics cyan
+           (#ddecf3/#0e7490), EU ETS blue (#e1ebf4/#3652a3), UK ETS purple (#f1e6f5/#6d4fa3),
+           FuelEU green (#def2e0/#3d7a3a). All five now use the SAME neutral ZN table header
+           #f1f5f9 background with #475569 uppercase text, in BOTH Leg-Wise (below) and
+           Voyage-Wise (voyageGrid). Borders, padding, fonts and the ⓘ tooltips are untouched,
+           and the regulation-coloured VALUES in the body cells (e.g. EUAs in #3652a3, UKAs in
+           #6d4fa3, EEOI in #1d7a5f) are deliberately LEFT AS THEY WERE — the owner asked only
+           about the header coloration. -->
       <div style="grid-column:6 / span 3;grid-row:1;padding:6px 12px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-right:1px solid #e2e8f0;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Eligibility ${tips.eligibility}</div>
-      <div style="grid-column:9 / span 2;grid-row:1;padding:6px 10px;background:#d9f2e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#1d7a5f;white-space:nowrap">IMO ${tips.imo}</div>
+      <div style="grid-column:9 / span 2;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">IMO ${tips.imo}</div>
       ${/* 2026-07-26p (Aurvin, owner instruction): CO2e moved OUT of the EU ETS group INTO
            Fuel metrics — it is no longer the EU-ETS-eligible/coverage-scoped figure, it is the
            TOTAL CO2e of the fuel actually consumed (see the column-13 cell below and
            js/engine.js det.totalCO2e). Fuel metrics group widened from span 2 (11-12) to span 3
            (11-13); EU ETS group narrowed from span 2 (13-14) to column 14 only (EUAs). See
            HANDOFF_LOG.md 2026-07-26 entry. */""}
-      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#ddecf3;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#e1ebf4;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1e6f5;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#def2e0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
       <!-- sub-header row (row 2): same three eligibility labels/styling as Report-Wise's thSub
            cells (10px, #94a3b8, centered, asymmetric 8/1/1/8 padding so the gap between the
            three badges is smaller than the gap to the group's own outer wall). -->
@@ -3357,8 +3534,13 @@ function breakdownGrid(R, tips){
     /* 2026-07-25 (Aurvin, owner instruction): zebra striping removed from Leg-Wise — every
        row is now plain white. Row emphasis is instead done on demand: clicking a row toggles
        the .hi-on highlight (see the .hirow rules in css/styles.css). zi is kept but no longer
-       drives the alternating tint. */
-    const bg = "#ffffff"; void zi;
+       drives the alternating tint.
+       2026-07-28j (Aurvin, owner instruction) SUPERSEDES THAT: zebra striping is back, on all
+       three tabs, banded per COMPLETE row — `i` is the row index, so a leg is one stripe across
+       all of its per-fuel lines (`span`), never striped internally. The click-to-highlight
+       .hi-on treatment is unchanged and still overrides the stripe (!important in styles.css).
+       zi stays retired. */
+    const bg = ZEBRA(i); void zi;
     /* 2026-07-23 (Aurvin, owner instruction): ONE LINE PER PORT. A voyage gets two lines —
        origin (with a trailing →) above destination; a berth stay gets one. The port NAME
        truncates with an ellipsis when the column is narrow, while the UN/LOCODE, the
@@ -4199,7 +4381,7 @@ function voyageGrid(R, tips){
       <!-- 2026-07-26h (Aurvin, owner instruction): "nm" shown the same way as Leg-Wise's Cargo
            "mt" — its own smaller, muted line under "DIST" (via colHdr). -->
       <div style="grid-column:4;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right">${colHdr("Dist","nm")}</div>
-      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#d9f2e7;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#1d7a5f;white-space:nowrap">IMO ${tips.imo}</div>
+      <div style="grid-column:5 / span 2;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">IMO ${tips.imo}</div>
       ${/* 2026-07-26q3 (Aurvin, owner instruction): fixes a mistake from 2026-07-26p, spotted by
            the owner in a screenshot — this view showed TWO separate "Fuel metrics" header tags
            (Fuel type/Cons. here, and an isolated Total CO2e tag after Sea Cargo Charter), while
@@ -4208,11 +4390,11 @@ function voyageGrid(R, tips){
            shape; Sea Cargo Charter's own 4 columns (WtW/Cargo/T-Work/EEOI) shifted one column
            to the right to make room, EU ETS/UK ETS/FuelEU keep their EXACT same column numbers
            (14/15/16-20) — this reorder only touches columns 7-13. See HANDOFF_LOG.md. */""}
-      <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#ddecf3;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#0e7490;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
+      <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
       <div style="grid-column:10 / span 4;grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#e1ebf4;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3652a3;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1e6f5;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#6d4fa3;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#def2e0;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#3d7a3a;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>
+      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>
+      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
       ${/* 2026-07-26e: IMO pair, identical treatment to Leg-Wise, now LEFT of Fuel metrics. Both
            are VOYAGE-level and span the fuel sub-rows. See the IMO info icon for the caveat. */""}
       ${/* 2026-07-26 (Task, Aurvin): header text centred over this column instead of the
@@ -4247,8 +4429,11 @@ function voyageGrid(R, tips){
     const span=Math.max(1,lines.length);
     /* 2026-07-25 (Aurvin, owner instruction): zebra striping removed from Voyage-Wise — every
        row is now plain white. Row emphasis is done on demand via the click-to-highlight .hi-on
-       class (see .hirow rules in css/styles.css). zi kept but no longer used for tinting. */
-    const bg="#ffffff"; void zi;
+       class (see .hirow rules in css/styles.css). zi kept but no longer used for tinting.
+       2026-07-28j (Aurvin, owner instruction) SUPERSEDES THAT: zebra is back, banded per
+       COMPLETE voyage row — one stripe across all of the voyage's per-fuel lines. See the
+       matching note in breakdownGrid and ZEBRA_BG. */
+    const bg=ZEBRA(i); void zi;
     const [pa,pb]=vwGroupPorts(g);
     const nLegs=g.dets.filter(d=>d.kind==="voyage").length, nBerth=g.dets.length-nLegs;
     /* 2026-07-25n (Aurvin, owner instruction): cell() is only ever used for the LEG/VOYAGE-
@@ -5725,6 +5910,108 @@ function runSelfTests(){
                             /top:calc\(50% \+ 22px\);left:50%;transform:translateX\(-50%\)/.test(t)));
     ckT("EEOI column (grid-column:10) cell is unaffected — still right-aligned, single line",
         /grid-column:10;grid-row:1[^"]*justify-content:flex-end/.test(html));
+  })();
+  /* ==========================================================================================
+     2026-07-28j (Aurvin, owner instruction) — three display changes locked down here.
+       T1  A V1 MDA file's Report-Wise CONDITION column shows the PORT_STATE-derived condition
+           (so it reads like a current-format vessel), with the ship's own reported wording kept
+           in the cell tooltip. A V3 file is completely unaffected (ocD === oc).
+           ⚠ TEMPORARY — delete this part with the V1 branch (see HANDOFF_LOG.md 2026-07-28i).
+       T2  Whole-row ZEBRA striping on all three tabs, and the per-fuel "MGO" sub-band removed:
+           one leg/voyage/report = ONE stripe, however many fuel lines it has.
+       T3  Group headers are all the SAME neutral grey — the per-section tints (IMO green,
+           Fuel metrics cyan, EU ETS blue, UK ETS purple, FuelEU green) are gone.
+     ========================================================================================== */
+  (function(){
+    /* ---- T1: minimal V1 fixture. OPERATING_CONDITION carries NO AT_BERTH/AT_ANCHOR (only the
+       V1 sailing-mode words), PORT_STATE carries the real port state, cargo work comes from
+       CARGO_OP, and ASSOCIATED_ACTIVITY / OUTSIDE_PORT_LIMIT are blank — exactly the shape of
+       the owner's olam_CORONA file. Note the two BERTHING rows: one is really MANOEUVRING and
+       one really AT_BERTH, which is the whole reason PORT_STATE (not a BERTHING→AT_BERTH
+       rename) is what gets read. */
+    const V1FIX=[["DATE_TIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","PORT_STATE","ASSOCIATED_ACTIVITY","CARGO_OP","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
+      ["2025-05-01 00:00","2025-04-30 12:00","2025-05-01 00:00","AT_SEA","NORMAL SAILING","","","False","","NO",'{"VLSFO": 5}',"60","9000","SGSIN","","AEJEA"],
+      ["2025-05-01 06:00","2025-05-01 00:00","2025-05-01 06:00","ARRIVAL-EOSP","","","","False","","NO",'{"VLSFO": 0.5}',"6","9000","SGSIN","AEJEA","AEJEA"],
+      ["2025-05-01 12:00","2025-05-01 06:00","2025-05-01 12:00","IN_PORT","BERTHING","MANOEUVRING","","False","","NO",'{"MDO": 0.2}',"0","9000","","AEJEA",""],
+      ["2025-05-02 00:00","2025-05-01 12:00","2025-05-02 00:00","IN_PORT","BERTHING","AT_BERTH","","True","","YES",'{"MDO": 0.4}',"0","4000","","AEJEA",""],
+      ["2025-05-02 06:00","2025-05-02 00:00","2025-05-02 06:00","DEPARTURE-SOSP","BERTHING","MANOEUVRING","","False","","NO",'{"MDO": 0.1}',"2","4000","AEJEA","","SGSIN"],
+      ["2025-05-03 00:00","2025-05-02 06:00","2025-05-03 00:00","AT_SEA","NORMAL SAILING","","","False","","NO",'{"VLSFO": 4}',"50","4000","AEJEA","","SGSIN"]
+    ];
+    const v1m=mdaToOVD(V1FIX, 20000), v1r=v1m.reports||[];
+    const at=t=>v1r.find(r=>r.t===t);
+    ckT("28j T1: V1 file — the ship's raw OPERATING_CONDITION is still stored untouched on every report",
+        v1r.length===6 && at("2025-05-01T12:00").oc==="BERTHING" && at("2025-05-02T00:00").oc==="BERTHING");
+    ckT("28j T1: V1 file — the DISPLAY condition (ocD) comes from PORT_STATE, so one BERTHING row resolves to MANOEUVRING and the other to AT_BERTH",
+        at("2025-05-01T12:00").ocD==="MANOEUVRING" && at("2025-05-02T00:00").ocD==="AT_BERTH" &&
+        at("2025-05-01T00:00").ocD==="NORMAL SAILING");   // blank PORT_STATE at sea falls back to OC
+    const v1html=reportTraceTable(v1r);
+    ckT("28j T1: V1 Condition CELL renders the derived label and names the reported word in its tooltip",
+        /title="Berth — reported as BERTHING">Berth</.test(v1html) &&
+        /title="Manoeuvring — reported as BERTHING">Mnvrng</.test(v1html));
+    ckT("28j T1: V1 import note tells the owner the Condition column now shows the derived condition",
+        (v1m.notes||[]).some(n=>/V1/.test(n) && /Condition column/.test(n)));
+    /* the same fixture with the V3 vocabulary — ocD must equal oc, and the tooltip must NOT
+       gain a "reported as" tail (this is the guard that the V1 work cannot leak into V3) */
+    const V3FIX=V1FIX.map((r,i)=> i===0 ? r.slice()
+      : r.map((v,j)=> j===4 ? (r[5]||v) : v));           // OPERATING_CONDITION := PORT_STATE
+    const v3m=mdaToOVD(V3FIX, 20000), v3r=v3m.reports||[];
+    ckT("28j T1: V3 file — ocD is identical to oc on every report, so the Condition column is unchanged",
+        v3r.length===6 && v3r.every(r=>(r.ocD||"")===(r.oc||"")));
+    ckT("28j T1: V3 file — no \"reported as\" tail anywhere in the rendered Condition column",
+        !/reported as/.test(reportTraceTable(v3r)));
+
+    /* ---- T2: zebra. Reports first (an HTML <table>), then the two CSS-grid tabs. ---- */
+    ckT("28j T2: Reports — rows alternate #ffffff / #f8fafc across the WHOLE row",
+        /<tr class="hirow" style="background:#ffffff"/.test(v1html) &&
+        /<tr class="hirow" style="background:#f8fafc"/.test(v1html));
+    ckT("28j T2: Reports — the sticky Event/select cells carry the row's own stripe (else the body shows through)",
+        /background:#f8fafc;width:/.test(v1html) || /z-index:2;background:#f8fafc/.test(v1html));
+    ckT("28j T2: Reports — the per-fuel (MGO) sub-band is gone; every fuel line is transparent",
+        !/class="trfl"[^>]*background:#(f1f5f9|e2e8f0)/.test(v1html));
+    const sZeb={year:2025,ship:{typeId:"bulk",capacity:50000},rows:[
+      {kind:"voyage",from:"EEA",to:"EEA",dist:1000,cargo:5000,tStart:"2025-03-01T00:00",tEnd:"2025-03-02T00:00",
+       fuels:[{fuelId:"HFO",tonnes:50},{fuelId:"MDO",tonnes:5}]},                       // 2 fuels = 2 lines
+      {kind:"port",dist:0,cargo:0,poc:true,zone:"EEA",tStart:"2025-03-02T00:00",tEnd:"2025-03-03T00:00",
+       fuels:[{fuelId:"MDO",tonnes:3}]},
+      {kind:"voyage",from:"EEA",to:"EEA",dist:900,cargo:4000,tStart:"2025-03-03T00:00",tEnd:"2025-03-04T00:00",
+       fuels:[{fuelId:"HFO",tonnes:40},{fuelId:"MDO",tonnes:4}]}]};
+    const rZeb=computeAll(sZeb);
+    BR_LAST=null;
+    const brHtml=breakdownGrid(rZeb,{lcv:"",euets:"",ukets:"",feu:"",scc:"",voy:"",imo:"",eligibility:""});
+    /* one .hirow per ROW (not per fuel line): count them and their backgrounds */
+    const brRows=[...brHtml.matchAll(/<div class="hirow" style="display:grid;[^"]*?background:(#[0-9a-f]{6})/g)].map(m=>m[1]);
+    ckT("28j T2: Leg-Wise — one striped .hirow per LEG (3 rows, 5 fuel lines) alternating white/#f8fafc",
+        brRows.length===3 && brRows[0]==="#ffffff" && brRows[1]===ZEBRA_BG && brRows[2]==="#ffffff",
+        "got "+JSON.stringify(brRows));
+    /* the striped row's frozen (sticky) cells must repeat the row's OWN colour — they sit above
+       the scrolling body, so if they kept a hard-coded white the stripe would break at the left
+       edge. NB the pattern must be [^>]* (not [^"]*): `class="hicell" style="…"` has a quote
+       between the two, so a quote-excluding class would never reach the background. */
+    ckT("28j T2: Leg-Wise — a 2-fuel leg is ONE stripe: its frozen cells repeat the row's own colour",
+        (brHtml.match(new RegExp("class=\"hicell\"[^>]*background:"+ZEBRA_BG,"g"))||[]).length>=2 &&
+        !new RegExp("class=\"hicell\"[^>]*background:"+ZEBRA_BG+"[^>]*background:#ffffff").test(brHtml));
+    VW_LAST=null;
+    /* voyageGrid takes the VOYAGE-GROUPED shape renderVoyage() builds (R.groups from vwGroups),
+       not computeAll()'s per-leg R — same construction as renderVoyage. */
+    const vwR={ groups:vwGroups(sZeb).groups, year:2025, ets:{ gwp: euetsGwp(sZeb) } };
+    const vwHtml=voyageGrid(vwR,{voy:"",lcv:"",feu:"",euets:"",ukets:"",scc:"",imo:""});
+    const vwRows=[...vwHtml.matchAll(/<div class="hirow" style="display:grid;[^"]*?background:(#[0-9a-f]{6})/g)].map(m=>m[1]);
+    ckT("28j T2: Voyage-Wise — same whole-row zebra, one stripe per voyage group",
+        vwRows.length>=1 && vwRows[0]==="#ffffff" && vwRows.every(b=>b==="#ffffff"||b===ZEBRA_BG),
+        "got "+JSON.stringify(vwRows));
+
+    /* ---- T3: header colouring. Every group header is the one neutral grey. ---- */
+    const TINTS=/background:#(d9f2e7|ddecf3|e1ebf4|f1e6f5|def2e0)/;
+    ckT("28j T3: Leg-Wise — no per-section header tints left (IMO/Fuel metrics/EU ETS/UK ETS/FuelEU)",
+        !TINTS.test(brHtml));
+    ckT("28j T3: Voyage-Wise — no per-section header tints left", !TINTS.test(vwHtml));
+    ckT("28j T3: Leg-Wise — all 5 group headers use the same #f1f5f9 / #475569 ZN header style",
+        (brHtml.match(/grid-row:1;padding:6px 10px;background:#f1f5f9/g)||[]).length===5 &&
+        !/grid-row:1;padding:6px 10px;background:#f1f5f9[^"]*color:#(1d7a5f|0e7490|3652a3|6d4fa3|3d7a3a)/.test(brHtml));
+    ckT("28j T3: Voyage-Wise — all 5 group headers use the same #f1f5f9 / #475569 ZN header style",
+        (vwHtml.match(/grid-row:1;padding:6px 10px;background:#f1f5f9/g)||[]).length===5);
+    ckT("28j T3: the regulation colours on the VALUES are deliberately untouched (EUAs blue, UKAs purple, EEOI green)",
+        /color:#3652a3/.test(brHtml) && /color:#6d4fa3/.test(brHtml) && /color:#1d7a5f/.test(brHtml));
   })();
   /* 2026-07-26d (Task 3): Voyage-Wise IMO figures. A voyage GROUP includes its port stays,
      which is the documented difference from Leg-Wise. */

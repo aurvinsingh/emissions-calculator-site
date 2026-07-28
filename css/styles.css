@@ -379,6 +379,13 @@ tr.hirow.hi-on>td,
 .hirow.hi-on span[style*="background:#5b8791"]{background:#5b8791 !important}
 .hirow.hi-on span[style*="background:#3a5157"]{background:#3a5157 !important}
 .hirow.hi-on span[style*="background:#6f8d94"]{background:#6f8d94 !important}
+/* 2026-07-28l (Aurvin, bug report): the eligibility pill's OWN 0%/"–" segment (elFusedPill,
+   js/ui.js, bg:#e4eef0) was never added to the restore list above — only the 100%/50% dark
+   segments were. #e4eef0 is close to the pale-teal row tint #d3ebee, but the blanket strip
+   rule still zeroed its background outright, so on a ticked row the 0% segment's box vanished
+   (no fill at all, rather than just low-contrast) while its neighbours stayed visible. Restore
+   it like the others; #7c8fa0 text already has enough contrast against #e4eef0 for legibility. */
+.hirow.hi-on span[style*="background:#e4eef0"]{background:#e4eef0 !important}
 /* 2026-07-26 (Aurvin, bug report): the IMO CII rating badge (A–E letter box, js/ui.js
    ciiCellHtml ~line 1740) went the same way as the eligibility badges above — it also lost
    its colour once the row was ticked. It wasn't caught by the two hex exceptions just above
@@ -459,10 +466,14 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    draft. The owner chose the airier top over squeezing every last pixel into the table; the
    table still gains height, from the two things Tasks 2 and 3 removed (the date controls
    moved down onto the tab row, and the FuelEU/EU-ETS workings block is hidden here). */
-.znfs-top{background:#fff;border-bottom:1px solid #e6eaed;padding:20px 30px 0;flex:0 0 auto}
+/* 2026-07-28k (Aurvin, owner instruction — spacing change validated in the separate cloud-design
+   preview, ported here 1:1): loosen ONLY vertical spacing in this header block, no colour/font/
+   width/content changes. Top padding 20px -> 38px (horizontal and bottom stay 0). */
+.znfs-top{background:#fff;border-bottom:1px solid #e6eaed;padding:38px 30px 0;flex:0 0 auto}   /* was 20px 30px 0 */
 .znfs-crumbs{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#7a8896}
 .znfs-crumbs b{color:#2e7c99;font-weight:600}
-.znfs-title{display:flex;align-items:flex-end;gap:10px;margin:10px 0 22px}
+/* 2026-07-28k: 10px 0 22px -> 20px 0 46px (20px above the vessel name, 46px below it) */
+.znfs-title{display:flex;align-items:flex-end;gap:10px;margin:20px 0 46px}   /* was 10px 0 22px */
 .znfs-title h1{margin:0;font-size:29px;font-weight:800;letter-spacing:-0.4px;color:#0e2c40;line-height:1.1}
 .znfs-title .caret{color:#0e2c40;font-size:11px;padding-bottom:8px}
 .znfs-toprt{margin-left:auto;display:flex;align-items:center;gap:10px;padding-bottom:3px}
@@ -479,12 +490,25 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
   width:30px;height:30px;font-size:15px;line-height:1;cursor:pointer;flex:0 0 auto}
 .znfs-close:hover{background:#fdecec;border-color:#e3b7b3;color:#b3261e}
 /* vessel particulars strip */
-.znfs-parts{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:0 0 18px;font-size:12.5px;color:#5c6c7a}
+/* 2026-07-28k: bottom padding 18px -> 26px */
+.znfs-parts{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:0 0 26px;font-size:12.5px;color:#5c6c7a}   /* was 0 0 18px */
 .znfs-parts .p{padding:0 14px;border-right:1px solid #e2e8ec;white-space:nowrap}
 .znfs-parts .p:first-child{padding-left:0}
 .znfs-parts .p:last-child{border-right:0}
 .znfs-parts .p b{color:#0e2c40;font-weight:700;margin-left:5px}
 .znfs-parts .chip{background:#eef2f4;color:#3d4f5d;border-radius:3px;padding:3px 9px;font-weight:700;font-size:11.5px}
+/* 2026-07-28m (Aurvin, owner instruction — Task 4): right-hand group on the vessel-particulars
+   row — dummy "Vessel Reporting" link, the (relocated) Year selector, the (relocated) Download
+   button + ⓘ. margin-left:auto pushes it clear of the particulars list to its left; each item
+   keeps its own natural width (deliberately NOT sized/aligned to match the owner's reference
+   screenshot, per his own note that the screenshot's spacing "should not be like the screenshot"
+   — .znfs-fld/.znfs-extras below are the SAME classes already used on the tab row, so this group
+   reads as part of the same chrome rather than introducing new sizing rules). */
+.znfs-partsrt{display:flex;align-items:center;gap:10px;margin-left:auto;flex:0 0 auto;padding-left:14px}
+.znfs-vesselrpt{display:inline-flex;align-items:center;gap:5px;border:1px solid #d5dde3;background:#fff;
+  color:#2e7c99;border-radius:4px;padding:5px 10px;font-size:12.5px;font-weight:600;white-space:nowrap;
+  text-decoration:none;cursor:default}   /* dummy — no destination, deliberately not clickable-looking on hover */
+.znfs-vesselrpt .ext{font-size:10.5px}
 
 /* ---- KPI cards ---- */
 /* 2026-07-28c (Aurvin, owner instruction — "reduce the KPI card size to make more space on the
@@ -498,7 +522,8 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    the four policy cards rather than to the table, so the gap between the vessel-particulars
    strip and the cards goes 14px -> 34px (total gap with .znfs-parts' own 18px bottom padding:
    32px -> 52px, the airier ZeroNorth rhythm). Revert this one number to 14px to undo. */
-.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:34px 30px 2px}   /* was 14px 30px 2px */
+/* 2026-07-28k: top padding 34px -> 26px */
+.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:26px 30px 2px}   /* was 14px 30px 2px, then 34px 30px 2px */
 @media(max-width:1250px){.znfs-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .znk{background:#fff;border:1px solid #e6eaed;border-radius:4px;display:flex;flex-direction:column;min-width:0}
 .znk>h3{margin:0;padding:8px 13px;border-bottom:1px solid #eef2f4;font-size:12.5px;font-weight:700;   /* was 13px 16px / 14.5px */
@@ -525,7 +550,8 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 /* 2026-07-28b (Aurvin, owner instruction — "Task 2"): this row now holds the Year / From / To
    controls as well as the pills, right-aligned via .znfs-filters{margin-left:auto}, so the
    date filter sits directly above the table it filters instead of up in the header. */
-.znfs-tabs{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:18px 30px 10px;flex-wrap:wrap}
+/* 2026-07-28k: padding 18px 30px 10px -> 22px 30px 12px */
+.znfs-tabs{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:22px 30px 12px;flex-wrap:wrap}   /* was 18px 30px 10px */
 .znfs-tabs .tt{background:#fff;border:1px solid #d5dde3;color:#5c6c7a;border-radius:4px;
   padding:7px 17px;font-size:12.5px;font-weight:700;letter-spacing:.06em;cursor:pointer}
 .znfs-tabs .tt:hover{border-color:#9fc6ce;color:var(--blue)}

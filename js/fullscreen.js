@@ -125,17 +125,16 @@ var ZNFS_YEARS = [2024,2025,2026,2027,2028,2029,2030];
    calculator's own bar is renderDateFilterBar() in js/ui.js. Both must move together, or the two
    views will disagree about the filter — the exact drift the whole full-screen design avoids. */
 
+/* 2026-07-28m (Aurvin, owner instruction — Task 4): the Year selector moved OUT of this function
+   and up into the vessel-particulars row (znfsRenderHeader) — see znfsYearHtml() below. From/To
+   and the ✕ Clear button stay here, on the tab row, exactly where 2026-07-28b/c put them; only
+   Year relocates (owner's explicit choice when asked). */
 function znfsFilterHtml(){
   var y = Number(S.year) || 2026;
   var df = S.dateFilter || {};
   var lo = y + "-01-01T00:00", hi = y + "-12-31T23:59";
   var narrowed = (df.fromISO || lo) !== lo || (df.toISO || hi) !== hi;
-  var years = ZNFS_YEARS.map(function(yy){
-    return '<option ' + (yy === y ? "selected" : "") + '>' + yy + '</option>';
-  }).join("");
   return '<span class="znfs-filters">' +
-    '<span class="znfs-fld" title="Reporting year — sets the CII bands, the EU ETS phase-in, the UK ETS window and the FuelEU target. Same control as the calculator tabs; changing it here changes it everywhere.">' +
-      '<span class="lb">Year</span><select onchange="znfsYear(this.value)">' + years + '</select></span>' +
     '<span class="znfs-fld" title="Window start within ' + y + ' (UTC). Filters the KPI cards and all three tables.">' +
       '<span class="lb">From</span><input type="datetime-local" lang="en-GB" min="' + lo + '" max="' + hi + '" value="' + esc(df.fromISO || lo) + '" onchange="znfsDate(\'fromISO\',this.value)"></span>' +
     '<span class="znfs-fld" title="Window end within ' + y + ' (UTC). Filters the KPI cards and all three tables.">' +
@@ -143,10 +142,29 @@ function znfsFilterHtml(){
     (narrowed ? '<button class="znfs-clear" title="Reset From/To to the whole of ' + y + '" onclick="znfsClearRange()">✕ Clear</button>' : "") +
     '</span>';
 }
+/* 2026-07-28m (Aurvin, owner instruction — Task 4): the Year field, split out of znfsFilterHtml()
+   above so it can render in the vessel-particulars row instead of the tab row. Same handler
+   (znfsYear -> the app's own dfYear), so it is still the one S.year the whole app reads — moving
+   WHERE it renders changes nothing about what it drives. */
+function znfsYearHtml(){
+  var y = Number(S.year) || 2026;
+  var years = ZNFS_YEARS.map(function(yy){
+    return '<option ' + (yy === y ? "selected" : "") + '>' + yy + '</option>';
+  }).join("");
+  return '<span class="znfs-fld" title="Reporting year — sets the CII bands, the EU ETS phase-in, the UK ETS window and the FuelEU target. Same control as the calculator tabs; changing it here changes it everywhere.">' +
+    '<span class="lb">Year</span><select onchange="znfsYear(this.value)">' + years + '</select></span>';
+}
 
 /* ------------------------------------------------------------------ header */
 function znfsRenderHeader(){
   var el = document.getElementById("znfs-top"); if(!el) return;
+  /* 2026-07-28m: #znfs-extras (the relocated Download button + ⓘ) now lives INSIDE this
+     header's own innerHTML (see .znfs-partsrt below), not the tab row's. This function
+     rewrites el.innerHTML same as znfsRenderTabbar() always did, so it must rescue the
+     real .dfextra node back into its panel FIRST, exactly as _znfsRescueExtras() already
+     does for the tab row — otherwise a header repaint (e.g. every znfsRefresh()) would
+     destroy the only copy of that node. See the long note above _znfsRescueExtras(). */
+  _znfsRescueExtras();
   var S0 = S, sh = (S0 && S0.ship) || {};
   var type = (typeof TYPE_BY_ID !== "undefined" && TYPE_BY_ID[sh.typeId]) || {};
 
@@ -186,6 +204,23 @@ function znfsRenderHeader(){
          reference line is still computed (R.cii.ciiRef) and still drives the required CII; it
          is simply no longer surfaced here. Restore by re-adding a pill reading fmtF(c.ciiRef,3). */
       '<span class="p" title="Timestamp of the most recent activity inside the selected window — the calculator has no live feed, so this is the latest imported/entered report, not a server sync time.">Latest data<b>' + latest + '</b></span>' +
+      /* 2026-07-28m (Aurvin, owner instruction — Task 4): three items placed on the RIGHT of this
+         row, right-aligned via margin-left:auto so they sit clear of the particulars list above.
+         Order matches the owner's reference (left to right): a DUMMY "Vessel Reporting" link
+         (does nothing — no destination exists to link to yet, per owner's explicit choice when
+         asked), the REAL Year selector (moved here from the tab row — see znfsYearHtml() above;
+         From/To stay on the tab row, per owner's explicit choice), and the REAL Download button
+         (the same relocated .dfextra node znfsMountExtras() already moves per active tab — moved
+         from the tab row's #znfs-extras up into this one, single copy, not duplicated, per
+         owner's explicit choice). Width/alignment deliberately NOT copied from the reference
+         screenshot (owner's own note that its spacing "should not be like the screenshot") — each
+         item sizes to its own content, `.znfs-fld`/`.znfs-extras` reuse the existing tab-row
+         styling so the group matches the rest of the chrome instead of introducing new sizing. */
+      '<span class="znfs-partsrt">' +
+        '<a class="znfs-vesselrpt" href="javascript:void(0)" onclick="return false" title="Placeholder — not yet connected to anything">Vessel Reporting <span class="ext">↗</span></a>' +
+        znfsYearHtml() +
+        '<span class="znfs-extras" id="znfs-extras"></span>' +
+      '</span>' +
     '</div>';
 }
 
@@ -332,14 +367,19 @@ function znfsRenderKpis(){
 }
 
 /* ---------------------------------------------------- lower section (tabs) */
-/* 2026-07-28h (Aurvin) — RESCUE THE RELOCATED TOOLBAR BEFORE THE ROW IS REBUILT.
-   znfsRenderTabbar() sets el.innerHTML, which destroys #znfs-extras and, with it, the REAL
-   .dfextra node (⬇ Download + ⓘ) that znfsMountExtras() had moved up out of the panel. If the
-   panel has not re-rendered since, that node is the only copy in existence and it is simply gone —
-   the tab row loses its Download button and its ⓘ, which is what "no tooltip appears" looks like
-   from the outside. It went unnoticed until today because nothing used to call znfsRenderTabbar()
-   twice between panel renders; voyClear/voySet becoming aliases of dfClearRange/dfSet (which call
-   the wrapped dfRepaint, which itself refreshes the overlay) made it a two-refresh path.
+/* 2026-07-28h (Aurvin) — RESCUE THE RELOCATED TOOLBAR BEFORE THE ROW THAT HOLDS #znfs-extras IS
+   REBUILT. Originally written for znfsRenderTabbar() (#znfs-extras used to live on the tab row);
+   2026-07-28m moved #znfs-extras up into the header, so znfsRenderHeader() is now the function
+   that must call this FIRST, and does (see its top). Kept generic/id-based on purpose — it works
+   no matter which container currently holds #znfs-extras.
+   What it rescues: znfsRenderTabbar() / znfsRenderHeader() setting el.innerHTML destroys whatever
+   is inside, including the REAL .dfextra node (⬇ Download + ⓘ) that znfsMountExtras() had moved
+   up out of the panel. If the panel has not re-rendered since, that node is the only copy in
+   existence and it is simply gone — the row loses its Download button and its ⓘ, which is what
+   "no tooltip appears" looks like from the outside. It went unnoticed until 2026-07-28h because
+   nothing used to call the owning render function twice between panel renders; voyClear/voySet
+   becoming aliases of dfClearRange/dfSet (which call the wrapped dfRepaint, which itself
+   refreshes the overlay) made it a two-refresh path.
    So: put the node back in its panel's .dfbar first, where znfsMountExtras() will find it again.
    If the panel has meanwhile built a FRESH .dfextra, the held one is stale — drop it, so the
    panel can never end up holding two and the mount can never pick the wrong one. */
@@ -353,7 +393,10 @@ function _znfsRescueExtras(){
 }
 function znfsRenderTabbar(){
   var el = document.getElementById("znfs-tabbar"); if(!el) return;
-  _znfsRescueExtras();                        // 2026-07-28h — MUST precede the innerHTML below
+  /* 2026-07-28m: no longer needs its own _znfsRescueExtras() call — #znfs-extras moved off this
+     row (into the header) with 2026-07-28m's Task 4, so this row's own innerHTML rewrite can no
+     longer touch it. The rescue now happens in znfsRenderHeader(), which is the function that
+     actually owns #znfs-extras' container. */
   var pills = ZNFS_TABS.map(function(t){
     return '<button class="tt' + (t.id === ZNFS.tab ? " on" : "") + '" onclick="znfsTab(\'' + t.id + '\')">' + t.label + '</button>';
   }).join("");
@@ -368,11 +411,15 @@ function znfsRenderTabbar(){
      share the one year-locked filter now, so there is no longer anything for a caption to warn
      about. znfsInfoNote() still runs on VOYAGES, but its text has been rewritten to describe the
      END-DATE selection rule rather than a separate range. */
-  /* 2026-07-28b: the Year / From / To controls live on this row (right-aligned), level with the
+  /* 2026-07-28b: the From / To controls live on this row (right-aligned), level with the
      pills and directly above the table — moved down from the header's top-right.
-     2026-07-28c: #znfs-extras is the landing slot for the active panel's own Excel button and
-     info icon, relocated here by znfsMountExtras() — see that function for why. */
-  el.innerHTML = pills + znfsFilterHtml() + '<span class="znfs-extras" id="znfs-extras"></span>';
+     2026-07-28m (Aurvin, owner instruction — Task 4): the Year selector and #znfs-extras (the
+     landing slot for the active panel's relocated Download button + ⓘ, moved here by
+     znfsMountExtras()) BOTH moved OFF this row and up into the vessel-particulars row
+     (znfsRenderHeader/.znfs-partsrt) — this row keeps only the pills and From/To/Clear. Nothing
+     in znfsMountExtras() itself changed: it still finds #znfs-extras purely by id, so it works
+     identically wherever that element physically sits in the DOM. */
+  el.innerHTML = pills + znfsFilterHtml();
 }
 
 /* 2026-07-28c (Aurvin, owner instruction): each panel renders its own toolbar row via
