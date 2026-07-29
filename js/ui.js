@@ -2261,7 +2261,18 @@ function reportTypeDisplay(rep){
   return t;
 }
 const fmtDict=(d)=> d? Object.entries(d).filter(([,v])=>v>1e-9).map(([k,v])=>k+" "+(Math.round(v*100)/100)).join(" · ") : "";
-/* ---- Excel: voyage & berth breakdown (one line per row × fuel; row totals on first line) ---- */
+/* ---- Excel: voyage & berth breakdown (ONE line per row/event; multi-fuel events get extra
+   sideways "Fuel N" column groups, not extra rows) ---- */
+/* 2026-07-29 (Aurvin, owner instruction, Task 2): this export used to write one row PER FUEL
+   inside an event (a 2-fuel leg = 2 rows, with every event-level column blank on the 2nd+
+   line). The owner asked for exactly one row per event instead, with the fuel-specific columns
+   (Fuel, Tonnes, LCV, Eligible EU mt, Eligible energy, and the 4 SCC "(fuel)" columns) repeated
+   sideways as "…  1", "… 2", … . The column count is DYNAMIC, sized to whichever picked row has
+   the most fuels — a single-fuel-only file stays narrow; a file with a 3-fuel leg gets 3 fuel
+   groups for every row. Event-level values (Activity/Kind/times/Hours/Distance/Cargo/coverage
+   %/CO2/EUA/UKA/FuelEU CB & penalty/SCC voyage-level fields) are UNCHANGED figures, just no
+   longer blanked out on a "continuation" line because there is no continuation line anymore.
+   See HANDOFF_LOG.md 2026-07-29. */
 function downloadBreakdownXlsx(){
   const R=computeAll(S);
   /* 2026-07-26 (Aurvin, owner instruction): the "CO2 mt (row)" column now follows the same
@@ -2273,32 +2284,44 @@ function downloadBreakdownXlsx(){
      (js/engine.js) instead of the EU-ETS-eligible d.etsCO2e/d.etsCO2. See HANDOFF_LOG.md. */
   const co2EUAr = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
   const co2ColLbl = R.year>=2026 ? ("Total CO2e mt (row, "+(co2EUAr||"AR5")+")") : "Total CO2 mt (row)";
-  const rows=[["Activity","Kind","From (UTC)","To (UTC)","Hours","Distance nm","Cargo mt",
-               "EU ETS %","UK ETS %","FuelEU %","Fuel","Tonnes","LCV MJ/g","Eligible EU mt","Eligible energy MJ",
+  const eventHdr=["Activity","Kind","From (UTC)","To (UTC)","Hours","Distance nm","Cargo mt",
+               "EU ETS %","UK ETS %","FuelEU %",
                co2ColLbl,"EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)",
                /* SCC block, 2026-07-22c */
-               "SCC cargo mt (SOSP report)","SCC cargo source","SCC transport work t.nm","SCC TtW tCO2e (fuel)","SCC WtW tCO2e (fuel)",
-               "SCC Table 8 factor row (fuel)","SCC biogenic CO2 t (fuel)",
-               "SCC ballast CO2e carried in t (row)","SCC port CO2e included t (row)","SCC EEOI numerator t (row)","SCC EEOI gCO2e/t.nm (row)","SCC port-stay attribution"]];
+               "SCC cargo mt (SOSP report)","SCC cargo source","SCC transport work t.nm",
+               "SCC ballast CO2e carried in t (row)","SCC port CO2e included t (row)","SCC EEOI numerator t (row)","SCC EEOI gCO2e/t.nm (row)","SCC port-stay attribution"];
   /* 2026-07-22 (Aurvin): the download follows the table's tick selection — ticked rows only,
      or every row when nothing is ticked (see ROWSEL in this file). Display-level filter: the
      figures themselves are unchanged. */
   const picked = rowselActive("br", R.rowDetails.length).map(i=>R.rowDetails[i]);
+  const maxFuels = Math.max(1, ...picked.map(d=>(d.fuels&&d.fuels.length)||1));
+  const fuelHdr=[];
+  for(let k=1;k<=maxFuels;k++){
+    fuelHdr.push("Fuel "+k,"Tonnes "+k,"LCV MJ/g "+k,"Eligible EU mt "+k,"Eligible energy MJ "+k,
+                 "SCC TtW tCO2e (fuel) "+k,"SCC WtW tCO2e (fuel) "+k,
+                 "SCC Table 8 factor row (fuel) "+k,"SCC biogenic CO2 t (fuel) "+k);
+  }
+  const rows=[eventHdr.concat(fuelHdr)];
   for(const d of picked){
     const fs=d.fuels.length?d.fuels:[{id:"",name:"",tonnes:"",eligibleEU:""}];
-    fs.forEach((fu,i)=>{
+    const eventVals=[d.label||"—", d.kind, d.tStart||"", d.tEnd||"", d.hours||"", d.dist||"", d.cargo||"",
+                 d.covEU*100, d.covUK*100, d.covEU*100,
+                 (R.year>=2026? d.totalCO2e : d.totalCO2), d.euas, d.ukCO2e, (d.feuCB!=null? d.feuCB/1e6 : ""), (d.feuPenalty||0),
+                 (d.kind==="voyage"? d.cargo : ""), (d.kind==="voyage"? (d.cargoSOSP?"SOSP report":"max per leg (no departure report)") : ""),
+                 (d.tw||""),
+                 (d.sccBallast||""), (d.sccPort||""), (d.sccNumerator??""), (d.eeoi??""),
+                 (d.kind!=="voyage" && d.sccGoesTo? ("counted as "+d.sccGoesTo.role+(d.sccGoesTo.label?" of "+d.sccGoesTo.label:"")) : "")];
+    const fuelVals=[];
+    for(let k=0;k<maxFuels;k++){
+      const fu=fs[k];
+      if(!fu){ fuelVals.push("","","","","","","","",""); continue; }
       const f=FUEL_BY_ID[fu.id]||{};
-      rows.push([d.label||"—", d.kind, d.tStart||"", d.tEnd||"", i? "":(d.hours||""), i? "":(d.dist||""), i? "":(d.cargo||""),
-                 i? "":d.covEU*100, i? "":d.covUK*100, i? "":d.covEU*100,
-                 f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
+      fuelVals.push(f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
                  (f.lcv&&fu.eligibleEU!=="")? fu.eligibleEU*1e6*f.lcv : "",
-                 i? "":(R.year>=2026? d.totalCO2e : d.totalCO2), i? "":d.euas, i? "":d.ukCO2e, i? "":(d.feuCB!=null? d.feuCB/1e6 : ""), i? "":(d.feuPenalty||0),
-                 i? "":(d.kind==="voyage"? d.cargo : ""), i? "":(d.kind==="voyage"? (d.cargoSOSP?"SOSP report":"max per leg (no departure report)") : ""),
-                 i? "":(d.tw||""), fu.sccTtW==null?"":fu.sccTtW, fu.sccWtW==null?"":fu.sccWtW,
-                 fu.sccLabel||"", fu.sccBio||"",
-                 i? "":(d.sccBallast||""), i? "":(d.sccPort||""), i? "":(d.sccNumerator??""), i? "":(d.eeoi??""),
-                 i? "":(d.kind!=="voyage" && d.sccGoesTo? ("counted as "+d.sccGoesTo.role+(d.sccGoesTo.label?" of "+d.sccGoesTo.label:"")) : "")]);
-    });
+                 fu.sccTtW==null?"":fu.sccTtW, fu.sccWtW==null?"":fu.sccWtW,
+                 fu.sccLabel||"", fu.sccBio||"");
+    }
+    rows.push(eventVals.concat(fuelVals));
   }
   downloadXlsx("voyage_berth_breakdown_"+S.year+".xlsx","Breakdown",rows);
 }
@@ -3503,7 +3526,7 @@ function breakdownGrid(R, tips){
       <div style="grid-column:12;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
       ${/* 2026-07-26d (Aurvin): the "rating · % of required" sub-label was removed to narrow
             this column — that explanation now lives in the IMO section's info icon. */""}
-      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="INDICATIVE per-leg CII: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, with the leg's equivalent HFO fuel consumption per nautical mile (kg/nm) shown below it. CII is a whole-year, whole-ship metric in law — this shows what the rating would be if the entire year looked like this leg. Port stays have no distance, so they show the stay's equivalent HFO fuel consumption per day (t/d) instead — see the IMO section's ⓘ for the full explanation.">${colHdr("CII / Performance","")}</div>
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:center" title="INDICATIVE per-leg CII: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, with the leg's equivalent HFO fuel consumption per nautical mile (kg/nm) shown below it. CII is a whole-year, whole-ship metric in law — this shows what the rating would be if the entire year looked like this leg. Port stays have no distance, so they show the stay's equivalent HFO fuel consumption per day (t/d) instead — see the IMO section's ⓘ for the full explanation.">${colHdr("CII / Performance","")}</div>
       <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right" title="IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — this leg's own CO₂ ÷ its own transport work (cargo × laden distance). Nothing is carried in from ballast legs or port stays. A ballast leg or port stay has no transport work, so it shows a dash.">${colHdr("EEOI","gCO₂/t·nm")}</div>
       ${/* 2026-07-26p (Aurvin, owner instruction): this is now a Fuel-metrics TOTAL — full fuel
            actually burned on this leg, same CO2+CH4/N2O GWP treatment EU ETS uses, but NOT cut
@@ -3892,7 +3915,7 @@ function brTotalsHtml(){
       ${/* 2026-07-26e: weighted IMO totals — see the note above brTotalsHtml's imoDets block.
            The CII cell reuses ciiCellHtml, so the TOTAL row's badge and percentage look
            exactly like the leg rows' and the Results tab's. IMO now sits LEFT of Fuel metrics. */""}
-      <div style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
+      <div style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
       ${cell(9,"border-right:1px solid #e2e8f0;color:#1d7a5f;", eeoiImoTot!=null? fmtF(eeoiImoTot,2) : brDash)}
       ${cell(11,"padding-left:4px;", fmtF(sumF("tonnes"),1))}
       ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
@@ -4638,11 +4661,23 @@ function downloadVoyageXlsx(){
      corrected on-screen order — Fuel metrics (Fuel, Consumption, Total CO2) as one contiguous
      block, THEN Sea Cargo Charter (Cargo, Transport work, TtW CO2e, WtW CO2e, SCC numerator,
      EEOI). Only that one column's position moved; every other column and value is unchanged. */
-  const rows=[["Voyage No","From","To","Start (GMT)","End (GMT)","Legs","Port stays","Distance nm",
-               "Fuel","Consumption mt","Total CO2 mt (CO2e incl. CH4/N2O from 2026 — see Notes)",
-               "Cargo mt","Transport work t.nm","TtW CO2e mt","WtW CO2e mt","SCC numerator mt","EEOI gCO2e/t.nm",
-               "EUAs tCO2e","UKAs tCO2e",
-               "Eligible mt","Energy 10^6 MJ","Eligible energy 10^6 MJ","FuelEU CB tCO2eq","FuelEU penalty EUR","Notes"]];
+  /* 2026-07-29 (Aurvin, owner instruction, Task 2): same fix as Leg-Wise's downloadBreakdownXlsx
+     above — one row per VOYAGE, not one row per fuel (a 2-fuel voyage used to be 2 rows with the
+     voyage-level columns blank on the 2nd+ line). Fuel-specific columns (Fuel, Consumption mt,
+     Total CO2 mt, TtW/WtW CO2e, EUAs, UKAs, Eligible mt, Energy, Eligible energy, FuelEU CB &
+     penalty) repeat sideways as "… 1", "… 2", … , dynamically sized to whichever selected voyage
+     has the most fuels. Voyage-level values are unchanged figures. See HANDOFF_LOG.md 2026-07-29. */
+  const eventHdr=["Voyage No","From","To","Start (GMT)","End (GMT)","Legs","Port stays","Distance nm",
+               "Cargo mt","Transport work t.nm","SCC numerator mt","EEOI gCO2e/t.nm","Notes"];
+  const maxFuels = Math.max(1, ...sel.map(g=>(g.fuels&&g.fuels.length)||1));
+  const fuelHdr=[];
+  for(let k=1;k<=maxFuels;k++){
+    fuelHdr.push("Fuel "+k,"Consumption mt "+k,"Total CO2 mt (CO2e incl. CH4/N2O from 2026 — see Notes) "+k,
+                 "TtW CO2e mt "+k,"WtW CO2e mt "+k,"EUAs tCO2e "+k,"UKAs tCO2e "+k,
+                 "Eligible mt "+k,"Energy 10^6 MJ "+k,"Eligible energy 10^6 MJ "+k,
+                 "FuelEU CB tCO2eq "+k,"FuelEU penalty EUR "+k);
+  }
+  const rows=[eventHdr.concat(fuelHdr)];
   for(const g of sel){
     const [pa,pb]=vwGroupPorts(g);
     const nLegs=g.dets.filter(d=>d.kind==="voyage").length;
@@ -4652,17 +4687,22 @@ function downloadVoyageXlsx(){
                  g.sccBallastIn>0? "includes "+Math.round(g.sccBallastIn*100)/100+" t WtW carried in from preceding ballast leg(s)" : "",
                  g.endYear>=2026? "CO2 column is CO2e (incl. CH4/N2O) for this voyage's own end-year "+g.endYear : ""
                ].filter(Boolean).join("; ");
-    g.fuels.forEach((f,i)=>{
-      rows.push([ i?"":(g.voy||"n/a"), i?"":(pa.label||""), i?"":(pb.label||""), i?"":(g.tStart||""), i?"":(g.tEnd||""),
-                  i?"":nLegs, i?"":(g.dets.length-nLegs), i?"":round2(g.dist),
-                  f.label, round2(f.tonnes), round2(g.endYear>=2026? f.totalCO2e : f.totalCO2),
-                  i?"":round2(g.cargo), i?"":round2(g.tw), round2(f.sccTtW), f.noFactor?"n/a":round2(f.sccWtW),
-                  i?"":(g.sccNumerator==null?"":round2(g.sccNumerator)), i?"":(g.eeoi==null?"":round2(g.eeoi)),
-                  round2(f.euas), round2(f.ukCO2e),
-                  round2(f.eligibleEU), round2(f.energy), round2(f.E/1e6),
-                  round2(f.feuCB/1e6), round2(f.feuPenalty),
-                  i?"":note ]);
-    });
+    const eventVals=[ g.voy||"n/a", pa.label||"", pb.label||"", g.tStart||"", g.tEnd||"",
+                nLegs, (g.dets.length-nLegs), round2(g.dist),
+                round2(g.cargo), round2(g.tw),
+                (g.sccNumerator==null?"":round2(g.sccNumerator)), (g.eeoi==null?"":round2(g.eeoi)),
+                note ];
+    const fuelVals=[];
+    for(let k=0;k<maxFuels;k++){
+      const f=g.fuels[k];
+      if(!f){ fuelVals.push("","","","","","","","","","","",""); continue; }
+      fuelVals.push(f.label, round2(f.tonnes), round2(g.endYear>=2026? f.totalCO2e : f.totalCO2),
+                 round2(f.sccTtW), f.noFactor?"n/a":round2(f.sccWtW),
+                 round2(f.euas), round2(f.ukCO2e),
+                 round2(f.eligibleEU), round2(f.energy), round2(f.E/1e6),
+                 round2(f.feuCB/1e6), round2(f.feuPenalty));
+    }
+    rows.push(eventVals.concat(fuelVals));
   }
   downloadXlsx("voyage_wise_breakdown_"+S.year+".xlsx","Voyage-Wise",rows);
 }
@@ -4853,8 +4893,14 @@ function renderTrace(){
     ? `Showing <b>${reps.length}</b> of <b>${allReps.length}</b> report(s) inside the selected From/To range — the rest stay in memory and return when you widen or clear the range.<br><br>`
     : "";
   const traceInfo=info(`${countLine}${reps.length} report(s), as ingested — every value feeding CII / EU ETS / UK ETS / FuelEU. <b>ARRIVAL</b>/<b>DEPARTURE</b> mark the derived window boundaries (replacing IN_PORT); EOSP/SOSP are the sea-passage markers.<br><br>ME = Main Engine · AE = Auxiliary Engine · Boiler = BLR · Others = Total − (ME + AE + Boiler)<br><br><span style="color:#16a34a;font-weight:700">+n</span> next to ROB = tonnes bunkered during the report (shown only on bunkering reports)<br><br>Eligibility % = share of the report's energy in scope for EU ETS / FuelEU / UK ETS, computed the same way as your totals elsewhere in the app (— = no confident match to a calculated voyage/port entry)<br><br>All consumption, ROB and bunker values as ingested`,"right");
+  /* 2026-07-29 (Aurvin, owner instruction): REPORTS gets its own "⬇ Download" button on the
+     date-filter bar, same pattern as legWiseIcons (LEGS) / voyIcons (VOYAGES). This REPLACES the
+     "⬇ OVD-format Excel" button that used to sit in the page header (top-right) — that button is
+     now removed from index.html. The handler (downloadReportsXlsx()) and its .xlsx output are
+     unchanged; only the button's location and label moved. See HANDOFF_LOG.md 2026-07-29. */
+  const reportIcons = `<button class="pill hbtn noprint" onclick="downloadReportsXlsx()">⬇ Download</button>${traceInfo}`;
   el.innerHTML=`
-  ${renderDateFilterBar('year', traceInfo)}
+  ${renderDateFilterBar('year', reportIcons)}
   <div class="card panelB">
     ${allReps.length?`
     ${reps.length? reportTraceTable(reps) : `<p class="note">No reports fall inside the selected From/To range — widen or clear the range on the bar above.</p>`}`
