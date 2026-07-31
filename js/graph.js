@@ -1,5 +1,12 @@
 /* ============================================================================================
-   js/graph.js — the "📈 Graph" popup on the full-screen Vessel Overview  (2026-07-31, Aurvin)
+   js/graph.js — the "📈 Trends" popup on the full-screen Vessel Overview  (2026-07-31, Aurvin)
+
+   NAMING (2026-07-31k, owner instruction): the feature is called TRENDS everywhere the user can
+   see it — the button, the popup heading, every tooltip and the ⓘ help. The FILE, the `zng*`
+   function prefix, the `zng-*` CSS classes, the element ids and the `.znfs-graphbtn` class all
+   still say "graph", by the owner's explicit choice when asked: renaming them would touch
+   index.html, build_standalone.py and the whole test suite for zero visible difference. So if you
+   are searching for this feature by name, search BOTH words.
 
    WHAT IT IS
    A stacked-panel bar chart over the SAME reports the REPORTS tab shows: one bar per MDA
@@ -126,28 +133,34 @@ function zngFuelColour(name, i){ return ZNG_FUEL_COL[name] || ZNG_FUEL_FALL[i % 
      • yellow-green  → the bio fuels (BDSL / HVO / BLNG / BMET).
      • violet/purple → M / METH and H2.
      • dusty rose / mauve → E / ETOH and NH3.
-   What is left, and therefore what these are: charcoal, cyan, fuchsia, gold, crimson, wine, grey.
+   What is left, and therefore what these are: charcoal, cyan, stone grey, sage green, crimson,
+   wine, grey. (2026-07-31j: To-EU and From-EU were originally fuchsia and gold — the owner's team
+   found that pairing too loud/unsober, so they were swapped for a muted stone grey and a muted
+   sage green. Deliberately kept OUT of the blue family so Distance still owns blue alone.)
    Crimson and wine are both reds, deliberately — they are the two UK buckets, and they differ in
    LIGHTNESS far more than the old blues did (bright vs very dark), so they stay separable while
-   still hinting that they belong together. Gold vs the LPG tan and fuchsia vs the E/ETOH rose are
-   the two tightest calls in the set: in both cases the bucket colour is far more saturated than
-   the muted fuel colour, and the two never appear in the same panel — only side by side in the
-   rail's checkbox list.
+   still hinting that they belong together. Stone grey (To-EU) vs the LPG tan and sage green
+   (From-EU) vs the bio-fuel yellow-greens are the tightest calls in the set: in both cases the
+   bucket colour is deliberately muted/mid-tone rather than saturated, and the two never appear in
+   the same panel — only side by side in the rail's checkbox list.
 
    NOT COLOUR-BLIND SAFE, and this is a real limitation rather than an oversight: crimson/wine vs
-   gold, and fuchsia vs grey, are the classic confusions under deuteranopia/protanopia (~8% of
-   men). Charcoal, cyan and grey stay separable. Flagged to the owner; the fix, if it is ever
-   needed, is to add a per-bucket SVG pattern (hatch direction / dot density) on top of the fill
-   so the distinction does not rest on hue at all — the hatch machinery already exists in
-   zngChart() for the excluded-column and unmatched-report cases. */
+   sage green, and stone grey vs the neutral "none" grey, are the classic confusions under
+   deuteranopia/protanopia (~8% of men). Charcoal, cyan and grey stay separable. Flagged to the
+   owner; the fix, if it is ever needed, is to add a per-bucket SVG pattern (hatch direction / dot
+   density) on top of the fill so the distinction does not rest on hue at all — the hatch machinery
+   already exists in zngChart() for the excluded-column and unmatched-report cases. */
 var ZNG_DIST_COL = "#2563eb";
 var ZNG_ZONE_COL = {
   /* keyed BY ID, so the 2026-07-31i re-ordering and re-labelling of ZNG_ZONES did not touch this
      map at all — only the label words in these comments changed. */
   euEU:"#111827",     // charcoal  — EU-EU, 100% both ends
   atEU:"#06b6d4",     // cyan      — At-EU (EU berth), 100%
-  toEU:"#d946ef",     // fuchsia   — To-EU, the 50% band inbound
-  fromEU:"#facc15",   // gold      — From-EU, the 50% band outbound
+  toEU:"#78716c",     // warm stone grey — To-EU, the 50% band inbound (2026-07-31j: replaced fuchsia,
+                       // owner disliked the pink/gold pair; kept OUT of the blue family on purpose —
+                       // see the "no bucket may be blue" rule above, Distance already owns blue)
+  fromEU:"#7a8c5e",   // muted sage green — From-EU, the 50% band outbound (2026-07-31j: replaced gold,
+                       // same instruction)
   intraUK:"#dc2626",  // crimson   — UK-UK, 100%
   atUK:"#831843",     // wine      — At-UK (UK berth), 100%
   none:"#9ca3af"      // grey      — scores 0% for both regimes; not a compliance category
@@ -482,15 +495,40 @@ function zngPanelMax(pts, panel, fuelsOn){
      • Eligibility is a PERCENTAGE. Percentages of different reports do not add.
    Both simply render nothing, rather than a "—", so the row stays visually quiet. */
 var ZNG_NO_TOTAL = { rob:1, elig:1 };
-function zngPanelTotal(pts, panel, fuelsOn){
+/* Returns { total:Number, parts:[{f,v,c}] | null }, or null for a panel that must not be totalled.
+   `parts` is null for Distance (not a per-fuel quantity); for the consumption panels it carries ONE
+   ENTRY PER FUEL IN THE WORKSPACE — including the fuels you have unticked, which report 0.00 rather
+   than disappearing (2026-07-31k, owner instruction: "if a particular fuel type is filtered out,
+   then that particular fuel value will show zero"). That is why this walks `fuels` (all of them)
+   and not `fuelsOn`: a vanishing row would make you re-count the list to notice what is missing,
+   whereas an explicit zero says "filtered out" at a glance. The invariant from 07-31i still holds —
+   the parts add up to `total`, and `total` is still exactly the visible stack, because an unticked
+   fuel contributes 0 to both.
+   Colour index is the fuel's position in D.fuels (NOT in fuelsOn), so a swatch here always matches
+   the same fuel's swatch in the rail even after other fuels are unticked. */
+function zngPanelTotal(pts, panel, fuels, fuelsOn){
   if(ZNG_NO_TOTAL[panel.id]) return null;
-  var t = 0;
-  for(var i = 0; i < pts.length; i++){
-    if(panel.kind === "single") t += Number(pts[i].dist) || 0;
-    else if(panel.kind === "stack") t += zngSegs(pts[i], panel, fuelsOn).sum;
-    else return null;                       /* an unknown panel kind gets no total, not a wrong one */
+  var i, t = 0;
+  if(panel.kind === "single"){
+    for(i = 0; i < pts.length; i++) t += Number(pts[i].dist) || 0;
+    return { total:t, parts:null };
   }
-  return t;
+  if(panel.kind !== "stack") return null;   /* an unknown panel kind gets no total, not a wrong one */
+  var on = {};
+  for(i = 0; i < fuelsOn.length; i++) on[fuelsOn[i]] = 1;
+  var parts = [];
+  for(var k = 0; k < fuels.length; k++){
+    var f = fuels[k], v = 0;
+    if(on[f]){
+      for(i = 0; i < pts.length; i++){
+        var bag = pts[i][panel.id] || {};
+        v += Number(bag[f]) || 0;
+      }
+    }
+    t += v;
+    parts.push({ f:f, v:v, c:zngFuelColour(f, k), off:!on[f] });
+  }
+  return { total:t, parts:parts };
 }
 /* The markup for that layer. These divs are absolutely positioned children of .zng-panes, NOT of
    .zng-inner — that is the whole point and is load-bearing:
@@ -509,17 +547,34 @@ function zngTotalsLayer(D){
     : "all " + pts.length + " report(s) in the window (no Scope filter applied)";
   var out = "";
   for(var i = 0; i < P.length; i++){
-    var pn = P[i], v = zngPanelTotal(pts, pn, fuelsOn);
-    if(v == null) continue;
-    var dp = (v >= 100) ? 0 : (v >= 10 ? 1 : 2);
+    var pn = P[i], T = zngPanelTotal(pts, pn, D.fuels, fuelsOn);
+    if(T == null) continue;
+    /* ONE decimal setting for the whole row, taken from the panel total — so the per-fuel figures
+       and the combined figure line up instead of one showing 2 decimals and its neighbour none. */
+    var dp = (T.total >= 100) ? 0 : (T.total >= 10 ? 1 : 2);
     var tip = pn.title + " — total over " + scopeNote +
-              (pn.kind === "stack" ? ", counting only the fuels you have ticked" : "") +
-              ". It always equals the sum of the bars you can see in this panel.";
+              (T.parts ? ", split by fuel. A fuel you have unticked reads 0.00 rather than " +
+                         "disappearing, so the list of fuels never changes shape" : "") +
+              ". The combined figure always equals the sum of the bars you can see in this panel.";
+    var split = "";
+    if(T.parts){
+      for(var q = 0; q < T.parts.length; q++){
+        var pt = T.parts[q];
+        split += '<span class="f' + (pt.off ? " off" : "") + '">' +
+                 '<i class="sw" style="background:' + zngEsc(pt.c) + '"></i>' +
+                 zngEsc(pt.f) + ' <b>' + zngEsc(zngNum(pt.v, dp)) + '</b></span>';
+      }
+      split = '<span class="fs">' + split + '</span>';
+    }
     out += '<div class="zng-tot" style="top:' + (zngPanelTop(i, ph) - 20) + 'px" title="' + zngEsc(tip) + '">' +
+           split +
            /* label wording is the owner's explicit pick (2026-07-31i): "Total 1,234 mt" — the row
               position plus the unit identify the parameter, and the full parameter name is in the
-              hover title above. He rejected repeating the panel name in the visible text. */
-           'Total <b>' + zngEsc(zngNum(v, dp)) + '</b> ' + zngEsc(pn.unit) +
+              hover title above. He rejected repeating the panel name in the visible text.
+              2026-07-31k: the per-fuel split goes BEFORE it, so the combined figure stays hard
+              against the right edge where it has always been and the eye can still scan a column
+              of totals down the page. */
+           '<span class="t">Total <b>' + zngEsc(zngNum(T.total, dp)) + '</b> ' + zngEsc(pn.unit) + '</span>' +
            '</div>';
   }
   return out;
@@ -892,10 +947,18 @@ function zngHoverAt(idx){
     var portTxt = rep.portN || rep.cur || "";
     var ctryDisp = String(rep.ctry || "").replace(/\s*\(the\)\s*$/i, "");
     var portLbl = [portTxt, ctryDisp].filter(Boolean).join(" — ");
-    head.innerHTML = '<b>' + zngEsc(zngStamp(p.t)) + '</b>' +
-      '<span class="zng-chip">' + zngEsc(p.role || p.rt || "report") + '</span>' +
-      '<span class="zng-chip zng-chip2">' + zngEsc(zoneLbl) + '</span>' +
-      (portLbl ? '<span class="zng-chip zng-chip3">' + zngEsc(portLbl) + '</span>' : "");
+    /* 2026-07-31j (owner instruction): each of the 4 items below now sits in its OWN fixed-width
+       grid column (.zng-col, sized by .zng-row in styles.css) instead of packing left-to-right
+       in a plain flex row. Before this, a longer/shorter value in an earlier item (e.g. "ARRIVAL"
+       vs "IN_PORT") pushed every item after it sideways, so the owner's eye had to re-find each
+       field on every hover. All 4 columns are ALWAYS rendered, even when a field is empty (e.g.
+       no port on this report), so a slot never collapses and the columns after it never shift. */
+    head.innerHTML = '<span class="zng-row">' +
+      '<span class="zng-col zng-col-date"><b>' + zngEsc(zngStamp(p.t)) + '</b></span>' +
+      '<span class="zng-col zng-col-event"><span class="zng-chip">' + zngEsc(p.role || p.rt || "report") + '</span></span>' +
+      '<span class="zng-col zng-col-zone"><span class="zng-chip zng-chip2">' + zngEsc(zoneLbl) + '</span></span>' +
+      '<span class="zng-col zng-col-port">' + (portLbl ? '<span class="zng-chip zng-chip3">' + zngEsc(portLbl) + '</span>' : "") + '</span>' +
+    '</span>';
   }
 
   var flip = cx > P.W - 190;
@@ -1018,6 +1081,11 @@ function zngRender(){
         "remove anything from the timeline: an unticked zone's reports stay in their exact column " +
         "(the X axis never moves) but draw hatched/greyed in every panel, so a ruled-out period is " +
         "still visible where it happened.<br><br>" +
+        "<b>Totals</b> sit at the right-hand end of each parameter's own row, split by fuel and then " +
+        "combined. They follow both the Scope and the Fuel ticks, so a total always equals the bars " +
+        "you can actually see; a fuel you have unticked reads 0 rather than vanishing from the list. " +
+        "<b>ROB and Eligibility have no total</b> — ROB is a stock reading and Eligibility a " +
+        "percentage, and neither can be meaningfully added up.<br><br>" +
         "<b>ROB is a stock reading, not a flow.</b> It is stacked here by explicit instruction, but the " +
         "stack HEIGHT is the sum of separate tanks and has no physical meaning — read the individual " +
         "bands, not the top of the bar. (The Report-Wise table refuses to total ROB for this reason.)<br><br>" +
@@ -1034,7 +1102,7 @@ function zngRender(){
 
   var head =
     '<div class="znct-head">' +
-      '<h4>Graph<span style="color:#7a8896;font-weight:700;font-size:11px;letter-spacing:.05em"> · REPORT TIMELINE</span></h4>' + tip +
+      '<h4>Trends<span style="color:#7a8896;font-weight:700;font-size:11px;letter-spacing:.05em"> · REPORT TIMELINE</span></h4>' + tip +
       '<div class="znct-ctrls">' +
         '<span id="zng-head" class="zng-readout"><span class="zng-hint">Hover the chart to read every panel at once.</span></span>' +
         '<button type="button" class="znct-close" title="Close (Escape)" aria-label="Close" onclick="zngClose()">✕</button>' +
@@ -1094,7 +1162,7 @@ function zngRender(){
       '</div>';
   }
 
-  host.innerHTML = '<div class="znct-box zng-box" role="dialog" aria-modal="true" aria-label="Graph">' + head + body + '</div>';
+  host.innerHTML = '<div class="znct-box zng-box" role="dialog" aria-modal="true" aria-label="Trends">' + head + body + '</div>';
   if(D.nAll && P.length){
     /* zngChart() ran before this markup existed, so the axis and the date strip were built from
        the geometry it cached — repaint both now that ZNG.panels is current for these filters. */
@@ -1118,9 +1186,10 @@ function zngRender(){
     var b = document.createElement("button");
     b.type = "button";
     b.className = "znfs-graphbtn";
-    b.title = "Graph — distance, consumption by fuel, ROB and EU/UK eligibility across every " +
+    /* the class stays .znfs-graphbtn — internal name, see the NAMING note at the top of the file */
+    b.title = "Trends — distance, consumption by fuel, ROB and EU/UK eligibility across every " +
               "imported report, on one shared timeline.";
-    b.innerHTML = '<span class="ic">📈</span>Graph';
+    b.innerHTML = '<span class="ic">📈</span>Trends';
     b.onclick = function(){ zngToggle(); };
     /* leftmost item in the right-hand header group, ahead of Vessel Reporting / Year / Download */
     rt.insertBefore(b, rt.firstChild);

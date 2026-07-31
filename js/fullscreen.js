@@ -2528,7 +2528,7 @@ document.addEventListener("keydown", function(ev){
   if(ZNRD.open){ ev.preventDefault(); ev.stopPropagation(); znfsRegClose(); return; }
   if(ZNCT.open){ ev.preventDefault(); ev.stopPropagation(); znfsCiiTrendClose(); return; }
   if(typeof ZNFT !== "undefined" && ZNFT.open){ ev.preventDefault(); ev.stopPropagation(); znfsFeuTrendClose(); return; }
-  /* 2026-07-31: the Graph popup (js/graph.js) is layered on top of the overlay too, so it gets
+  /* 2026-07-31: the Trends popup (js/graph.js — internal name unchanged) is layered on top of the overlay too, so it gets
      the same one-layer-at-a-time peel. It is guarded with typeof because graph.js loads AFTER
      this file — the check must survive graph.js being absent (e.g. a partial build). */
   if(typeof ZNG !== "undefined" && ZNG.open){ ev.preventDefault(); ev.stopPropagation(); zngClose(); return; }

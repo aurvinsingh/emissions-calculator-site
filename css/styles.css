@@ -629,7 +629,7 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 .znct-box{background:#fff;border-radius:8px;box-shadow:0 18px 60px rgba(14,44,64,.34);
   width:min(1180px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}
 .znct-head{flex:0 0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-  padding:14px 18px 12px;border-bottom:1px solid #eef2f4}
+  padding:14px 18px 12px;border-bottom:1px solid #eef2f4;position:relative}
 .znct-head h4{margin:0;font-size:15px;font-weight:700;color:#0e2c40;letter-spacing:.01em}
 /* 2026-07-30b: the header ⓘ now carries the provenance text that used to sit under the chart.
    .ibpop is z-index 9600 while this popup is 9700, so WITHOUT this rule the balloon opens
@@ -1074,12 +1074,30 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    It lives in the gap the title band already reserves (ZNG_TTL, 24px in js/graph.js), so it costs
    the graphs no height at all — do not add margins here, that would be the one way to break that.
    right:10px clears the panes' vertical scrollbar. The translucent white backing exists because
-   the hover sync line is drawn full-height and would otherwise run through the digits. */
+   the hover sync line is drawn full-height and would otherwise run through the digits.
+
+   2026-07-31k: it now also carries the PER-FUEL split ahead of the combined figure, so the box can
+   get long. It is a flex row with a deliberate asymmetry — the split (.fs) is the part allowed to
+   shrink and ellipsis away, the combined "Total …" (.t) never shrinks. max-width keeps the whole
+   thing clear of the 106px axis column on a narrow window. If you make .t shrinkable you lose the
+   headline number first, which is exactly backwards. */
 .zng-tot{position:absolute;right:10px;z-index:2;height:14px;line-height:14px;white-space:nowrap;
   font-size:10px;font-weight:600;letter-spacing:.02em;color:#93a2ac;
   padding:0 4px;border-radius:3px;background:rgba(255,255,255,.86);
-  font-variant-numeric:tabular-nums}
+  font-variant-numeric:tabular-nums;
+  display:flex;align-items:center;gap:9px;max-width:calc(100% - 124px)}
 .zng-tot b{color:#0e2c40;font-weight:800;font-size:10.5px}
+.zng-tot .fs{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  text-align:right}
+.zng-tot .t{flex:0 0 auto}
+.zng-tot .f{margin-left:9px}
+.zng-tot .f:first-child{margin-left:0}
+.zng-tot .f .sw{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:3px;
+  vertical-align:baseline}
+/* a fuel you have unticked still holds its place, reading 0 — greyed so it is obviously filtered
+   out rather than genuinely zero (2026-07-31k, owner instruction) */
+.zng-tot .f.off{opacity:.4}
+.zng-tot .f.off b{color:#93a2ac;font-weight:600}
 
 /* the hovered report's stamp, in the popup header next to the ✕.
    2026-07-31d (owner bug report): the readout's own width used to change with its content (a
@@ -1094,16 +1112,45 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    left/right as later chips (port, country…) came and went, since it's whatever is closest to
    the fixed right edge that stays put, not the first item. flex-start pins the date itself to
    the box's own (now fixed) left edge — the one thing in this row that should never move. */
-.zng-readout{font-size:11px;color:#0e2c40;display:inline-flex;align-items:center;justify-content:flex-start;
-  flex-wrap:nowrap;gap:8px;font-variant-numeric:tabular-nums;
-  /* fixed width, not min/max — a flex ITEM's own box, not a text run, so text-overflow:ellipsis
-     does not apply here; overflow:hidden alone is the safety clamp if content ever runs long */
-  width:440px;max-width:44vw;overflow:hidden}
-.zng-readout>*{flex:0 0 auto}
+/* 2026-07-31j (owner instruction): the readout used to sit inline, right-anchored next to the
+   close button as part of .znct-ctrls — reasonable for keeping the BOX from moving (2026-07-31d/e
+   above), but it meant the row sat over the axis-label column, not over the bars a person is
+   actually hovering. It's now pulled out of the ctrls flow and centred, via position:absolute,
+   over the CHART PLOT AREA specifically (not the popup as a whole): .znct-head and .znct-body
+   share the same 18px left/right padding, so a plot-area centre of "50% + half the fixed axis
+   column width (ZNG_AXW/2 = 53px)" holds true for every popup width without needing JS to
+   measure anything — see the derivation in HANDOFF_LOG.md's 2026-07-31j entry. */
+/* 2026-07-31k (owner bug report, screenshot): equal 1fr columns split the row into ~104px
+   slots — too narrow for the DATE ("13 Mar 2026 00:00 UTC", 21 chars) and for some EVENT
+   values ("ARRIVAL · DEPARTURE" / raw report types like "DEPARTURE-SOSP"), so both got cut off
+   mid-word ("13 Mar 2026 00:0…", "DEPARTURE-S…") instead of being reserved room. Columns are now
+   sized to what each item TYPE actually needs — date and event get the most (fixed px, wide
+   enough for the longest real value in each), the EU/non-EU zone chip is always short so it gets
+   a small fixed slot, and PORT — the one field with genuinely unbounded length (port + country) —
+   takes whatever is left and is the only column allowed to ellipsis (owner-accepted: "truncation
+   in the port name is accepted if that is too long"). The row's own width grew from 440 to 560px
+   (max-width scaled the same 44vw→56vw ratio) to fit the wider fixed columns without starving
+   the port column down to nothing. The EVENT column in particular has to fit "ARRIVAL ·
+   DEPARTURE" (19 chars, the label for a single at-port report that is both ends — js/ui.js
+   line ~1086), the single longest value that column ever has to show. */
+.zng-readout{font-size:11px;color:#0e2c40;font-variant-numeric:tabular-nums;
+  width:580px;max-width:58vw;overflow:hidden;
+  position:absolute;left:calc(50% + 53px);top:50%;transform:translate(-50%,-50%)}
+.zng-readout .zng-hint{display:block;text-align:center;color:#9aa7b0;font-weight:600;font-style:italic}
+/* the fixed 4-slot grid: date | event | EU/non-EU zone | port. Every slot is ALWAYS rendered
+   (js/graph.js's zngHoverAt), even empty, so a missing port never collapses its column and
+   shifts the others — each item has one dedicated place on every hover, every time. Column
+   widths are NOT equal (see the note above) — date and event are the two fixed-width columns
+   that need the most room, zone is fixed but short, and port is the only flexible/ellipsing one. */
+.zng-row{display:grid;grid-template-columns:155px 175px 92px minmax(90px,1fr);
+  column-gap:8px;width:100%;align-items:center}
+.zng-col{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  display:flex;align-items:center;justify-content:flex-start}
+.zng-col>*{min-width:0}
 /* the rail's "N of M active" footnote — a visibly muted aside naming how many are excluded */
 .zng-dim2{color:#a6b2bb;font-weight:600}
-.zng-readout .zng-hint{color:#9aa7b0;font-weight:600;font-style:italic}
-.zng-chip{display:inline-block;padding:1px 7px;border-radius:9px;background:#eef3f6;
+.zng-chip{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;
+  padding:1px 7px;border-radius:9px;background:#eef3f6;
   color:#41525e;font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
 .zng-chip2{background:#e5eef3;color:#2b5a72}
 /* 2026-07-31c: the hovered report's port/country, when the raw MDA record carries one
