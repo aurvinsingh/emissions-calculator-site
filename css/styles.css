@@ -523,8 +523,60 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    strip and the cards goes 14px -> 34px (total gap with .znfs-parts' own 18px bottom padding:
    32px -> 52px, the airier ZeroNorth rhythm). Revert this one number to 14px to undo. */
 /* 2026-07-28k: top padding 34px -> 26px */
-.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:26px 30px 2px}   /* was 14px 30px 2px, then 34px 30px 2px */
-@media(max-width:1250px){.znfs-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* 2026-07-30m (Aurvin, owner instruction) — ONE ROW OF CARDS, ALWAYS.
+   THE BUG THIS FIXES, in plain language: the owner reported four cards laid out 3 + 1 on a
+   MacBook in full screen, leaving almost no height for the table. The cause was NOT the number
+   of cards — it was the two width breakpoints that used to live here. A MacBook full-screen
+   viewport is about 1440-1512 CSS pixels, i.e. UNDER the old 1600px rule, so the grid dropped to
+   3 columns and the fourth card wrapped onto a second row. It did that with four cards and would
+   have done it with five.
+   THE FIX: the column count now follows the number of cards actually being shown, not the width
+   of the window. js/fullscreen.js writes that count onto the element as data-n (1-4) each time it
+   repaints the strip, and the four rules below read it. minmax(0,1fr) makes the visible cards
+   share the full width equally, so unticking one in "▦ Edit columns" EXPANDS the rest instead of
+   leaving a hole — 3 selected gives 3 wide cards, 1 selected gives 1 very wide card.
+   NO WIDTH BREAKPOINT REMAINS above 760px: the owner asked for one row at every desktop and
+   laptop width, accepting that the cards get narrower rather than wrapping. The compaction block
+   below keeps them legible while they shrink. The 760px phone rule further down this file DOES
+   still stack them, because four cards on a phone would be ~70px wide each; that is the one
+   deliberate exception and it never fires on a laptop.
+   (2026-07-30h had made this 5 columns for the Sea Cargo Charter card. That card was deleted in
+   07-30m, so the maximum is 4 again.) */
+.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:26px 30px 2px}   /* was 14px 30px 2px, then 34px 30px 2px; 5 cols during 07-30h..l */
+.znfs-kpis[data-n="1"]{grid-template-columns:minmax(0,1fr)}
+.znfs-kpis[data-n="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+.znfs-kpis[data-n="3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+.znfs-kpis[data-n="4"]{grid-template-columns:repeat(4,minmax(0,1fr))}
+/* 2026-07-30m: because the cards may now be squeezed instead of wrapped, they are allowed to get
+   quietly tighter as the window narrows. This changes SPACING AND TYPE SIZE ONLY — no content is
+   dropped and no card is hidden, so nothing a test asserts on can move. Two steps, both well
+   below any MacBook full-screen width, so the normal case is untouched. */
+@media(max-width:1180px){
+  .znfs-kpis{gap:9px;padding:20px 18px 2px}
+  .znk>h3{padding:7px 10px;font-size:11.5px}
+  .znk .body{padding:8px 10px 9px;gap:4px}
+  .znk .hero .n{font-size:20px}
+  .znk .hero .u,.znk .kvz{font-size:11px}
+}
+@media(max-width:980px){
+  .znfs-kpis{gap:7px;padding:16px 14px 2px}
+  .znk>h3{padding:6px 8px;font-size:11px;letter-spacing:0}
+  .znk .body{padding:7px 8px 8px}
+  .znk .hero{gap:5px}
+  .znk .hero .n{font-size:17px;letter-spacing:-0.4px}
+  .znk .hero .u,.znk .kvz{font-size:10.5px}
+}
+/* 2026-07-30h: the cards are buttons now (znkOpen() in js/fullscreen.js). The affordance is
+   deliberately quiet — a chevron in the header and a lift on hover — because five cards all
+   shouting "click me" would fight the numbers for attention. */
+.znk-click{cursor:pointer;transition:border-color .12s ease,box-shadow .12s ease,transform .12s ease}
+.znk-click:hover{border-color:#9ec9d0;box-shadow:0 6px 18px rgba(14,44,64,.10);transform:translateY(-1px)}
+.znk-click:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.znk-click>h3::after{content:"›";margin-left:6px;font-size:15px;line-height:1;color:#9aa9b5;font-weight:700}
+.znk-click:hover>h3::after{color:#0e7c8a}
+/* the year stamp is margin-left:auto, so it would push the chevron to the far right and away
+   from the title. Order matters: chevron immediately after the words, year hard right. */
+.znk-click>h3 .yr{order:2}
 .znk{background:#fff;border:1px solid #e6eaed;border-radius:4px;display:flex;flex-direction:column;min-width:0}
 .znk>h3{margin:0;padding:8px 13px;border-bottom:1px solid #eef2f4;font-size:12.5px;font-weight:700;   /* was 13px 16px / 14.5px */
   color:#0e2c40;display:flex;align-items:center;gap:8px;letter-spacing:.02em}
@@ -545,6 +597,181 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 .znk .note{margin:0;font-size:11.5px;color:#8a97a3;line-height:1.45}
 /* the VOYAGES caption on the tab row borrows .znk .note — keep it from eating the row */
 .znfs-tabs .znk.note{font-size:11px;max-width:330px}
+
+/* ---- 2026-07-30 (Aurvin, owner instruction): "Year to date CII" trend popup ----
+   The IMO card's hero row gets a small trend-graph button. Owner chose this position
+   ("right of the CII pill, beside 'required 4.716'") over the card heading, so it sits in
+   the hero's own empty right-hand strip — margin-left:auto pushes it there, which is the
+   same trick .znk>h3 .yr and .znk .kvz b already use, so nothing else in the card moves.
+   The button is a direct child of .hero and .hero keeps its own title attribute untouched —
+   an element's own title already beats an ancestor's while the pointer is over it, so the
+   button needs no wrapper to get its own tooltip. (An earlier draft added one and broke
+   verify_fullscreen_view.js's "the unit lives in the hero tooltip" check — see the matching
+   note in js/fullscreen.js. Do not reintroduce it.) */
+.znk-trendbtn{margin-left:auto;align-self:center;flex:0 0 auto;display:inline-flex;
+  align-items:center;justify-content:center;width:26px;height:26px;padding:0;cursor:pointer;
+  background:#fff;border:1px solid #dde4e8;border-radius:5px;color:#0e7c8a;
+  transition:background .12s ease,border-color .12s ease,color .12s ease}
+.znk-trendbtn:hover{background:var(--blue2);border-color:#9ec9d0;color:#0a5f6b}
+.znk-trendbtn:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.znk-trendbtn svg{width:15px;height:15px;display:block;pointer-events:none}
+
+/* ---- the popup itself ----
+   z-index 9700 is DELIBERATE and must stay above BOTH #znfs (9000) and body.znfs-open
+   .ibpop (9600). The 2026-07-22h note above explains why .ibpop was lifted to 9600; a
+   trend popup underneath it would let a stray ⓘ balloon from the card behind paint over
+   the chart. znfsCiiTrendOpen() also closes any open .ibpop for the same reason.
+   Do not lower either number without re-reading both notes. */
+#znfs-ciitrend{position:fixed;inset:0;z-index:9700;display:none;
+  align-items:center;justify-content:center;padding:24px;
+  background:rgba(14,44,64,.42);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+#znfs-ciitrend.on{display:flex}
+.znct-box{background:#fff;border-radius:8px;box-shadow:0 18px 60px rgba(14,44,64,.34);
+  width:min(1180px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}
+.znct-head{flex:0 0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:14px 18px 12px;border-bottom:1px solid #eef2f4}
+.znct-head h4{margin:0;font-size:15px;font-weight:700;color:#0e2c40;letter-spacing:.01em}
+/* 2026-07-30b: the header ⓘ now carries the provenance text that used to sit under the chart.
+   .ibpop is z-index 9600 while this popup is 9700, so WITHOUT this rule the balloon opens
+   UNDERNEATH the popup and the user sees nothing at all on clicking it — the same failure the
+   2026-07-22h note further up this file describes for the full-screen overlay. */
+#znfs-ciitrend .ibpop{z-index:9750}
+/* 2026-07-30e: the FuelEU compliance-balance trend popup reuses every .znct-* rule above (same
+   family look as the CII popup) — it only needs its own host id at the same z-index/backdrop
+   treatment, and the same .ibpop lift so its header ⓘ opens on top of it, not underneath. */
+#znfs-feutrend{position:fixed;inset:0;z-index:9700;display:none;
+  align-items:center;justify-content:center;padding:24px;
+  background:rgba(14,44,64,.42);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+#znfs-feutrend.on{display:flex}
+#znfs-feutrend .ibpop{z-index:9750}
+.znct-ctrls{margin-left:auto;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.znct-ctrl{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;color:#5c6c7a}
+.znct-ctrl select{font:inherit;font-weight:700;color:#0e2c40;background:#fff;
+  border:1px solid #dde4e8;border-radius:5px;padding:3px 6px;cursor:pointer}
+/* the compare switch — a checkbox drawn as the pill toggle in the owner's reference shot */
+.znct-sw{position:relative;flex:0 0 auto;width:34px;height:18px;cursor:pointer}
+.znct-sw input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
+.znct-sw i{position:absolute;inset:0;background:#d7dfe4;border-radius:9px;transition:background .15s ease;pointer-events:none}
+.znct-sw i::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;
+  background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(14,44,64,.3);transition:transform .15s ease}
+.znct-sw input:checked+i{background:var(--blue)}
+.znct-sw input:checked+i::after{transform:translateX(16px)}
+.znct-sw input:focus-visible+i{outline:2px solid var(--blue);outline-offset:2px}
+.znct-close{flex:0 0 auto;width:28px;height:28px;padding:0;cursor:pointer;font-size:15px;
+  line-height:1;background:#fff;border:1px solid #dde4e8;border-radius:5px;color:#5c6c7a}
+.znct-close:hover{background:#f4f7f8;color:#0e2c40}
+.znct-close:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+/* 2026-07-30b: bottom padding cut from 16px to 10px — the two grey notes that used to sit
+   below the chart are gone (owner instruction), so this space belongs to the drawing. The
+   chart's own viewBox grew 430→470 to take it. */
+.znct-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:10px 18px 10px;position:relative}
+.znct-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;font-size:11.5px;
+  font-weight:600;color:#5c6c7a;margin:0 0 4px}
+.znct-legend span{display:inline-flex;align-items:center;gap:6px}
+.znct-legend svg{display:block}
+/* shown only when the y-axis had to be raised past 1.85× the required CII to keep the curve
+   on the chart — see znfsCiiYScale(). Never silently: the reference line is off-centre then. */
+.znct-widened{color:#8a5a00;font-weight:700}
+.znct-chart{position:relative}
+.znct-chart svg{display:block;width:100%;height:auto}
+/* every note under the chart uses .znk .note's colour/size so the popup reads like the cards */
+.znct-note{margin:8px 0 0;font-size:11.5px;line-height:1.5;color:#8a97a3}
+.znct-note b{color:#0e2c40}
+.znct-warn{margin:8px 0 0;font-size:11.5px;line-height:1.5;color:#8a5a00;
+  background:#fdf6e6;border:1px solid #f0e0b8;border-radius:5px;padding:7px 10px}
+/* hover read-out — positioned by znfsCiiTrendHover(), styled after the reference shot */
+.znct-tip{position:absolute;z-index:2;display:none;pointer-events:none;min-width:190px;
+  background:#0f2a3a;color:#fff;border-radius:6px;padding:8px 10px;
+  box-shadow:0 8px 24px rgba(14,44,64,.4);font-size:11.5px;line-height:1.5}
+.znct-tip.on{display:block}
+.znct-tip .d{font-weight:700;font-size:12px;margin-bottom:5px}
+.znct-tip .r{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.znct-tip .r span{color:#c3d2db}
+.znct-tip .r b{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-weight:700}
+.znct-tip .rt{display:inline-block;min-width:15px;text-align:center;border-radius:3px;
+  padding:0 4px;color:#fff;font-weight:800;font-size:10.5px}
+
+/* ==========================================================================
+   REGULATION DETAIL DRAWER — 2026-07-30h (Aurvin, owner instruction)
+   ==========================================================================
+   Slides in from the RIGHT over the full-screen overlay. z-index 9700 puts it in the same
+   layer family as the two trend popups (and above body.znfs-open .ibpop at 9600) — read the
+   long z-index note above #znfs-ciitrend before changing either number.
+   TWO CLASSES, on purpose: `.on` sets display and is applied SYNCHRONOUSLY on open, so a DOM
+   check never has to wait for an animation frame; `.in` drives the transform and is added on
+   the next frame so the slide actually runs. Closing removes `.in` first and `.on` after the
+   transition, which is why znfsRegClose() has a 200ms timeout. */
+#znfs-regdrawer{position:fixed;inset:0;z-index:9700;display:none;
+  background:rgba(14,44,64,0);transition:background .2s ease}
+#znfs-regdrawer.on{display:block}
+#znfs-regdrawer.in{background:rgba(14,44,64,.34)}
+.znrd-box{position:absolute;top:0;right:0;height:100%;width:min(560px,100%);
+  background:#fff;box-shadow:-14px 0 44px rgba(14,44,64,.26);
+  display:flex;flex-direction:column;overflow:hidden;
+  transform:translateX(100%);transition:transform .22s cubic-bezier(.22,.61,.36,1)}
+#znfs-regdrawer.in .znrd-box{transform:none}
+#znfs-regdrawer .ibpop{z-index:9750}
+.znrd-head{flex:0 0 auto;display:flex;align-items:center;gap:10px;
+  padding:13px 16px 12px;border-bottom:1px solid #eef2f4;background:#fff}
+/* the title IS the regulation picker, matching the owner's reference screenshot where the
+   drawer heading is a dropdown. Styled to read as a heading, not as a form control. */
+.znrd-pick{font:inherit;font-size:15px;font-weight:700;color:#0e2c40;letter-spacing:.01em;
+  background:#fff;border:1px solid transparent;border-radius:5px;padding:2px 4px;cursor:pointer;
+  max-width:340px}
+.znrd-pick:hover{border-color:#dde4e8;background:#f7fafb}
+.znrd-pick:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.znrd-yr{margin-left:auto;font-size:10.5px;font-weight:700;color:#7a8896;letter-spacing:.05em}
+.znrd-close{flex:0 0 auto;width:28px;height:28px;padding:0;cursor:pointer;font-size:15px;
+  line-height:1;background:#fff;border:1px solid #dde4e8;border-radius:5px;color:#5c6c7a}
+.znrd-close:hover{background:#f4f7f8;color:#0e2c40}
+.znrd-close:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+.znrd-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 16px 22px}
+/* one section = one heading + its key/value rows. Section headings borrow the card header's
+   weight so the drawer reads as a continuation of the card it opened from. */
+.znrd-sec{padding:12px 0 2px;border-bottom:1px solid #f2f5f7}
+.znrd-sec:last-child{border-bottom:0}
+.znrd-sec>h5{margin:0 0 6px;font-size:12.5px;font-weight:700;color:#0e2c40;letter-spacing:.02em}
+.znrd-sub{margin:9px 0 2px;font-size:10.5px;font-weight:700;color:#7a8896;letter-spacing:.06em;
+  text-transform:uppercase}
+.znrd-kv{display:flex;align-items:baseline;gap:12px;font-size:11.5px;color:#5c6c7a;
+  padding:4px 0;border-top:1px solid #f7f9fa}
+.znrd-kv:first-of-type{border-top:0}
+.znrd-kv>b{margin-left:auto;color:#0e2c40;font-weight:700;text-align:right;white-space:nowrap}
+/* a total row: heavier rule above it and a darker label, so the eye can find the figure that
+   the rows above add up to without reading them all */
+.znrd-kv.znrd-tot{border-top:1px solid #dde4e8;margin-top:3px;padding-top:6px;color:#0e2c40;font-weight:700}
+.znrd-pos{color:#1d7a3e}
+.znrd-neg{color:#b3261e}
+.znrd-dim{color:#8a97a3;font-weight:400}
+.znrd-rate{display:inline-block;min-width:18px;text-align:center;border-radius:3px;padding:1px 6px;
+  color:#fff;font-weight:800;font-size:11px}
+.znrd-note{margin:8px 0 2px;font-size:11px;line-height:1.5;color:#8a97a3}
+.znrd-note b{color:#0e2c40}
+.znrd-note code{font-size:10.5px;background:#f4f7f8;border-radius:3px;padding:0 3px}
+/* engine warnings surfaced next to the figure they qualify */
+.znrd-warn{margin:6px 0 0;font-size:11px;line-height:1.5;color:#8a5a00;
+  background:#fdf6e6;border:1px solid #f0e0b8;border-radius:5px;padding:7px 9px}
+/* the ONE line that says why a regulation does not bite (owner decision 5 — dashes alone read
+   as a broken calculator, not as an inapplicable rule). Blue, not amber: this is information,
+   not a warning about the data. */
+.znrd-reason{margin:12px 0 2px;font-size:11.5px;line-height:1.55;color:#0e4a5a;
+  background:var(--blue2);border:1px solid #c3dee3;border-radius:5px;padding:9px 11px}
+.znrd-tbl{width:100%;border-collapse:collapse;font-size:11px;margin:4px 0 2px}
+.znrd-tbl th{text-align:left;font-weight:700;color:#5c6c7a;padding:4px 6px 5px;
+  border-bottom:1px solid #dde4e8;white-space:nowrap}
+.znrd-tbl td{padding:4px 6px;border-bottom:1px solid #f4f7f8;color:#0e2c40;vertical-align:top}
+.znrd-tbl th.r,.znrd-tbl td.r{text-align:right}
+.znrd-tbl tr.znrd-dim td{color:#8a97a3}
+.znrd-tbl tr.znrd-trtot td{font-weight:700;border-top:1px solid #dde4e8;border-bottom:0}
+/* the per-voyage SCC table has eight columns and will not fit 560px — it scrolls sideways
+   inside the drawer rather than forcing the drawer wider for one table. */
+.znrd-tbl.znrd-wide{display:block;overflow-x:auto;white-space:nowrap}
+@media(max-width:640px){.znrd-box{width:100%}}
+@media(max-width:820px){
+  .znct-head{padding:12px 14px 10px}
+  .znct-ctrls{margin-left:0;width:100%;gap:14px}
+  .znct-body{padding:10px 14px 14px}
+}
 
 /* ---- lower section: tab pills + the relocated real tables ---- */
 /* 2026-07-28b (Aurvin, owner instruction — "Task 2"): this row now holds the Year / From / To
@@ -594,11 +821,307 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 @media(max-width:760px){
   .znfs-rail{display:none}
   .znfs-top{padding:10px 14px 0}
-  .znfs-kpis{grid-template-columns:1fr;padding:12px 14px 4px}
+  /* 2026-07-30m: the ONE place the cards are still allowed to stack. Overrides every
+     [data-n] rule above (same specificity, later in the file). Phone widths only. */
+  .znfs-kpis,.znfs-kpis[data-n]{grid-template-columns:1fr;padding:12px 14px 4px}
   .znfs-tabs{padding:10px 14px 8px;flex-wrap:wrap}
   .znfs-filters{margin-left:0;flex-wrap:wrap}
   .znfs-title{margin:6px 0 12px}
   .znfs-title h1{font-size:22px}
   .znfs-parts{padding-bottom:10px}
   #znfs-slot{padding:0 14px 16px}
+}
+
+
+/* ==========================================================================
+   EDIT COLUMNS PICKER — 2026-07-30i, layout revised 2026-07-30j
+   ==========================================================================
+   The "▦ Edit columns" button on the full-screen tab row, and the panel it opens.
+   See js/columns.js for the behaviour.
+
+   2026-07-30j (Aurvin, bug report + owner instruction) — WHAT WENT WRONG AND WHY:
+   the first version scrolled SIDEWAYS and every label was shoved off the right edge.
+   The cause was NOT the panel's width. It was a collision with this file's own global
+   rule at the top —  `input,select{width:100%;padding:6px 8px;border:...}`  — which the
+   30i rules never reset, so each checkbox was rendering as wide as its whole row.
+   `.emc-row input` below now resets width/padding/border explicitly, exactly the way
+   `.chk input{width:auto}` further up this file already does for the same reason.
+   `label{display:block;margin:7px 0 2px}` (also global, same block) was likewise
+   inflating every row's height, so `.emc-row` resets margin too.
+   BELT AND BRACES: `.emc-body` sets `overflow-x:hidden` and every flex child that holds
+   text sets `min-width:0`, so no future long label can bring the sideways scrollbar back.
+
+   Layout, per the owner's four answers on 2026-07-30j:
+     • CENTRED floating panel (not the edge drawer 30i shipped, not an anchored dropdown).
+     • NO dimmed backdrop — the click-catcher is fully transparent. The panel therefore
+       needs its own strong shadow and border to read as floating rather than as part of
+       the page. NOTE the known trade-off, flagged to the owner at the time: a centred
+       panel covers the table it is editing, so the effect of a tick is not visible until
+       the panel is closed.
+     • Height CAPPED (never full-screen) with the list scrolling vertically inside.
+     • Footer carries "N of M shown · Show all · Reset", mirroring the reference product.
+   The two-class pattern (.on for display, .in for the animation) is kept from
+   #znfs-regdrawer so a DOM check never has to wait for an animation frame. */
+.emcols-btn{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;
+  border:1px solid var(--blue,#0e7f96);background:#fff;color:var(--blue,#0e7f96);
+  border-radius:4px;padding:5px 10px;font:inherit;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap;line-height:1.2}
+.emcols-btn:hover{background:var(--blue2,#eaf5f7)}
+.emcols-btn:focus-visible{outline:2px solid var(--blue,#0e7f96);outline-offset:1px}
+.emcols-btn .ic{font-size:13px;line-height:1}
+/* count of currently hidden items — a hidden column must never be invisible in
+   both senses at once, so the button says how many things are switched off */
+.emcols-btn .badge{display:inline-block;min-width:16px;text-align:center;
+  background:var(--blue,#0e7f96);color:#fff;border-radius:9px;padding:0 5px;
+  font-size:10.5px;font-weight:700;line-height:16px}
+
+/* the full-screen click-catcher. Transparent by owner's choice — it exists only so a
+   click anywhere outside the panel closes it. It does NOT lay the panel out:
+   2026-07-30k (Aurvin, owner instruction) moved the panel from centred to ANCHORED under the
+   ▦ Edit columns button, and an anchored panel has to be positioned from that button's measured
+   screen position, which only JavaScript can know — see emcolsPosition() in js/columns.js.
+   `top` / `right` / `max-height` are therefore set as INLINE styles by that function; the values
+   below are the fallback used if the button cannot be found (e.g. the panel opened from a test
+   with the overlay closed), so the panel is never left stranded at 0,0. */
+#emcols{position:fixed;inset:0;z-index:9700;display:none;background:transparent}
+#emcols.on{display:block}
+.emc-box{position:absolute;top:64px;right:16px;
+  width:min(370px,calc(100vw - 32px));
+  /* never full height: the shorter of 560px and 78% of the window. emcolsPosition() tightens
+     this further when there is less room than that below the button. */
+  max-height:min(560px,78vh);
+  background:#fff;border:1px solid #dde4e8;border-radius:10px;
+  box-shadow:0 18px 48px rgba(14,44,64,.28),0 2px 8px rgba(14,44,64,.12);
+  display:flex;flex-direction:column;overflow:hidden;
+  /* the panel grows out of its button, so the animation starts at the corner nearest it */
+  transform-origin:top right;
+  opacity:0;transform:translateY(-6px) scale(.985);
+  transition:opacity .16s ease,transform .16s cubic-bezier(.22,.61,.36,1)}
+#emcols.in .emc-box{opacity:1;transform:none}
+/* the button stays visibly "pressed" while its panel is open, so the link between the two is
+   obvious even though there is no dimmed backdrop to make the panel read as modal */
+.emcols-btn.on{background:var(--blue,#0e7f96);color:#fff}
+.emcols-btn.on .badge{background:#fff;color:var(--blue,#0e7f96)}
+
+.emc-head{flex:0 0 auto;padding:14px 16px 10px;border-bottom:1px solid #eef2f4;background:#fff}
+.emc-headrow{display:flex;align-items:center;gap:10px}
+.emc-headrow b{font-size:14.5px;font-weight:700;color:#0e2c40;letter-spacing:.01em;
+  flex:1 1 auto;min-width:0}
+.emc-sub{margin:3px 0 0;font-size:11.5px;color:#8a97a3;line-height:1.4}
+.emc-close{flex:0 0 auto;width:26px;height:26px;padding:0;cursor:pointer;
+  font-size:14px;line-height:1;background:#fff;border:1px solid #dde4e8;border-radius:5px;color:#5c6c7a}
+.emc-close:hover{background:#f4f7f8;color:#0e2c40}
+.emc-close:focus-visible{outline:2px solid var(--blue,#0e7f96);outline-offset:1px}
+
+/* the scrolling list. overflow-x:hidden is deliberate — see the note at the top of
+   this section; overflow-y:auto alone would make the x-axis "auto" as well. */
+.emc-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:4px 14px 14px}
+.emc-sec{padding:10px 0 2px;border-bottom:1px solid #f2f5f7}
+.emc-sec:last-child{border-bottom:0}
+/* section heading: small, uppercase, muted — the reference product's treatment */
+.emc-sech{display:flex;align-items:center;gap:6px;margin:2px 0 4px}
+.emc-sech>span{font-size:10px;font-weight:700;color:#8a97a3;letter-spacing:.07em;
+  text-transform:uppercase;min-width:0}
+/* the ⓘ that now carries the explanations that used to sit in the panel as paragraphs */
+.emc-i{flex:0 0 auto;width:14px;height:14px;border-radius:50%;border:1px solid #c9d3da;
+  color:#8a97a3;font-size:9.5px;font-weight:700;line-height:12px;text-align:center;
+  cursor:help;background:#fff;font-style:normal}
+.emc-i:hover{border-color:#8a97a3;color:#5c6c7a}
+.emc-warn{margin:4px 0 6px;font-size:10.5px;line-height:1.45;color:#8a5a00;
+  background:#fdf6e6;border:1px solid #f0e0b8;border-radius:5px;padding:6px 8px}
+.emc-warn b{color:#6b4600}
+
+/* one clickable line = one card, one group, or one column.
+   `margin:0` resets the global label rule; `width:auto` on the input resets the global
+   input rule — both are what the 30i version was missing. */
+.emc-row{display:flex;align-items:center;gap:9px;margin:0;padding:4px 6px;border-radius:5px;
+  cursor:pointer;font-size:12px;color:#0e2c40;user-select:none;min-width:0}
+.emc-row:hover{background:#f4f7f8}
+.emc-row input{width:auto;flex:0 0 auto;margin:0;padding:0;border:0;background:none;
+  border-radius:0;cursor:pointer;accent-color:var(--blue,#0e7f96)}
+.emc-row input:focus{outline:2px solid #a9d4da;outline-offset:1px}
+.emc-row .tx{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.emc-row .lock{flex:0 0 auto;font-size:9.5px;opacity:.5}
+/* locked or not-yet-wired rows: still readable, visibly not actionable */
+.emc-row.off{cursor:default;color:#8a97a3}
+.emc-row.off:hover{background:transparent}
+.emc-row.off input{cursor:default}
+/* a group heading line, then its columns indented beneath it */
+.emc-grpwrap{margin:5px 0 2px}
+.emc-row.emc-grp{font-weight:700;font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em;color:#475569}
+.emc-row.emc-col{margin-left:20px;font-size:12px}
+
+.emc-foot{flex:0 0 auto;display:flex;align-items:center;gap:12px;
+  padding:9px 16px;border-top:1px solid #eef2f4;background:#fbfdfd}
+.emc-count{font-size:11px;color:#8a97a3;flex:1 1 auto;min-width:0}
+.emc-link{border:0;background:none;padding:0;font:inherit;font-size:11.5px;font-weight:700;
+  color:var(--blue,#0e7f96);cursor:pointer;flex:0 0 auto}
+.emc-link:hover{text-decoration:underline}
+.emc-link:focus-visible{outline:2px solid var(--blue,#0e7f96);outline-offset:2px;border-radius:3px}
+.emc-link[disabled]{color:#b3bfc7;cursor:default;text-decoration:none}
+
+/* ============================================================================================
+   GRAPH POPUP (js/graph.js) — 2026-07-31, revised 2026-07-31b after the owner's screenshot
+   Reuses the .znct-* popup chrome (box, head, close button) so it looks identical to the CII
+   and FuelEU trend popups; only the body layout below is new. Host id sits at the same
+   z-index 9700 as #znfs-ciitrend, with .ibpop lifted to 9750 inside it for the same reason —
+   see the long z-index note above #znfs-ciitrend before changing either number.
+
+   THREE BUGS THE 07-31b RULES FIX (owner screenshot) — do not undo these:
+     1. checkbox LABELS were invisible. `.zng-ck span` had min-width:0 + overflow:hidden but no
+        flex-basis, so as a flex item it collapsed to zero width. It now carries flex:1 1 auto.
+     2. the DATE AXIS looked missing. Eight panels are ~1000px tall, so it fell below the fold
+        inside one scrolling box. It now lives in .zng-xrow, PINNED under the scrolling
+        .zng-panes, and only its horizontal scroll is mirrored from the plot.
+     3. the TOOLTIPS were dark-on-dark-ish and hard to read; they are now white cards with a
+        border and dark text.
+
+   2026-07-31c (owner screenshot, second round) — the flex:1 1 auto fix above turned out to be
+   only HALF the fix: `.zng-ck input` never reset `width`, so every checkbox still inherited the
+   file's global `input,select{width:100%}` rule (near the top of this file). With flex-basis:auto
+   and width:100%, the checkbox's basis resolved to 100% of the ROW, not its own intrinsic size —
+   so it claimed the whole row and left nothing for the span/unit to sit in, even though flex:1 1
+   auto on the span was correct. This is the exact same collision already diagnosed for the Edit
+   Columns picker below (`.emc-row input`) — `.zng-ck input` was just never given the matching
+   reset. Fixed by adding width:auto/padding:0/border:0/background:none, same as `.emc-row input`.
+   ============================================================================================ */
+#znfs-graph{position:fixed;inset:0;z-index:9700;display:none;
+  align-items:center;justify-content:center;padding:18px;
+  background:rgba(14,44,64,.42);-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+#znfs-graph.on{display:flex}
+#znfs-graph .ibpop{z-index:9750}
+.zng-box{width:min(1600px,100%)}
+/* the body is a two-column layout: the checkbox rail is fixed-width and the chart takes the
+   rest. min-width:0 on the chart column is what lets the inner scroller actually scroll
+   instead of stretching the whole popup. */
+.zng-body{display:flex;gap:0;align-items:stretch;padding:0 !important;overflow:hidden;min-height:0}
+.zng-rail{flex:0 0 176px;border-right:1px solid #eef2f4;background:#fbfdfd;
+  padding:12px 12px 10px;overflow-y:auto}
+.zng-grp{margin-bottom:13px}
+.zng-gh{display:flex;align-items:baseline;gap:6px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;color:#5c6c7a;margin-bottom:5px;
+  padding-bottom:3px;border-bottom:1px solid #eef2f4}
+.zng-gh .t{flex:0 0 auto}
+.zng-all{margin-left:auto;flex:0 0 auto;font-size:10px;font-weight:600;text-transform:none;letter-spacing:0}
+.zng-all a{color:var(--blue,#0e7f96);text-decoration:none}
+.zng-all a:hover{text-decoration:underline}
+.zng-ck{display:flex;align-items:center;gap:7px;padding:2.5px 0;cursor:pointer;
+  font-size:11.5px;font-weight:600;color:#3d4f5d;line-height:1.25}
+/* width:auto/padding:0/border:0/background:none reset the global input,select{width:100%;
+   padding:6px 8px;border:1px solid var(--line)} rule near the top of this file — without it the
+   checkbox's flex-basis:auto resolves to 100% of the row and the label never gets any space
+   (2026-07-31c, see the note above .zng-box). */
+.zng-ck input{margin:0;flex:0 0 auto;width:auto;padding:0;border:0;background:none;
+  accent-color:var(--blue,#0e7f96);cursor:pointer}
+.zng-ck .sw{flex:0 0 auto;width:11px;height:11px;border-radius:2px;display:inline-block}
+/* flex:1 1 auto is load-bearing — without a basis this collapses and the label disappears */
+.zng-ck span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zng-ck .zng-u{flex:0 0 auto;font-style:normal;font-size:9.5px;font-weight:600;color:#a3b0b9}
+.zng-ck:hover{color:#0e2c40}
+.zng-empty{margin:2px 0 0;font-size:11px;color:#98a5ae}
+.zng-count{margin:12px 0 0;padding-top:9px;border-top:1px solid #eef2f4;
+  font-size:10.5px;color:#8a97a3;line-height:1.45}
+.zng-count b{color:#0e2c40}
+
+/* chart column: panes scroll vertically, the date row is pinned under them */
+.zng-chart{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;overflow:hidden;
+  padding:10px 12px 10px 10px}
+/* position:relative added 2026-07-31i — it is what makes the .zng-tot totals resolve their
+   right/top against THIS box (which never scrolls sideways) instead of against .zng-inner. */
+.zng-panes{flex:1 1 auto;min-height:0;display:flex;align-items:flex-start;overflow-y:auto;overflow-x:hidden;
+  position:relative}
+.zng-axis{flex:0 0 auto}
+/* 2026-07-31h (owner instruction) — WHICH ELEMENT OWNS THE HORIZONTAL SCROLLBAR.
+   It used to be .zng-scroll, which sits INSIDE the vertically-scrolling .zng-panes. A browser
+   puts that scrollbar at the bottom of the scrolled CONTENT, so with a tall chart it sat below
+   the fold: you had to scroll DOWN before you could scroll SIDEWAYS. Now .zng-scroll is
+   overflow-x:hidden (still pannable — zngBindScrollSync() sets its scrollLeft from script) and
+   the real horizontal scrollbar lives on .zng-xscroll in the PINNED date row, which is outside
+   .zng-panes and therefore always on screen. The two are kept in lockstep both ways by
+   zngBindScrollSync(). Do not give .zng-scroll its scrollbar back — that reintroduces the bug. */
+.zng-scroll{flex:1 1 auto;min-width:0;overflow-x:hidden;overflow-y:hidden}
+.zng-inner{position:relative;display:inline-block;min-width:100%}
+.zng-xrow{flex:0 0 auto;display:flex;align-items:flex-start;border-top:1px solid #eef2f4;
+  margin-top:2px;padding-top:2px}
+.zng-xpad{flex:0 0 auto;font-size:9.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;color:#a3b0b9;padding-top:9px}
+/* overflow-x:auto (not :scroll) — the bar appears only when the chart is actually wider than the
+   pane, but because this row is pinned it is ALWAYS reachable when it does appear */
+.zng-xscroll{flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden}
+
+/* one tooltip per panel, all shown at once against the same sync line (owner's spec).
+   Light card with dark text — the first cut used a near-black card the owner found too dark. */
+.zng-tip{position:absolute;display:none;pointer-events:none;z-index:3;
+  min-width:132px;max-width:220px;background:#fff;color:#0e2c40;
+  border:1px solid #d3dde3;border-radius:5px;padding:5px 8px;font-size:10.5px;line-height:1.55;
+  box-shadow:0 5px 16px rgba(14,44,64,.16)}
+.zng-tip.on{display:block}
+.zng-tip .r{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.zng-tip .r span{flex:1 1 auto;color:#647684;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.zng-tip .r b{flex:0 0 auto;margin-left:auto;color:#0e2c40;font-weight:700;font-variant-numeric:tabular-nums}
+.zng-tip .r .sw{flex:0 0 auto;width:8px;height:8px;border-radius:2px;display:inline-block}
+.zng-tip .zng-sum{border-top:1px solid #e7edf1;margin-top:3px;padding-top:3px}
+.zng-tip .zng-sum span{color:#93a2ac;font-style:italic}
+.zng-tip .zng-sum b{color:#5c6c7a}
+.zng-tip .zng-dim span{color:#93a2ac;font-style:italic}
+/* caption drawn over an intentionally empty panel (no machinery split in the import) */
+.zng-cap{position:absolute;left:0;right:0;text-align:center;font-size:10.5px;color:#a6b2bb;
+  pointer-events:none;z-index:2}
+
+/* 2026-07-31i (owner instruction — Task 3): the per-panel total, sitting in the empty gap band
+   ABOVE each plot, on the same horizontal row as that panel's name in the left axis column.
+   It lives in the gap the title band already reserves (ZNG_TTL, 24px in js/graph.js), so it costs
+   the graphs no height at all — do not add margins here, that would be the one way to break that.
+   right:10px clears the panes' vertical scrollbar. The translucent white backing exists because
+   the hover sync line is drawn full-height and would otherwise run through the digits. */
+.zng-tot{position:absolute;right:10px;z-index:2;height:14px;line-height:14px;white-space:nowrap;
+  font-size:10px;font-weight:600;letter-spacing:.02em;color:#93a2ac;
+  padding:0 4px;border-radius:3px;background:rgba(255,255,255,.86);
+  font-variant-numeric:tabular-nums}
+.zng-tot b{color:#0e2c40;font-weight:800;font-size:10.5px}
+
+/* the hovered report's stamp, in the popup header next to the ✕.
+   2026-07-31d (owner bug report): the readout's own width used to change with its content (a
+   short italic hint before hovering vs. a stamp + role + zone + port chip while hovering), and
+   since it sits BEFORE the close button inside .znct-ctrls (which is right-anchored as a WHOLE
+   via margin-left:auto on the header row, not this element individually), a wider/narrower
+   readout shifted its own left edge — visually "jumping" side to side as you moved the mouse
+   across the chart. Fixed width + right-aligned content pins it at a constant spot beside the
+   close button regardless of what it's showing.
+   2026-07-31e (owner follow-up): flex-end was wrong for what was actually asked — it kept the
+   BOX from moving, but right-aligning the content meant the DATE (the first chip) still slid
+   left/right as later chips (port, country…) came and went, since it's whatever is closest to
+   the fixed right edge that stays put, not the first item. flex-start pins the date itself to
+   the box's own (now fixed) left edge — the one thing in this row that should never move. */
+.zng-readout{font-size:11px;color:#0e2c40;display:inline-flex;align-items:center;justify-content:flex-start;
+  flex-wrap:nowrap;gap:8px;font-variant-numeric:tabular-nums;
+  /* fixed width, not min/max — a flex ITEM's own box, not a text run, so text-overflow:ellipsis
+     does not apply here; overflow:hidden alone is the safety clamp if content ever runs long */
+  width:440px;max-width:44vw;overflow:hidden}
+.zng-readout>*{flex:0 0 auto}
+/* the rail's "N of M active" footnote — a visibly muted aside naming how many are excluded */
+.zng-dim2{color:#a6b2bb;font-weight:600}
+.zng-readout .zng-hint{color:#9aa7b0;font-weight:600;font-style:italic}
+.zng-chip{display:inline-block;padding:1px 7px;border-radius:9px;background:#eef3f6;
+  color:#41525e;font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}
+.zng-chip2{background:#e5eef3;color:#2b5a72}
+/* 2026-07-31c: the hovered report's port/country, when the raw MDA record carries one
+   (r.portN/r.cur/r.ctry — same fields js/ui.js's Report-Wise trace table already reads).
+   A third, visually distinct colour so it doesn't read as the same kind of tag as the zone chip. */
+.zng-chip3{background:#eaf3e8;color:#2f6b3f}
+
+/* the header button that opens it — sits leftmost in .znfs-partsrt, styled off .znfs-vesselrpt
+   so it matches the Vessel Reporting link and the Year field already on that row */
+.znfs-graphbtn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d5dde3;
+  background:#fff;border-radius:4px;padding:4px 10px;font:inherit;font-size:11.5px;
+  font-weight:700;color:#0e2c40;cursor:pointer;white-space:nowrap}
+.znfs-graphbtn:hover{background:#f4f8fa;border-color:#b9c6cf}
+.znfs-graphbtn:focus-visible{outline:2px solid var(--blue,#0e7f96);outline-offset:1px}
+.znfs-graphbtn .ic{font-size:12px;line-height:1}
+
+@media (max-width:900px){
+  .zng-body{flex-direction:column}
+  .zng-rail{flex:0 0 auto;width:100%;border-right:0;border-bottom:1px solid #eef2f4;max-height:170px}
+  .zng-chart{padding:8px}
 }

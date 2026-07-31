@@ -1993,10 +1993,22 @@ function ciiPillHtml(pct, rating, attained, size){
      column min-width); a second, different min-width value here would trip that assertion. The
      OUTER <span class="ciipill"> stays auto-sized (display:inline-flex, no width set) exactly
      as before, so the containing table cell / grid column / KPI card is untouched — only the
-     two inner boxes stop growing with their own text. Sized to the widest capped value each
-     size ever renders ("-99%"/"999%" at segFont, "-99.99"/"999.99" at segFont) with a little
-     headroom; text-align centres shorter values exactly as the old auto-width flex did. */
-  const segW = lg? 40 : 30;
+     two inner boxes stop growing with their own text.
+     2026-07-30j (Aurvin, bug report — screenshot showed "475%"/"44.80" spilling past the white
+     box on every pill, table and card alike): the width chosen above was undersized. It was
+     meant to fit "999%" / "999.99" including this segment's own horizontal padding (segPad),
+     but the number was picked as if segPad were extra headroom on top of segW rather than eaten
+     out of it (box-sizing:border-box means the digits only get segW minus 2×segPad's horizontal
+     value). At the old 40px/8px-pad (lg) that left ~24px for glyphs that need ~40px+; at
+     30px/5px-pad (sm) it left ~20px for glyphs that need ~29px+. Fixed by sizing segW to the
+     content need PLUS the padding on top of that (not instead of it), with real headroom rather
+     than a pixel or two of margin — the worst realistic case is the AER segment at 2 whole digits
+     (this app never shows a negative attained CII or a negative % of required, so "-99.99" is not
+     budgeted for): "99.99" needs roughly 41px of glyph width at the lg 15px bold font, ~30px at
+     the sm 11px font, so content targets of ~48px/~34px leave several px of slack against
+     estimation error in those numbers, not just against the exact figure. No min-width added
+     (same constraint as above still holds); text-align still centres shorter values. */
+  const segW = lg? 64 : 44;
   const segBox = `box-sizing:border-box;width:${segW}px;flex:0 0 ${segW}px;overflow:hidden;text-align:center`;
   return `<span class="ciipill" style="display:inline-flex;align-items:stretch;gap:${gap}px;padding:${outerPad}px;background:${ratingColor(rating)};border-radius:${rad}px;font-variant-numeric:tabular-nums">`+
          `<span class="ciipill-seg" style="display:flex;align-items:center;justify-content:center;${segBox};padding:${segPad};background:#fff;border-radius:${segRad}px;font-weight:700;font-size:${segFont};color:#1e293b">${pctTxt}</span>`+
@@ -2639,6 +2651,39 @@ function trTotalsAgg(reps){
     .map(n=>Object.assign({name:n, oth:Math.max(0,acc[n].total-acc[n].me-acc[n].ae-acc[n].blr),
                            bg:"transparent"}, acc[n]));
 }
+/* 2026-07-30i (Aurvin, owner instruction) — the ONLY hook the "▦ Edit columns" picker needs
+   inside this file. It asks js/columns.js whether one Report-Wise column is currently shown.
+   Three things make this safe to have scattered through the table builders below:
+     • it answers TRUE whenever the full-screen overlay is closed (columns.js decides that),
+       so the ordinary REPORTS tab, the ⬇ Download and every export are untouched;
+     • it answers TRUE if js/columns.js is missing altogether, so the table still renders;
+     • when nothing is unticked EVERY call answers TRUE, and the HTML built below is then
+       byte-for-byte what it was before this feature existed — which is why none of the ~504
+       in-app self-tests or the tools/verify_*.js scripts needed their expectations changed.
+   Keys are namespaced "trace.<group>.<column>" — see EMCOLS_DEFS in js/columns.js.
+   LEGS and VOYAGES are NOT wired up yet (they are CSS grids with hardcoded column indices and
+   need a column remapper) — that is the next piece of work, see HANDOFF_LOG.md 2026-07-30i. */
+const TR_ELIG_KEYS = ["elig.ets","elig.feu","elig.uk"];
+/* every Fuel column, in render order */
+const TR_FUEL_KEYS = ["fuel.name","fuel.total","fuel.me","fuel.ae","fuel.blr","fuel.oth","fuel.rob"];
+/* the SELECTABLE ones — "fuel.name" is missing on purpose (2026-07-30k, Aurvin, owner
+   instruction: "the FUEL name header should come by default with anything selected here, so
+   that should not be part of a choice"). It is the label for the figures beside it, not a
+   figure, so it is DERIVED: shown whenever any other Fuel column is shown, and gone only when
+   the whole group is switched off. It is therefore also absent from EMCOLS_DEFS in
+   js/columns.js, so the picker never offers it. */
+const TR_FUEL_SEL  = ["fuel.total","fuel.me","fuel.ae","fuel.blr","fuel.oth","fuel.rob"];
+function trColVis(k){
+  if(k === "fuel.name") return TR_FUEL_SEL.some(trColVis);
+  return (typeof colVis === "function") ? colVis("trace."+k) : true;
+}
+function trVisCount(keys){ return keys.filter(trColVis).length; }
+/* A hidden first column would take the group's left divider with it, so the wall is moved onto
+   whichever column is now first. `wall` is the border-left declaration to graft on, and it is
+   only ever added when the natural first column (…name / …ets) is hidden — so with everything
+   visible not a single character changes. */
+function trFirstVis(keys){ for(const k of keys) if(trColVis(k)) return k; return null; }
+
 function trTotalsHtml(){
   const all = TR_LAST||[];
   if(!all.length) return "";
@@ -2658,16 +2703,35 @@ function trTotalsHtml(){
     <td colspan="4" style="padding:${pad};background:#eef2f7;font-size:11.5px;font-weight:600;color:#475569;white-space:nowrap">${esc(rowselLabel("tr",all.length,S.year).replace(/^Total — /,""))}</td>
     <td style="padding:${pad};background:#eef2f7;text-align:right">${dash}</td><!-- 2026-07-25: Cargo mt (per-event, not additive) — now sits right of Voyage No, left of Dist -->
     <td style="padding:${pad};background:#eef2f7;text-align:right;font-family:${TR_FONT};font-size:12px;font-weight:700;color:#0f172a;font-variant-numeric:tabular-nums">${fmtF(dist,0)}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;border-left:1px solid #cbd5e1">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#334155;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,numStyle,fmtF(f.total,1))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.me,1))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.ae,1))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.blr,1))).join("")}</td>
-    <td style="padding:6px 0;background:#eef2f7;vertical-align:top;text-align:right">${fuels.map(f=>fl(f,machStyle,fmtF(f.oth,1))).join("")}</td>
-    <td style="padding:${pad};background:#eef2f7;text-align:right;border-right:1px solid #cbd5e1" title="ROB is a stock reading at each event, not a flow — it cannot be summed">${dash}</td>`;
+    ${(()=>{
+      /* 2026-07-30i (Aurvin, owner instruction): the three Eligibility dashes and the seven Fuel
+         cells are emitted only while the "▦ Edit columns" picker still has them ticked. Built as
+         ONE array joined with "\n    " so that, with everything visible, this produces character-
+         for-character the same block of <td>s the hand-written template used to — that is the
+         property the whole feature is built on (see trColVis above).
+         The three Eligibility cells stay three separate <td>s rather than the body row's fused
+         pill: that was the owner's explicit 2026-07-26q/y decision and it is untouched here. */
+      const firstF = trFirstVis(TR_FUEL_KEYS);
+      /* if the natural first Fuel column is hidden, the group's left wall rides on whichever
+         column is now leftmost — otherwise the group would lose its divider entirely */
+      const wall = k => (k===firstF && k!=="fuel.name") ? "border-left:1px solid #cbd5e1;" : "";
+      const cell = (k, html) => trColVis(k) ? html : "";
+      const num = (k, get, style) => cell(k,
+        `<td style="padding:6px 0;background:#eef2f7;${wall(k)}vertical-align:top;text-align:right">${fuels.map(f=>fl(f,style,get(f))).join("")}</td>`);
+      const eligTd = `<td style="padding:${pad};background:#eef2f7;text-align:center">${dash}</td>`;
+      return [
+        cell("elig.ets", eligTd),
+        cell("elig.feu", eligTd),
+        cell("elig.uk",  eligTd),
+        cell("fuel.name", `<td style="padding:6px 0;background:#eef2f7;vertical-align:top;border-left:1px solid #cbd5e1">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#334155;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>`),
+        num("fuel.total", f=>fmtF(f.total,1), numStyle),
+        num("fuel.me",    f=>fmtF(f.me,1),    machStyle),
+        num("fuel.ae",    f=>fmtF(f.ae,1),    machStyle),
+        num("fuel.blr",   f=>fmtF(f.blr,1),   machStyle),
+        num("fuel.oth",   f=>fmtF(f.oth,1),   machStyle),
+        cell("fuel.rob",  `<td style="padding:${pad};background:#eef2f7;${wall("fuel.rob")}text-align:right;border-right:1px solid #cbd5e1" title="ROB is a stock reading at each event, not a flow — it cannot be summed">${dash}</td>`)
+      ].filter(Boolean).join("\n    ");
+    })()}`;
 }
 
 function reportTraceTable(reps){
@@ -2742,18 +2806,35 @@ function reportTraceTable(reps){
        last column and keeps its own existing border-right) so every column in this group is
        divided too; the 25o rule darkens all of them on a ticked row exactly like the rest of the
        table, since it matches on the inline property, not a specific value. */
-    const fuelTds = fuels.length? `
-      <td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.me)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.ae)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.blr)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,f.oth)).join("")}</td>
-      <td style="padding:${padV} 0;vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>
+    /* 2026-07-30i (Aurvin, owner instruction): each of the seven Fuel columns is emitted only
+       while the "▦ Edit columns" picker has it ticked. Built as an array joined with the same
+       "\n      " the hand-written template used, so with all seven visible the output is
+       character-for-character what it was before the picker existed. `wallV` moves the group's
+       left divider onto whichever column is leftmost when Fuel itself is hidden. Both the
+       has-fuel and the no-fuel branch are filtered with the same keys, so a row with no fuel
+       lines still lines up with the header above it. */
+    const firstFuelV = trFirstVis(TR_FUEL_KEYS);
+    const wallV = k => (k===firstFuelV && k!=="fuel.name") ? "border-left:1px solid #f1f5f9;" : "";
+    const fuelCell = (k, html) => trColVis(k) ? html : "";
+    const fuelNum = (k, get) => fuelCell(k,
+      `<td style="padding:${padV} 0;${wallV(k)}vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,machStyle,get(f))).join("")}</td>`);
+    const fuelTds = fuels.length? (v=>v.length? "\n      "+v.join("\n      ") : "")([
+        fuelCell("fuel.name", `<td style="padding:${padV} 0;vertical-align:top;border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:10.5px;font-weight:700;letter-spacing:0.04em;color:#475569;font-family:${TR_FONT}`,esc(f.name))).join("")}</td>`),
+        fuelCell("fuel.total", `<td style="padding:${padV} 0;${wallV("fuel.total")}vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>fl(f,`font-size:12px;font-weight:600;color:#0f172a;font-family:${TR_FONT};font-variant-numeric:tabular-nums`,f.total)).join("")}</td>`),
+        fuelNum("fuel.me",  f=>f.me),
+        fuelNum("fuel.ae",  f=>f.ae),
+        fuelNum("fuel.blr", f=>f.blr),
+        fuelNum("fuel.oth", f=>f.oth),
+        fuelCell("fuel.rob", `<td style="padding:${padV} 0;${wallV("fuel.rob")}vertical-align:top;text-align:right;border-right:1px solid #f1f5f9">${fuels.map(f=>
         `<div class="trfl" style="height:17px;padding:0 6px;background:${f.bg};font-size:12px;font-weight:600;color:#475569;font-family:${TR_FONT};font-variant-numeric:tabular-nums;display:flex;justify-content:flex-end;align-items:center;gap:4px">${
           f.hasBunk?`<span style="font-size:10px;font-weight:700;color:#16a34a;background:#dcfce7;padding:0 4px;border-radius:4px;line-height:14px">${f.bunk}</span>`:""
-        }<span>${f.rob}</span></div>`).join("")}</td>`
-      : `<td style="padding:${pad};border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${dash}</td>`+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`.repeat(5)+`<td style="padding:${pad};text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`;
+        }<span>${f.rob}</span></div>`).join("")}</td>`)
+      ].filter(Boolean))
+      : [
+        fuelCell("fuel.name", `<td style="padding:${pad};border-left:1px solid #f1f5f9;border-right:1px solid #f1f5f9">${dash}</td>`),
+        ...["fuel.total","fuel.me","fuel.ae","fuel.blr","fuel.oth","fuel.rob"].map(k=>
+          fuelCell(k, `<td style="padding:${pad};${wallV(k)}text-align:right;border-right:1px solid #f1f5f9">${dash}</td>`))
+      ].filter(Boolean).join("");
     /* 2026-07-28j (Aurvin, owner instruction): whole-row zebra. The stripe goes on the <tr> AND
        on the two frozen (sticky) cells, which must carry their own opaque background or the body
        would scroll visibly underneath them. The ticked-row highlight still wins over both —
@@ -2801,7 +2882,23 @@ function reportTraceTable(reps){
            session — a coverage % was never summable there anyway. The header's own 3 sub-
            labels (EU/ETS, FEU, UK/ETS just below) are also left as 3 separate <th> — the
            owner's ask was about the VALUE pill, not the column labels above it. -->
-      <td colspan="3" style="padding:6px 8px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${elFusedPill([cov.eu, cov.feu, cov.uk])}</td>
+      ${(()=>{
+        /* 2026-07-30i (Aurvin, owner instruction): the fused pill now carries only the segments
+           whose columns are still ticked in the "▦ Edit columns" picker, and the colspan shrinks
+           to match. elFusedPill() takes an array and is unchanged — the values (cov.eu / cov.feu
+           / cov.uk), their source (trCoverage()) and every colour and threshold are exactly as
+           2026-07-26y left them. With all three ticked the array is [cov.eu, cov.feu, cov.uk]
+           and colspan is "3", i.e. the original string character-for-character.
+           If all three are unticked the whole cell disappears rather than leaving a colspan="0",
+           which browsers treat as "span the rest of the row". */
+        const segs = [];
+        if(trColVis("elig.ets")) segs.push(cov.eu);
+        if(trColVis("elig.feu")) segs.push(cov.feu);
+        if(trColVis("elig.uk"))  segs.push(cov.uk);
+        return segs.length
+          ? `<td colspan="${segs.length}" style="padding:6px 8px;vertical-align:middle;text-align:center;border-left:none;border-right:none">${elFusedPill(segs)}</td>`
+          : "";
+      })()}
       ${fuelTds}
     </tr>`;
   }).join("");
@@ -2821,8 +2918,8 @@ function reportTraceTable(reps){
           <th rowspan="2" style="text-align:right;${thBase};width:1%">Cargo<br><span style="text-transform:none">mt</span></th>
           <!-- 2026-07-25b (Aurvin): unit shown lowercase ("nm") rather than the column's default uppercase. -->
           <th rowspan="2" style="text-align:right;${thBase}">Dist <span style="text-transform:none">nm</span></th>
-          <th colspan="3" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Eligibility ${info("Share of this report's energy in scope for each regulation — computed the same way as your CII / EU ETS / UK ETS / FuelEU totals (matched to the corresponding voyage/port entry). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#3a5157;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#6f8d94;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope<br><br>\"–\" = no confident match to a calculated voyage/port entry (e.g. bunkering/stock reports, or reports right at a year boundary) — shown blank rather than guessed")}</th>
-          <th colspan="7" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(mt)</span></th>
+          ${trVisCount(TR_ELIG_KEYS) ? `<th colspan="${trVisCount(TR_ELIG_KEYS)}" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Eligibility ${info("Share of this report's energy in scope for each regulation — computed the same way as your CII / EU ETS / UK ETS / FuelEU totals (matched to the corresponding voyage/port entry). FuelEU's in-scope-energy share follows the same rule as EU ETS by regulation (fueleu-art2).<br><br><span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#3a5157;color:#fff;font-weight:700'>100%</span> fully in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#6f8d94;color:#fff;font-weight:700'>partial</span> partly in scope &nbsp; <span style='display:inline-block;padding:1px 7px;border-radius:5px;background:#e4eef0;color:#7c8fa0;font-weight:700'>0%</span> out of scope<br><br>\"–\" = no confident match to a calculated voyage/port entry (e.g. bunkering/stock reports, or reports right at a year boundary) — shown blank rather than guessed")}</th>` : ""}
+          ${trVisCount(TR_FUEL_KEYS) ? `<th colspan="${trVisCount(TR_FUEL_KEYS)}" style="text-align:center;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#475569;background:#f1f5f9;padding:6px 12px;border-bottom:1px solid #e2e8f0;border-top:1px solid #e2e8f0;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0">Fuel — Consumption &amp; ROB <span style="font-weight:500;color:#94a3b8;text-transform:none;letter-spacing:0">(mt)</span></th>` : ""}
         </tr>
         <tr>
           <!-- 2026-07-24c (Aurvin): EU ETS/UK ETS forced to an explicit two-line label (EU / ETS)
@@ -2838,20 +2935,33 @@ function reportTraceTable(reps){
                Leg-Wise and the header labels/percentage values sat visibly offset from Leg-Wise's. Only
                these 3 sub-th carry the width — the group's own colspan=3 header/body td are unspanned by
                any single column, so pinning the true columns here is what fixes the whole group. -->
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:8px;padding-right:1px;width:55px;min-width:55px;max-width:55px">EU<br>ETS</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:1px;width:48px;min-width:48px;max-width:48px">FEU</th>
-          <th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:8px;width:55px;min-width:55px;max-width:55px">UK<br>ETS</th>
-          <th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>
-          <th style="text-align:right;${thSub};font-weight:700;color:#475569">Total</th>
-          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">ME</th>
-          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">AE</th>
-          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Boiler</th>
-          <th style="text-align:right;${thSub};font-weight:600;color:#94a3b8">Others</th>
+          ${(()=>{
+            /* 2026-07-30i (Aurvin, owner instruction): each sub-header is emitted only while its
+               column is ticked in the "▦ Edit columns" picker. Built as one array joined with the
+               same "\n          " the hand-written rows used, so with everything ticked this
+               produces exactly the nine <th> the file carried before the picker existed.
+               `wallH` re-homes the Fuel group's left divider when "Fuel" itself is hidden, so the
+               group never loses the wall that separates it from Eligibility. */
+            const firstF = trFirstVis(TR_FUEL_KEYS);
+            const wallH = k => (k===firstF && k!=="fuel.name") ? "border-left:1px solid #e2e8f0;" : "";
+            const th = (k, html) => trColVis(k) ? html : "";
+            return [
+              th("elig.ets", `<th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:8px;padding-right:1px;width:55px;min-width:55px;max-width:55px">EU<br>ETS</th>`),
+              th("elig.feu", `<th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:1px;width:48px;min-width:48px;max-width:48px">FEU</th>`),
+              th("elig.uk",  `<th style="text-align:center;${thSub};font-weight:600;color:#94a3b8;border-left:none;border-right:none;padding-left:1px;padding-right:8px;width:55px;min-width:55px;max-width:55px">UK<br>ETS</th>`),
+              th("fuel.name",  `<th style="text-align:left;${thSub};font-weight:600;color:#94a3b8;border-left:1px solid #e2e8f0">Fuel</th>`),
+              th("fuel.total", `<th style="text-align:right;${thSub};${wallH("fuel.total")}font-weight:700;color:#475569">Total</th>`),
+              th("fuel.me",    `<th style="text-align:right;${thSub};${wallH("fuel.me")}font-weight:600;color:#94a3b8">ME</th>`),
+              th("fuel.ae",    `<th style="text-align:right;${thSub};${wallH("fuel.ae")}font-weight:600;color:#94a3b8">AE</th>`),
+              th("fuel.blr",   `<th style="text-align:right;${thSub};${wallH("fuel.blr")}font-weight:600;color:#94a3b8">Boiler</th>`),
+              th("fuel.oth",   `<th style="text-align:right;${thSub};${wallH("fuel.oth")}font-weight:600;color:#94a3b8">Others</th>`)
+            ].filter(Boolean).join("\n          ");
+          })()}
           <!-- 2026-07-27 (Aurvin, owner instruction): "ROB (Bunker)" shortened to "ROB" and the
                column's value-pill padding tightened (below, in fuelTds) so the column takes less
                width — max expected value is "xxxxx.x" (7 chars), which no longer needs the wider
                padding that the longer header text used to justify. -->
-          <th style="text-align:right;${thSub};font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB</th>
+          ${trColVis("fuel.rob") ? `<th style="text-align:right;${thSub};${trFirstVis(TR_FUEL_KEYS)==="fuel.rob"?"border-left:1px solid #e2e8f0;":""}font-weight:700;color:#475569;border-right:1px solid #e2e8f0;white-space:nowrap">ROB</th>` : ""}
         </tr>
         <tr id="trTotals">${trTotalsHtml()}</tr><!-- 2026-07-23 Task 1: bottom divider is a box-shadow on #trTotals>td (styles.css). 2026-07-24: top divider moved there too (border-separate ignores <tr> borders) -->
       </thead>
@@ -2946,7 +3056,13 @@ const JURIS_PAL = {
    was tightened (solid-colour bar + snug white cutouts, replacing the airier 3-touching-
    segment version) and both numbers now carry a hard character cap (% ≤3 digits, AER ≤"xx.xx"
    before falling back to a dash), so the pill's own maximum width is now small and predictable
-   — the column no longer needs the extra room 150px gave it. */
+   — the column no longer needs the extra room 150px gave it.
+   2026-07-30j-2 (Aurvin, bug report — the matching Voyage-Wise column overflowed, screenshot;
+   this tab wasn't separately reported but shares the exact same pill, so it gets the same fix
+   for parity): 126px stopped being enough once 2026-07-30j widened the pill's two number boxes
+   (they'd been clipping their own digits — see `ciiPillHtml`'s segW note in this file). Reverted
+   to the SAME 150px this column already carried once before (2026-07-26l), a known-good prior
+   value rather than a fresh guess. */
 /* 2026-07-26o (Aurvin, owner instruction): the three per-section "Cov." tracks (EU ETS,
    UK ETS, FuelEU) were removed and replaced by ONE consolidated ELIGIBILITY block of 3
    fixed-width badge tracks (55/48/55px, sized to the 46px pill + its padding — same as the
@@ -2976,7 +3092,7 @@ const JURIS_PAL = {
    frozen rigid. NOTE: this 280px figure is a calculation, not a live screen measurement — this
    session's sandbox has no browser available to render and screenshot the page, so the owner
    should eyeball the actual result and say if it needs a further nudge either way. */
-const BR_GRID = "minmax(34px,34px) minmax(280px,0.5fr) minmax(84px,0.6fr) minmax(76px,0.6fr) minmax(84px,0.7fr) minmax(55px,55px) minmax(48px,48px) minmax(55px,55px) minmax(126px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+const BR_GRID = "minmax(34px,34px) minmax(280px,0.5fr) minmax(84px,0.6fr) minmax(76px,0.6fr) minmax(84px,0.7fr) minmax(55px,55px) minmax(48px,48px) minmax(55px,55px) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const BR_BOX = gridBox(BR_GRID);          // every Leg-Wise row resolves to this same width
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
@@ -4316,7 +4432,15 @@ function vwGroups(state){
    EEOI (78px) is untouched, per the owner's explicit choice.
    2026-07-26m (Aurvin, owner instruction): CII 150px→126px, matching the same Leg-Wise change
    — the pill's own padding was tightened and both numbers now carry a hard character cap, so
-   its maximum width is small and predictable and no longer needs the extra room. */
+   its maximum width is small and predictable and no longer needs the extra room.
+   2026-07-30j-2 (Aurvin, bug report — screenshot, Voyage tab): 126px turned out too small again
+   once 2026-07-30j widened the pill's own number boxes (they'd been clipping their digits —
+   see ui.js `ciiPillHtml`'s segW note). This column is right-aligned flex (not the centred
+   layout Leg-Wise uses for the same pill), with `cellPad` "7px 10px" eating 20px of the 126px
+   track, leaving ~106px for a pill that now needs ~118px — so it overflowed LEFT into the Dist
+   column, which is what the owner's screenshot showed. Reverted to the SAME 150px this column
+   already carried once before (2026-07-26l, for the same reason: room for the pill's own
+   numbers) — a known-good prior value, not a fresh guess. */
 /* 2026-07-26q3 (Aurvin, owner instruction): reordered so Fuel metrics (Fuel type, Cons.,
    Total CO2e) is now ONE CONTIGUOUS 3-column group again, matching Leg-Wise's own group
    shape — fixes the "two separate Fuel metrics tags" mistake from 2026-07-26p, where Total
@@ -4326,7 +4450,7 @@ function vwGroups(state){
    from EUAs (13) onward, keeps its EXACT same width and position; the physical column count
    (20) and every individual track's px/fr value are UNCHANGED, so no column got any wider
    or narrower — only the ORDER of these five tracks moved. */
-const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(126px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
 let VW_LAST = null;
 
@@ -7172,6 +7296,480 @@ function runSelfTests(){
         fexLiveUKETS(computeAll({year:2025,ship:{typeId:"bulk",capacity:60000},rows:[]})).indexOf("applies from 2026")>=0);
     S = Ssave;
   }catch(e){ fail++; out.push("FAIL  Live worked-example tests threw: "+e.message); }
+
+  /* ===== 2026-07-30 (Aurvin, owner instruction) — "Year to date CII" trend popup =====
+     Guards the new js/fullscreen.js block. The point of these is NOT that the chart looks
+     right — it is that the popup can never quietly disagree with js/engine.js about the
+     RULES (required CII, A–E bands, the AER formula), and that the two data paths the owner
+     chose (reports first, row-boundary steps as fallback) both produce honest running totals.
+     Everything here is display-only: no test touches or expects any change in a reported
+     figure. If the V1 branch or the KPI cards are reworked, these must stay green. */
+  try{
+    const Sk = S;
+    const shipT = { typeId:"bulk", capacity:45000 };
+
+    /* T1 — day-of-year helpers, including a leap year (2028). A one-day drift here would
+       shift the whole curve against the month labels. */
+    ck("30-07 T1: 1 Jan 2026 is day 1", znfsDayOfYear("2026-01-01"), 1, 0);
+    ck("30-07 T1: 31 Dec 2026 is day 365", znfsDayOfYear("2026-12-31"), 365, 0);
+    ck("30-07 T1: 31 Dec 2028 is day 366 (leap)", znfsDayOfYear("2028-12-31"), 366, 0);
+    ck("30-07 T1: 2026 has 365 days", znfsDaysInYear(2026), 365, 0);
+    ck("30-07 T1: 2028 has 366 days", znfsDaysInYear(2028), 366, 0);
+    ckT("30-07 T1: doy round-trips through iso", znfsIsoOfDoy(2026,211)==="2026-07-30");
+
+    /* T2 — the popup's required CII and A–E bands must REPRODUCE engine.js exactly for the
+       reporting year. This is the test that stops the boundaries dropdown from becoming a
+       second, drifting implementation of the CII rules. */
+    S = { year:2026, ship:shipT, rows:[
+      { kind:"voyage", from:"EEA", to:"EEA", dist:5000, cargo:20000, hours:400,
+        tStart:"2026-03-01T00:00", tEnd:"2026-03-17T16:00", fuels:[{fuelId:"HFO",tonnes:400}] }
+    ] };
+    const Rb = computeAll(S), Bb = znfsCiiYearBounds(2026);
+    ckT("30-07 T2: bounds helper returns a result for a real ship", !!Bb);
+    ck("30-07 T2: required CII matches engine.js", Bb.ciiReq, Rb.cii.ciiReq, 1e-9);
+    ck("30-07 T2: reference CII matches engine.js", Bb.ciiRef, Rb.cii.ciiRef, 1e-9);
+    ck("30-07 T2: Z factor matches engine.js", Bb.Z, Rb.cii.Z, 1e-9);
+    ck("30-07 T2: band sup matches engine.js", Bb.bounds.sup, Rb.cii.bounds.sup, 1e-9);
+    ck("30-07 T2: band low matches engine.js", Bb.bounds.low, Rb.cii.bounds.low, 1e-9);
+    ck("30-07 T2: band up  matches engine.js", Bb.bounds.up,  Rb.cii.bounds.up,  1e-9);
+    ck("30-07 T2: band inf matches engine.js", Bb.bounds.inf, Rb.cii.bounds.inf, 1e-9);
+    ckT("30-07 T2: 2026 Z is a known table value, not a fallback", Bb.zKnown===true);
+    ckT("30-07 T2: capacity unit carried through", Bb.capUnit===TYPE_BY_ID["bulk"].capUnit);
+
+    /* T3 — the boundaries dropdown offers exactly Z_FACTORS' numeric years and nothing else.
+       Z_FACTORS also holds `verified` and `src`; a leak of either would render as a band year. */
+    const byrs = znfsCiiBoundaryYears();
+    ckT("30-07 T3: boundary years start at 2023", byrs[0]===2023);
+    ckT("30-07 T3: boundary years stop at 2030 (no silent Z fallback)", byrs[byrs.length-1]===2030);
+    ckT("30-07 T3: boundary years are all 4-digit numbers", byrs.every(y=>/^\d{4}$/.test(String(y))));
+    ckT("30-07 T3: boundary years exclude Z_FACTORS metadata keys",
+        byrs.indexOf(NaN)<0 && byrs.length===Object.keys(Z_FACTORS).filter(k=>/^\d{4}$/.test(k)).length);
+    /* a later year must tighten the required line — proves the dropdown actually does something */
+    ckT("30-07 T3: 2028 bands are tighter than 2026",
+        znfsCiiYearBounds(2028).ciiReq < znfsCiiYearBounds(2026).ciiReq);
+
+    /* T4 — REPORTS path (the owner's chosen source). Three reports, known fuel and distance.
+       Cumulative CO2 and distance must both be non-decreasing, and the final point must equal
+       the AER computed straight from the totals: co2_g / (capacity x distance). */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[
+      { t:"2026-01-10T12:00", dist:1000, fuels:{ HFO:30 } },
+      { t:"2026-01-11T12:00", dist:1200, fuels:{ HFO:36 } },
+      { t:"2026-02-01T12:00", dist:800,  fuels:{ MDO:20 } }
+    ] };
+    const sr = znfsCiiSeries(2026, 45000, null);
+    ckT("30-07 T4: reports are the source when reports exist", sr && sr.source==="reports");
+    ck("30-07 T4: one point per reporting day", sr.pts.length, 3, 0);
+    ckT("30-07 T4: cumulative CO2 never decreases",
+        sr.pts.every((p,i)=> i===0 || p.co2_t >= sr.pts[i-1].co2_t - 1e-9));
+    ckT("30-07 T4: cumulative distance never decreases",
+        sr.pts.every((p,i)=> i===0 || p.dist >= sr.pts[i-1].dist - 1e-9));
+    ck("30-07 T4: day 1 distance is that report's own", sr.pts[0].dist, 1000, 1e-9);
+    ck("30-07 T4: final distance is the sum of all reports", sr.pts[2].dist, 3000, 1e-9);
+    const wantCO2 = 66*FUEL_BY_ID["HFO"].cf + 20*FUEL_BY_ID["MDO"].cf;
+    ck("30-07 T4: final CO2 uses the shared Cf table", sr.pts[2].co2_t, wantCO2, 1e-6);
+    ck("30-07 T4: final point is CO2_g / (capacity x distance)",
+       sr.pts[2].cii, wantCO2*1e6/(45000*3000), 1e-9);
+    ck("30-07 T4: the 10 Jan point is that day's own running total",
+       sr.pts[0].cii, 30*FUEL_BY_ID["HFO"].cf*1e6/(45000*1000), 1e-9);
+    ckT("30-07 T4: dates are in ascending order", sr.pts.every((p,i)=> i===0 || p.doy>sr.pts[i-1].doy));
+    ckT("30-07 T4: reports dated in another year are ignored",
+        znfsCiiSeries(2025, 45000, null)===null);
+
+    /* T4b — FUEL CODE TRANSLATION. Report records are keyed by mdaFuel()'s INTERMEDIATE codes,
+       not by engine fuel ids, and the Workspace branch translates them through OVD_FUEL_MAP
+       inside parseOVD. A curve that skipped that step would disagree with the card for every
+       MGO / methanol / ethanol burner while looking perfectly healthy — which is exactly what
+       happened before this was fixed (35 "MGO" entries in the sample workbook contributed no
+       CO2 at all). These assertions exist so it cannot happen again. */
+    ckT("30-07 T4b: MGO resolves to the engine's MDO Cf, not to nothing",
+        znfsCiiFuelCf("MGO")===FUEL_BY_ID["MDO"].cf);
+    ckT("30-07 T4b: methanol code M resolves to METH", znfsCiiFuelCf("M")===FUEL_BY_ID["METH"].cf);
+    ckT("30-07 T4b: ethanol code E resolves to ETOH", znfsCiiFuelCf("E")===FUEL_BY_ID["ETOH"].cf);
+    ckT("30-07 T4b: codes that need no translation still resolve",
+        znfsCiiFuelCf("HFO")===FUEL_BY_ID["HFO"].cf && znfsCiiFuelCf("LNG")===FUEL_BY_ID["LNG"].cf);
+    ckT("30-07 T4b: EVERY OVD_FUEL_MAP target is a real engine fuel with a Cf",
+        Object.keys(OVD_FUEL_MAP).every(k=>znfsCiiFuelCf(k)!==null));
+    ckT("30-07 T4b: every code mdaFuel() can emit is resolvable",
+        ["HFO","LFO","MGO","MDO","LNG","LPGP","LPGB","M","E"].every(c=>znfsCiiFuelCf(c)!==null));
+    ckT("30-07 T4b: a genuinely unknown grade returns null, never 0",
+        znfsCiiFuelCf("NOTAFUEL")===null && znfsCiiFuelCf("")===null);
+    /* and the series must actually USE the translation */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[
+      { t:"2026-03-01T12:00", dist:1000, fuels:{ MGO:10 } } ] };
+    const sg = znfsCiiSeries(2026, 45000, null);
+    ck("30-07 T4b: an MGO-only curve counts MGO's CO2", sg.pts[0].co2_t, 10*FUEL_BY_ID["MDO"].cf, 1e-9);
+    ck("30-07 T4b: …and flags nothing as unmapped", sg.nUnmapped, 0, 0);
+
+    /* T5 — the reports curve and engine.js agree on the SAME activity. Same fuel, same
+       distance, expressed once as reports and once as workspace rows: the curve's endpoint
+       must land on engine.js's attained CII. This is the check that makes the reconcile note
+       under the chart meaningful — a difference then really is the WINDOW, not the maths. */
+    S = { year:2026, ship:shipT,
+      rows:[{ kind:"voyage", from:"EEA", to:"EEA", dist:3000, cargo:20000, hours:300,
+              tStart:"2026-01-10T00:00", tEnd:"2026-02-01T12:00",
+              fuels:[{fuelId:"HFO",tonnes:66},{fuelId:"MDO",tonnes:20}] }],
+      mdaReports:[
+        { t:"2026-01-10T12:00", dist:1000, fuels:{ HFO:30 } },
+        { t:"2026-01-11T12:00", dist:1200, fuels:{ HFO:36 } },
+        { t:"2026-02-01T12:00", dist:800,  fuels:{ MDO:20 } }
+      ] };
+    const Rm = computeAll(S), sm = znfsCiiSeries(2026, 45000, Rm);
+    const endM = sm.pts[sm.pts.length-1].cii;
+    ck("30-07 T5: reports endpoint reconciles with engine.js attained CII",
+       endM, Rm.cii.attained, 1e-9);
+    ck("30-07 T5: reports distance total reconciles with engine.js",
+       sm.pts[sm.pts.length-1].dist, Rm.cii.totalDist, 1e-9);
+    ck("30-07 T5: reports CO2 total reconciles with engine.js",
+       sm.pts[sm.pts.length-1].co2_t, Rm.cii.co2_t, 1e-6);
+
+    /* T6 — ROWS FALLBACK (owner's rule: with no reports, step at row boundaries). Each row's
+       whole CO2/distance must land on its END date, and the last step must again equal
+       engine.js's attained figure — nothing prorated, nothing invented. */
+    S = { year:2026, ship:shipT, mdaReports:[], rows:[
+      { kind:"voyage", from:"EEA", to:"EEA", dist:2000, cargo:20000, hours:200,
+        tStart:"2026-01-05T00:00", tEnd:"2026-01-15T00:00", fuels:[{fuelId:"HFO",tonnes:50}] },
+      { kind:"port", from:"EEA", to:"EEA", hours:48,
+        tStart:"2026-01-15T00:00", tEnd:"2026-01-17T00:00", fuels:[{fuelId:"MDO",tonnes:6}] },
+      { kind:"voyage", from:"EEA", to:"EEA", dist:1500, cargo:18000, hours:150,
+        tStart:"2026-02-10T00:00", tEnd:"2026-02-18T00:00", fuels:[{fuelId:"HFO",tonnes:40}] }
+    ] };
+    const Rw = computeAll(S), sw = znfsCiiSeries(2026, 45000, Rw);
+    ckT("30-07 T6: falls back to rows when there are no reports", sw && sw.source==="rows");
+    ck("30-07 T6: one step per row end date", sw.pts.length, 3, 0);
+    ckT("30-07 T6: steps are dated at row END, not start",
+        sw.pts[0].iso==="2026-01-15" && sw.pts[1].iso==="2026-01-17" && sw.pts[2].iso==="2026-02-18");
+    ckT("30-07 T6: a port stay adds CO2 but no distance",
+        sw.pts[1].co2_t > sw.pts[0].co2_t + 1e-9 && Math.abs(sw.pts[1].dist - sw.pts[0].dist) < 1e-9);
+    ckT("30-07 T6: cumulative CO2 never decreases",
+        sw.pts.every((p,i)=> i===0 || p.co2_t >= sw.pts[i-1].co2_t - 1e-9));
+    ck("30-07 T6: rows endpoint reconciles with engine.js attained CII",
+       sw.pts[2].cii, Rw.cii.attained, 1e-9);
+    ck("30-07 T6: rows path includes at-berth CO2 in the numerator",
+       sw.pts[2].co2_t, Rw.cii.co2_t, 1e-6);
+
+    /* T7 — the shared From/To range must NOT shorten the graph. The owner chose a full
+       calendar year x-axis regardless of the range, so the rows fallback re-runs computeAll
+       on a clone with the range switched off. A range that excludes February must therefore
+       still leave February on the curve — and S itself must come back untouched. */
+    S.dateFilter = { fromISO:"2026-01-01T00:00", toISO:"2026-01-31T23:59", active:true };
+    const srng = znfsCiiSeries(2026, 45000, computeAll(S));
+    ckT("30-07 T7: full-year curve survives an active From/To range",
+        srng && srng.pts.length===3 && srng.pts[2].iso==="2026-02-18");
+    ckT("30-07 T7: the range filter itself is left untouched",
+        S.dateFilter.active===true && S.dateFilter.toISO==="2026-01-31T23:59");
+    /* and the CARD still honours the range — that gap is what the reconcile note reports */
+    ckT("30-07 T7: the card's own figure still obeys the range (hence the note)",
+        Math.abs(computeAll(S).cii.attained - srng.pts[2].cii) > 1e-9);
+    delete S.dateFilter;
+
+    /* T8 — an unmapped fuel grade must be COUNTED and surfaced, never silently treated as
+       zero CO2 (which would make the curve read better than reality). */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[
+      { t:"2026-01-10T12:00", dist:1000, fuels:{ HFO:30, WEIRDGRADE:5 } }
+    ] };
+    const su = znfsCiiSeries(2026, 45000, null);
+    ck("30-07 T8: unmapped grades are counted", su.nUnmapped, 1, 0);
+    ck("30-07 T8: unmapped tonnage is retained for the warning", su.unmapped["WEIRDGRADE"], 5, 1e-9);
+    ck("30-07 T8: unmapped grades add no CO2", su.pts[0].co2_t, 30*FUEL_BY_ID["HFO"].cf, 1e-9);
+
+    /* T9 — the chart itself. Rendered as a string in jsdom (no layout needed): it must contain
+       all five rating chips, the required line and the curve, and must never print NaN or
+       undefined into the SVG. */
+    /* the first report deliberately has a lot of fuel over very little distance — that is what
+       the start of a real year looks like, and it puts the cumulative CII far above the top of
+       the band-driven y-scale so the CLIPPING path is actually exercised (see the y-scale note
+       in znfsCiiTrendChart: the scale follows the A–E bands, never the early spike). */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[
+      { t:"2026-01-10T12:00", dist:20,   fuels:{ HFO:40 } },
+      { t:"2026-04-10T12:00", dist:9000, fuels:{ HFO:300 } },
+      { t:"2026-07-30T12:00", dist:9000, fuels:{ HFO:280 } }
+    ] };
+    ZNCT.year = 2026; ZNCT.bYear = 2026; ZNCT.year_b = 2026; ZNCT.compare = false;
+    ZNCT.bounds = znfsCiiYearBounds(2026);
+    ZNCT.cur = znfsCiiSeries(2026, 45000, null); ZNCT.prev = null;
+    const svg = znfsCiiTrendChart();
+    ckT("30-07 T9: chart renders an svg", svg.indexOf("<svg")===0 && svg.indexOf("</svg>")>0);
+    ckT("30-07 T9: chart has no NaN", svg.indexOf("NaN")<0);
+    ckT("30-07 T9: chart has no undefined", svg.indexOf("undefined")<0);
+    /* 2026-07-30c (Aurvin): C/D chip letters switched from white to a dark ink — white was
+       unreadable on the pale gold/tan --rc/--rd fills (owner: "rating letter is not visible,
+       make it darker"). A/B/E stay white (dark-enough backgrounds). */
+    ckT("30-07 T9: all five rating chips are drawn",
+        ["A","B","E"].every(L=>svg.indexOf('fill="#fff">'+L+'</text>')>0) &&
+        ["C","D"].every(L=>svg.indexOf('fill="#3a2d0a">'+L+'</text>')>0));
+    ckT("30-07 T9: bands use the app's own rating palette (--ra..--re)",
+        svg.indexOf("var(--ra)")>0 && svg.indexOf("var(--re)")>0);
+    ckT("30-07 T9: required CII is drawn dashed", svg.indexOf('stroke-dasharray="7 4"')>0);
+    ckT("30-07 T9: the curve is drawn", svg.indexOf('stroke-width="2.6"')>0);
+    ckT("30-07 T9: all twelve month labels are present",
+        ["Jan 15","Feb 15","Mar 15","Apr 15","May 15","Jun 15","Jul 15","Aug 15","Sep 15","Oct 15","Nov 15","Dec 15"]
+          .every(m=>svg.indexOf(m)>0));
+    ckT("30-07 T9: hover capture rect exists", svg.indexOf('id="znct-hit"')>0);
+    /* the early-year spike is expected to be clipped, and the top tick must SAY so */
+    ckT("30-07 T9: a clipped curve marks the top tick with >", svg.indexOf("&gt;")>0);
+    /* chips must not overlap after the de-overlap pass */
+    const chipY = (svg.match(/<rect x="935" y="([\d.]+)" width="18"/g)||[])
+      .map(s=>parseFloat(/y="([\d.]+)"/.exec(s)[1]));
+    ckT("30-07 T9: rating chips do not overlap",
+        chipY.length===5 && chipY.every((y,i)=> i===0 || y-chipY[i-1] >= 19.99));
+    /* 2026-07-30b CONTRAST (owner instruction). The old fills were rgba(...,.13)–.20 and the
+       curve was #2e7d8f at 2.1px; the owner asked for more contrast on both, with the band
+       boundaries clearly visible and fills-only (no boundary lines). Since the bands are
+       contiguous rects, a boundary only reads as a line if ADJACENT fills differ — so the
+       assertion that matters is that no two neighbours share an alpha. */
+    const fills = ["A","B","C","D","E"].map(L=>znfsCiiBandFill(L));
+    const alphas = fills.map(f=>parseFloat((/,\s*([.\d]+)\s*\)\s*$/.exec(f)||[0,"0"])[1]));
+    ckT("30-07 T9: every band fill parsed an alpha", alphas.every(a=>a>0 && a<=1));
+    ckT("30-07 T9: every band fill is stronger than the old near-transparent values",
+        alphas.every(a=>a>=0.20));
+    ckT("30-07 T9: the deepest bands are well above the old maximum of .20",
+        Math.max.apply(null,alphas) >= 0.5);
+    /* A boundary reads as a line when the two fills differ AT ALL. Where the neighbours share a
+       hue family (A/B are both greens) the ALPHA has to carry it; where the hue already differs
+       (B green→C yellow, C yellow→D orange, D orange→E red) equal alpha is fine and deliberate. */
+    ckT("30-07 T9: no two adjacent bands have an identical fill",
+        fills.every((f,i)=> i===0 || f!==fills[i-1]));
+    ckT("30-07 T9: the same-hue neighbours A and B are separated by alpha, not hue",
+        Math.abs(alphas[0]-alphas[1]) >= 0.15);
+    ckT("30-07 T9: the largest bands (A and E) stay lightest so the curve reads over them",
+        alphas[0] < alphas[2] && alphas[4] < alphas[2]);
+    ckT("30-07 T9: the curve is drawn in the darker ink, not the old mid teal",
+        svg.indexOf(ZNCT_INK)>0 && svg.indexOf("#2e7d8f")<0);
+    ckT("30-07 T9: the curve is drawn over a halo so it survives the deeper fills",
+        svg.indexOf(ZNCT_HALO)>0 && svg.indexOf('stroke-width="5.6"')>0);
+    ckT("30-07 T9: the required line uses the app's alert red, not the muted E colour",
+        svg.indexOf("var(--red)")>0);
+    /* the reference value is labelled on the axis, and the floor is NOT zero */
+    ckT("30-07 T9: the required value is labelled on the y-axis in its own colour",
+        svg.indexOf('fill="var(--red)"')>0);
+    ckT("30-07 T9: the y-axis does not start at zero (reference must sit centred)",
+        ZNCT.geo.yLo > 0);
+    ckT("30-07 T9: …and the reference is at the middle when no widening was needed",
+        ZNCT.widened===true || Math.abs((ZNCT.bounds.ciiReq-ZNCT.geo.yLo)/(ZNCT.geo.yHi-ZNCT.geo.yLo)-0.5)<0.005);
+    /* the removed grey notes must NOT come back into the chart body */
+    ckT("30-07 T9: the chart viewBox took the space the removed notes freed",
+        svg.indexOf('viewBox="0 0 1000 470"')>0);
+
+    /* T10 — the boundaries dropdown moves the BANDS ONLY. Same data, two band years: the
+       plotted CII values must be byte-identical, while the required line must differ. If a
+       future refactor ever wires the band year into the series builder, this fails. */
+    const cA = znfsCiiSeries(2026, 45000, null).pts.map(p=>p.cii).join("|");
+    ZNCT.bYear = 2029; ZNCT.bounds = znfsCiiYearBounds(2029);
+    const cB = znfsCiiSeries(2026, 45000, null).pts.map(p=>p.cii).join("|");
+    ckT("30-07 T10: changing the boundary year never changes the curve", cA===cB);
+    ckT("30-07 T10: changing the boundary year does move the required line",
+        znfsCiiYearBounds(2029).ciiReq !== znfsCiiYearBounds(2026).ciiReq);
+    const svg29 = znfsCiiTrendChart();
+    ckT("30-07 T10: the 2029 chart still renders cleanly",
+        svg29.indexOf("NaN")<0 && svg29.indexOf("undefined")<0);
+
+    /* T11 — axis tick text must not lie by rounding. A 2.5 tick printed as "3" would sit at
+       the wrong height for small-capacity ships. */
+    ckT("30-07 T11: whole ticks print without decimals", znfsCiiAxisNum(8)==="8");
+    ckT("30-07 T11: a 2.5 tick keeps its half", znfsCiiAxisNum(2.5)==="2.5");
+    ckT("30-07 T11: nice ceiling of 4.8 is 5", znfsNiceCeil(4.8)===5);
+    ckT("30-07 T11: nice ceiling of 2.1 is 2.5", znfsNiceCeil(2.1)===2.5);
+    /* the 5–10 band is where real CII values live, so the ladder must not jump 5 → 10 there */
+    ckT("30-07 T11: nice ceiling of 6.4 is 8, not 10", znfsNiceCeil(6.4)===8);
+    ckT("30-07 T11: nice ceiling of 5.4 is 6, not 10", znfsNiceCeil(5.4)===6);
+    ckT("30-07 T11: nice ceiling of 14.2 is 15", znfsNiceCeil(14.2)===15);
+
+    /* T11b — THE Y-SCALE RULE (rewritten 2026-07-30b on owner instruction: reference value
+       towards the MIDDLE, all five A–E bands visible, ceiling under DOUBLE the reference).
+       Those three cannot all hold above a zero floor, so the floor is NOT zero — that is the
+       owner-approved trade and the first assertions pin it.
+       Two earlier failures are also still pinned, because both were real and both are easy to
+       reintroduce: a bands-only ceiling hid a poor performer's whole curve, and a peak-driven
+       ceiling flattened everything (the sample workbook spikes to 52.8 on 18 Jan before
+       decaying to 13.15 on the 31st). */
+    const Bt = znfsCiiYearBounds(2026), bdT = Bt.bounds, reqT = Bt.ciiReq;
+    const mkS = pts => ({ pts:pts });
+    /* --- the normal case: a compliant ship, shaped like the owner's reference chart --- */
+    const scGood = znfsCiiYScale(bdT, reqT, [mkS([{doy:3,cii:40},{doy:30,cii:5.2},{doy:330,cii:4.8}])]);
+    ckT("30-07 T11b: ceiling is UNDER double the required CII", scGood.hi < reqT*2);
+    ckT("30-07 T11b: the required CII sits at the MIDDLE of the axis",
+        Math.abs((reqT - scGood.lo)/(scGood.hi - scGood.lo) - 0.5) < 0.005);
+    ckT("30-07 T11b: the axis floor is above zero (what makes the two above possible)", scGood.lo > 0);
+    /* the ceiling must be a round number a reader recognises, not whatever 1.85x happens to be */
+    ckT("30-07 T11b: the ceiling is snapped to a nice round value",
+        znfsNiceFloor(scGood.hi)===scGood.hi);
+    ckT("30-07 T11b: snapping is DOWNWARD, so it can never break the under-double rule",
+        scGood.hi <= reqT*1.85 + 1e-9);
+    ckT("30-07 T11b: nice floor picks the value below, not above", znfsNiceFloor(9.97)===8);
+    ckT("30-07 T11b: …and is exact on a value already nice", znfsNiceFloor(10)===10);
+    ckT("30-07 T11b: nice floor handles sub-1 values", znfsNiceFloor(0.42)===0.4);
+    ckT("30-07 T11b: all five bands are on the axis — D/E boundary below the ceiling",
+        bdT.inf < scGood.hi);
+    ckT("30-07 T11b: …and the A/B boundary above the floor", bdT.sup > scGood.lo);
+    ckT("30-07 T11b: a compliant ship needs no widening", scGood.widened===false);
+    ckT("30-07 T11b: …and its January spike is therefore clipped, not accommodated", scGood.hi < 40);
+    /* --- the case that forced the adaptive rule: the real sample workbook --- */
+    const scReal = znfsCiiYScale(bdT, reqT, [mkS([
+      {doy:9,cii:28.81},{doy:18,cii:52.76},{doy:24,cii:17.82},{doy:31,cii:13.15}])]);
+    ckT("30-07 T11b: a poor performer's end value (13.15) is ON the chart", scReal.hi > 13.15);
+    ckT("30-07 T11b: …its 52.8 spike is still clipped rather than setting the scale", scReal.hi < 52.76);
+    ckT("30-07 T11b: …the bands remain visible underneath it", scReal.hi > bdT.inf && scReal.lo < bdT.sup);
+    ckT("30-07 T11b: …and the widening is DECLARED, never silent", scReal.widened===true);
+    /* --- degenerate inputs --- */
+    const scNone = znfsCiiYScale(bdT, reqT, [null]);
+    ckT("30-07 T11b: no data still yields a usable axis with every band on it",
+        scNone.hi > bdT.inf && scNone.lo < bdT.sup && scNone.hi < reqT*2);
+    ckT("30-07 T11b: a short import is accommodated",
+        znfsCiiYScale(bdT, reqT, [mkS([{doy:5,cii:9}])]).hi > 9);
+    /* --- the ghost line must not be drawn off the top of the chart --- */
+    const scNoGhost = znfsCiiYScale(bdT, reqT, [mkS([{doy:300,cii:4.8}])]);
+    const scGhost   = znfsCiiYScale(bdT, reqT, [mkS([{doy:300,cii:4.8}]), mkS([{doy:300,cii:22}])]);
+    ckT("30-07 T11b: the ghost year's end value is kept on the chart", scGhost.hi > 22);
+    ckT("30-07 T11b: …and without it the scale stays tight", scNoGhost.hi < scGhost.hi);
+    /* --- the rule must hold across every ship type, not just bulk carriers. Each type has its
+           own dd vector, and a wide one could push a band off the axis. --- */
+    ckT("30-07 T11b: every ship type keeps all five bands on the axis", SHIP_TYPES.every(function(t){
+      const cap = 50000, g2 = t.g2(cap), dd = t.ddf ? t.ddf(cap) : t.dd;
+      const ref = g2.a*Math.pow(g2.cap,-g2.c), rq = ref*(1-Z_FACTORS[2026]/100);
+      const bb = { sup:dd[0]*rq, low:dd[1]*rq, up:dd[2]*rq, inf:dd[3]*rq };
+      const sc = znfsCiiYScale(bb, rq, [mkS([{doy:300,cii:rq*0.98}])]);
+      return bb.inf < sc.hi && bb.sup > sc.lo && sc.lo >= 0 && sc.hi < rq*2;
+    }));
+    /* --- ticks: the step generator must never produce a zero/negative step --- */
+    ckT("30-07 T11b: nice step is positive for any span",
+        znfsNiceStep(8, 4) > 0 && znfsNiceStep(0.4, 4) > 0 && znfsNiceStep(140, 4) > 0);
+
+    /* T12 — empty and degenerate states must not throw or invent a CII. */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[] };
+    ckT("30-07 T12: no activity yields no series", znfsCiiSeries(2026,45000,computeAll(S))===null);
+    S = { year:2026, ship:{typeId:"bulk",capacity:0}, rows:[], mdaReports:[] };
+    ckT("30-07 T12: no capacity yields no bands (so the popup says so)", znfsCiiYearBounds(2026)===null);
+    /* reports with fuel but no distance: CO2 accrues, CII stays null (nothing to divide by) */
+    S = { year:2026, ship:shipT, rows:[], mdaReports:[
+      { t:"2026-01-10T12:00", dist:0, fuels:{ HFO:10 } } ] };
+    const s0 = znfsCiiSeries(2026, 45000, null);
+    ckT("30-07 T12: fuel burned with no distance gives CO2 but no CII",
+        s0.pts[0].co2_t>0 && s0.pts[0].cii===null);
+    ckT("30-07 T12: a curve of only null points draws nothing rather than zero",
+        znfsCiiPath(s0.pts, v=>v, v=>v)===null);
+
+    S = Sk;
+  }catch(e){ fail++; out.push("FAIL  2026-07-30 CII trend popup tests threw: "+(e&&(e.stack||e.message))); }
+
+  /* ==========================================================================
+     2026-07-30e — "YEAR TO DATE FUELEU COMPLIANCE BALANCE" TREND POPUP tests.
+     Unlike the CII curve, this one deliberately asks the REAL ENGINE for every point (see the
+     long note above znfsFeuSeries in fullscreen.js) rather than summing anything itself, so the
+     tests that matter most are RECONCILIATION ones: does the last plotted point match a direct
+     computeAll() over the identical window, and does changing the shared date filter leave the
+     graph's own full-calendar-year x-axis alone (same rule as the CII popup, T7). */
+  try{
+    const Sk2 = S;
+    const shipT2 = { typeId:"bulk", capacity:45000 };
+    const feuFuel = [{ fuelId:"HFO", tonnes:400 }];
+    S = { year:2026, ship:shipT2, mdaReports:[], rows:[
+      { kind:"voyage", from:"EEA", to:"EEA", dist:5000, cargo:20000, hours:400,
+        tStart:"2026-01-01T00:00", tEnd:"2026-02-01T00:00", fuels:feuFuel },
+      { kind:"voyage", from:"EEA", to:"EEA", dist:5000, cargo:20000, hours:400,
+        tStart:"2026-02-01T00:00", tEnd:"2026-06-01T00:00", fuels:feuFuel }
+    ] };
+    const RfullYear = computeAll(S);
+    ckT("30-07e T1: the sample ship actually has FuelEU energy in scope (test is meaningful)",
+        RfullYear.fueleu && RfullYear.fueleu.E_total > 0);
+
+    /* T2 — series basics: one point per distinct row end-date, ascending, dated correctly. */
+    const sf = znfsFeuSeries(2026);
+    ckT("30-07e T2: one point per row end date", sf && sf.pts.length===2);
+    ckT("30-07e T2: points are dated at row END, not start",
+        sf.pts[0].iso==="2026-02-01" && sf.pts[1].iso==="2026-06-01");
+    ckT("30-07e T2: dates are in ascending day-of-year order", sf.pts[1].doy > sf.pts[0].doy);
+
+    /* T3 — RECONCILIATION: the last point must equal a direct computeAll() over the SAME window
+       (1 Jan through the last row's end date) — proof this popup never drifts from engine.js,
+       because it never re-implements engine.js, it just calls it with a narrower date filter. */
+    const Swin = Object.assign({}, S, { dateFilter:{ fromISO:"2026-01-01T00:00", toISO:"2026-06-01T23:59", active:true } });
+    const Rwin = computeAll(Swin);
+    const lastPt = sf.pts[sf.pts.length-1];
+    ck("30-07e T3: last point's balance reconciles with a direct engine call over the same window",
+       lastPt.cb, Rwin.fueleu.cb/1e6, 1e-9);
+    ck("30-07e T3: last point's GHG intensity reconciles",
+       lastPt.ghgie, Rwin.fueleu.ghgie, 1e-9);
+    ck("30-07e T3: last point's target reconciles", lastPt.target, Rwin.fueleu.target, 1e-9);
+
+    /* T4 — the x-axis stays the full calendar year even when the shared From/To range would
+       exclude some of it (same owner rule as the CII popup's T7). */
+    S.dateFilter = { fromISO:"2026-01-01T00:00", toISO:"2026-02-15T23:59", active:true };
+    const sfRanged = znfsFeuSeries(2026);
+    ckT("30-07e T4: full-year series survives an active From/To range",
+        sfRanged && sfRanged.pts.length===2 && sfRanged.pts[1].iso==="2026-06-01");
+    ckT("30-07e T4: the range filter itself is left untouched",
+        S.dateFilter.active===true && S.dateFilter.toISO==="2026-02-15T23:59");
+    delete S.dateFilter;
+
+    /* T5 — the projection is a genuine least-squares fit: two points define a line exactly, so
+       the projected value at any x must match that line's equation to the last decimal. */
+    const projTest = znfsFeuProjection([{doy:10,cb:100},{doy:100,cb:-260}], 365);
+    const wantSlope = (-260-100)/(100-10);
+    ck("30-07e T5: slope matches the two-point line exactly", projTest.slope, wantSlope, 1e-9);
+    const wantProjected = 100 + wantSlope*(365-10);
+    ck("30-07e T5: projection at year-end matches the line's equation", projTest.projected, wantProjected, 1e-6);
+    ckT("30-07e T5: a single point projects flat (no slope to infer)",
+        znfsFeuProjection([{doy:50,cb:-40}], 365).projected===-40);
+
+    /* T6 — axis bounds always contain what they are meant to contain, whichever side of zero. */
+    const bndNeg = znfsFeuYScaleLeft([{cb:-30},{cb:-5}], -45);
+    ckT("30-07e T6: left axis floor is at or below the most negative value (incl. the projection)",
+        bndNeg.lo <= -45);
+    ckT("30-07e T6: left axis ceiling stays at or above zero when the ship ever has a positive day",
+        znfsFeuYScaleLeft([{cb:12},{cb:-5}], -10).hi >= 12);
+    const bndR = znfsFeuYScaleRight([{ghgie:88},{ghgie:92}], 89.3);
+    ckT("30-07e T6: right axis contains both the target and every plotted intensity",
+        bndR.lo <= 88 && bndR.lo <= 89.3 && bndR.hi >= 92 && bndR.hi >= 89.3);
+
+    /* T7 — the chart renders cleanly (no NaN/undefined) and carries both curves + the legend
+       markers a reader needs to tell them apart, plus the penalty-exposure tint. */
+    ZNFT.year = 2026; ZNFT.target = RfullYear.fueleu.target; ZNFT.cur = sf;
+    const svgF = znfsFeuTrendChart();
+    ckT("30-07e T7: chart renders an svg", svgF.indexOf("<svg")===0 && svgF.indexOf("</svg>")>0);
+    ckT("30-07e T7: chart has no NaN", svgF.indexOf("NaN")<0);
+    ckT("30-07e T7: chart has no undefined", svgF.indexOf("undefined")<0);
+    ckT("30-07e T7: the compliance-balance curve is drawn", svgF.indexOf(ZNFT_INK)>0);
+    ckT("30-07e T7: the GHG intensity curve uses a distinct colour from the balance curve",
+        svgF.indexOf(ZNFT_GHG)>0 && ZNFT_GHG!==ZNFT_INK);
+    ckT("30-07e T7: the target line is dashed", svgF.indexOf('stroke-dasharray="5 4"')>0);
+    ckT("30-07e T7: the penalty-exposure tint is present", svgF.indexOf(ZNFT_PENALTY_FILL)>0);
+    ckT("30-07e T7: the hover capture rect exists", svgF.indexOf('id="znft-hit"')>0);
+    ckT("30-07e T7: both hover dots exist (balance + intensity)",
+        svgF.indexOf('id="znft-dot"')>0 && svgF.indexOf('id="znft-dot2"')>0);
+    /* 2026-07-30f — COLOUR SCHEME matched to the owner's reference screenshots (sampled
+       directly, not guessed): a light plot background (not white, not dark navy), a teal
+       balance curve with a light-blue area-fill wash under it, and a RED reference colour for
+       both the zero/threshold line and the dashed GHGIE target line. */
+    ckT("30-07e T7: the balance curve is teal (var(--blue)), matching the reference screenshot",
+        ZNFT_INK==="var(--blue)");
+    ckT("30-07e T7: the reference colour (zero line + target line) is red, distinct from both curves",
+        ZNFT_REF==="var(--red)" && ZNFT_REF!==ZNFT_INK && ZNFT_REF!==ZNFT_GHG);
+    ckT("30-07e T7: the reference lines are drawn in that red", svgF.indexOf(ZNFT_REF)>0);
+    ckT("30-07e T7: the plot area is washed with the app's own pale background colour, not left white",
+        svgF.indexOf('fill="' + ZNFT_BG + '"')>0);
+    ckT("30-07e T7: the area-fill wash under the balance curve uses the light-blue token",
+        svgF.indexOf(ZNFT_AREA)>0);
+
+    /* T8 — reconciliation note: when banking makes the card's cbFinal diverge from the graph's
+       raw last point, the popup must name BOTH figures rather than silently pick one. */
+    S.fueleuBankedIn = 5;   // tonnes CO2eq banked in — shifts cbFinal away from raw cb
+    const Rbanked = computeAll(S);
+    ZNFT.cardCbFinal = Rbanked.fueleu.cbFinal/1e6;
+    ZNFT.cur = znfsFeuSeries(2026);
+    const warnF = znfsFeuTrendWarnings();
+    ckT("30-07e T8: banking makes the card figure differ from the raw curve (test is meaningful)",
+        Math.abs(ZNFT.cardCbFinal - ZNFT.cur.pts[ZNFT.cur.pts.length-1].cb) > 1e-6);
+    ckT("30-07e T8: the reconciliation note names both the raw and card figures",
+        warnF.indexOf(fmtI(ZNFT.cur.pts[ZNFT.cur.pts.length-1].cb))>=0 &&
+        warnF.indexOf(fmtI(ZNFT.cardCbFinal))>=0);
+    delete S.fueleuBankedIn;
+
+    /* T9 — degenerate state: no FuelEU energy in scope must not throw, and yields no series. */
+    S = { year:2026, ship:shipT2, mdaReports:[], rows:[] };
+    ckT("30-07e T9: no rows yields no series", znfsFeuSeries(2026)===null);
+
+    S = Sk2;
+  }catch(e){ fail++; out.push("FAIL  2026-07-30e FuelEU trend popup tests threw: "+(e&&(e.stack||e.message))); }
 
   const g=(pass+" passed, "+fail+" failed");
   const el=document.getElementById("testout"); el.style.display=""; el.textContent=out.join("\n")+"\n\n"+g;
