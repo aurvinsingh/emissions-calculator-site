@@ -278,7 +278,37 @@ function znfsRenderKpis(){
     return;
   }
   var c = R.cii, e = R.ets, u = R.ukets, f = R.fueleu, sm = R.summary, sc = R.scc;
-  var yr = '<span class="yr">' + R.year + '</span>';
+  /* 2026-08-01n (Aurvin, owner instruction) — the KPI card stamp reads "Date Filter" instead of
+     the year WHENEVER the From/To window has been narrowed inside the reporting year.
+
+     WHY: the four cards are always computed over S.dateFilter, but the stamp only ever said the
+     year. With a narrowed window the card showed, say, "2025" beside figures that covered only
+     part of 2025 — the owner's instruction is that the stamp must stop claiming a whole year it
+     is not reporting. Plain "Date Filter" was his chosen wording (over showing the dates
+     themselves, which would not fit the heading), applied to ALL FOUR cards together (they share
+     this one `yr` variable), and he explicitly did NOT want the year kept anywhere on the card:
+     the Year dropdown sits in the date-filter bar directly above the strip, so it is never
+     off-screen.
+
+     WHAT COUNTS AS NARROWED: exactly the same test the date-filter bar itself uses to decide
+     whether to draw its "✕ Clear" button (renderDateFilterBar and the Workspace band, js/ui.js) —
+     From/To differing from 1 Jan 00:00 / 31 Dec 23:59 of the selected year. Deliberately NOT
+     dateFilterActive(), which is TRUE all the time (2026-07-24 made the window always-on and
+     year-locked, so `active` is not a "did the user narrow it" signal). Reusing the bar's test
+     means the badge and the ✕ Clear button appear and disappear together, and pressing ✕ Clear
+     (or picking a Year) puts the year straight back — dfClearRange/dfYear call _fullYearRange,
+     which restores the two boundary values this compares against.
+
+     NOT CHANGED: no calculation, no filtering, no card content. R.year still drives the CII
+     bands, the UK ETS window and the FuelEU target exactly as before, and is still named in the
+     trend-button and pill tooltips further down this function. This is the stamp text only. */
+  var _dfy  = Number(R.year) || Number(S.year) || 2026;
+  var _dfd  = S.dateFilter || {};
+  var _dfLo = _dfy + '-01-01T00:00', _dfHi = _dfy + '-12-31T23:59';
+  var _dfNarrowed = (_dfd.fromISO || _dfLo) !== _dfLo || (_dfd.toISO || _dfHi) !== _dfHi;
+  var yr = _dfNarrowed
+    ? '<span class="yr" title="These figures cover the From/To window set in the date filter above, not the whole of ' + R.year + '. Press ✕ Clear in that bar to go back to the full year.">Date Filter</span>'
+    : '<span class="yr">' + R.year + '</span>';
   var rowsIn = (S.rows || []).length;
 
   if(!rowsIn){
@@ -328,13 +358,13 @@ function znfsRenderKpis(){
      TABLE COLUMNS (07-30m: the SCC card that used to sit beside this one is gone; the columns stay).
      The same implausibility cut-off the tables apply is honoured here, so the card cannot print a
      figure the table below it would withhold. */
-  var eeoiCut = (typeof EEOI_IMPLAUSIBLE === "number") ? EEOI_IMPLAUSIBLE : 10000;
-  var eeoiVal = sm.co2PerTW;
-  var eeoiTxt = (eeoiVal == null)
-    ? '<b class="dim" title="No transport work in this window — nothing to divide by.">—</b>'
-    : (eeoiVal > eeoiCut
-        ? '<b class="dim" title="Withheld as implausible: ' + fmtF(eeoiVal, 0) + ' gCO₂/t·nm is over the ' + eeoiCut + ' display cut-off. The consumption is still counted in every total.">—</b>'
-        : '<b>' + fmtF(eeoiVal, 2) + ' g/t·nm</b>');
+  /* 2026-08-01i (Aurvin, owner instruction): the "IMO EEOI" detail row below is REMOVED — one of
+     four one-row cuts (one per KPI card) made purely to shrink the strip's height and give the
+     table underneath more visible rows. The figure is NOT lost: it is still the TOTAL row of the
+     IMO EEOI column on the LEGS/VOYAGES tabs (same `sm.co2PerTW`/`co2AllTot*1e6/twImoTot` formula
+     as the long comment above describes), it is simply no longer duplicated up here. The
+     eeoiCut/eeoiVal/eeoiTxt build for that row is removed with it — nothing else in this file
+     used those variables. */
   /* 2026-07-30n (Aurvin, owner instruction): REVERSES the "beside the pill" placement above
      (07-28g TASK 3). Owner now wants required CII back as a body row, to make room to remove
      the Total CO₂ and Distance rows below and shrink the card — freeing vertical space for the
@@ -369,12 +399,17 @@ function znfsRenderKpis(){
           '<path d="M3 3v18h18"></path><path d="M7 14l4-5 3 3 5-7"></path></svg></button>';
   /* 2026-07-30n (Aurvin, owner instruction): Total CO₂ and Distance rows REMOVED to shrink the
      card. Required CII row ADDED back (see reqCapTitle above) — net -1 row for this card, same
-     reduction as the other three cards took in this same change. */
+     reduction as the other three cards took in this same change.
+     2026-08-01i (Aurvin, owner instruction): IMO EEOI row REMOVED (see the note above `imo`'s
+     old eeoiCut/eeoiVal/eeoiTxt build) — this card is now down to ONE detail row. It is left
+     that way rather than padded out: the .znk cards are siblings in the same CSS Grid row
+     (.znfs-kpis, css/styles.css) with the browser's default `align-items: stretch`, so this
+     card still stretches to match the tallest of the other three cards — it just has empty
+     space below Required CII instead of a real second row. Nothing needed adding for that. */
   var imo =
     '<div' + znkOpen("cii", "IMO CII") + '><h3>IMO — CII' + yr + '</h3><div class="body">' +
       '<div class="hero" title="' + esc(pillTip) + '">' + pillHtml + trendBtn + '</div>' +
       '<div class="kvz" title="' + esc(reqCapTitle) + '">Required CII <b>' + fmtF(c.ciiReq, 3) + '</b></div>' +
-      '<div class="kvz" title="IMO EEOI (MEPC.1/Circ.684) — Tank-to-Wake CO₂ ÷ transport work (cargo × laden distance), over this window. Same figure as the IMO EEOI column\'s TOTAL on the LEGS and VOYAGES tables. Not the Sea Cargo Charter EEOI, which is well-to-wake CO₂e.">IMO EEOI ' + eeoiTxt + '</div>' +
     '</div></div>';
 
   /* --- 2. FuelEU Maritime ---
@@ -407,11 +442,21 @@ function znfsRenderKpis(){
   var feu =
     '<div' + znkOpen("fueleu", "FuelEU Maritime") + '><h3>FuelEU Maritime' + yr + '</h3><div class="body">' +
       '<div class="hero" title="Compliance balance after banking / borrowing / pooling. Positive = surplus, negative = deficit. Indicative only — FuelEU is period-based in law.">' +
-        '<span class="n ' + (cbT == null ? "dim" : (cbPos ? "pos" : "neg")) + '">' + (cbT == null ? "—" : fmtI(cbT)) + '</span>' +
+        /* 2026-08-01 (Aurvin, owner instruction): hero number 0dp -> 1dp — this figure has no
+           unit touching the number itself (the unit is the small caption to its right); the
+           €/£ cost rows elsewhere on these cards keep their inline currency symbol and stay
+           at 0dp, untouched. */
+        '<span class="n ' + (cbT == null ? "dim" : (cbPos ? "pos" : "neg")) + '">' + (cbT == null ? "—" : fmtF(cbT, 1)) + '</span>' +
         '<span class="u">t CO₂eq - <b>CB</b></span>' + feuTrendBtn + '</div>' +
       '<div class="kvz" title="Article 23 penalty on a remaining deficit, including the multiplier for consecutive deficit years.">Penalty <b class="' + (f.penalty > 0 ? "neg" : "pos") + '">' + (f.penalty > 0 ? "€ " + fmtI(f.penalty) : "None") + '</b></div>' +
-      '<div class="kvz" title="Attained well-to-wake GHG intensity of the energy in scope — the figure the compliance balance is derived from.">GHGIE attained <b>' + fmtF(f.ghgie, 2) + ' g/MJ</b></div>' +
-      '<div class="kvz" title="91.16 gCO₂eq/MJ reference minus this year\'s reduction (' + f.targetPct + '%).">Target <b>' + fmtF(f.target, 2) + ' g/MJ</b></div>' +
+      /* 2026-08-01m (Aurvin, owner instruction): the merged "GHGIE attained vs target" row
+         (added 2026-08-01i, briefly removed entirely 2026-08-01l, see HANDOFF_LOG.md) is brought
+         back but the TARGET half is dropped — owner wants the attained figure kept, just not the
+         comparison. Relabelled "GHG Intensity" (owner's wording) showing only f.ghgie. f.target /
+         f.targetPct are untouched and simply unused here now; the full attained-vs-target
+         comparison is still shown on the Annual Summary card's own "GHGIE attained vs target"
+         .kv row (js/ui.js) and in the FuelEU working detail (js/ui.js, workingsgrid). */
+      '<div class="kvz" title="Attained well-to-wake GHG intensity of the energy in scope — the figure the compliance balance is derived from.">GHG Intensity <b>' + fmtF(f.ghgie, 2) + ' g/MJ</b></div>' +
       /* 2026-07-28g TASK 4 (Aurvin, owner instruction): the "Allocation — Optimal/Proportional"
          row is removed. It reported a SETTING, not a result — the method is chosen on the
          Workspace panel and is still shown there, and it is still named in the LEGS tab's FuelEU
@@ -425,11 +470,18 @@ function znfsRenderKpis(){
      label shortened from "EUAs to surrender" to "EUAs". "Covered" row relabelled "Covered CO2e"
      (owner explicitly declined an "(AR5)" qualifier pending verification of the GWP vintage
      actually used in engine.js — do not add it without checking that first). */
+  /* 2026-08-01i (Aurvin, owner instruction): "Phase-in" row REMOVED to shrink the card, one of
+     the four same-session cuts. Not lost: still folded into the "Covered CO₂e" row's tooltip
+     below, and unchanged as the "EU ETS working" card's own Phase-in row on the Calculations tab
+     (js/ui.js) — this only removes the duplicate summary row up here. e.phase itself is
+     untouched and still drives e.cost exactly as before. */
   var ets =
     '<div' + znkOpen("ets", "EU ETS") + '><h3>EU ETS' + yr + '</h3><div class="body">' +
-      '<div class="hero"><span class="n">' + fmtI(e.euas) + '</span><span class="u">EUAs</span></div>' +
-      '<div class="kvz" title="Emissions inside EU ETS scope on this year\'s basis: ' + esc(e.basisLabel) + '.">Covered CO₂e <b>' + fmtI(e.basis_t) + ' mt</b></div>' +
-      '<div class="kvz" title="Share of covered emissions that must actually be surrendered in this year (euets-art3gb).">Phase-in <b>' + Math.round(e.phase * 100) + '%</b></div>' +
+      /* 2026-08-01 (Aurvin, owner instruction): hero 0dp -> 1dp, same reasoning as the
+         FuelEU CB hero above. The "Covered CO₂e ... mt" row below keeps its inline unit and
+         stays untouched. */
+      '<div class="hero"><span class="n">' + fmtF(e.euas, 1) + '</span><span class="u">EUAs</span></div>' +
+      '<div class="kvz" title="Emissions inside EU ETS scope on this year\'s basis: ' + esc(e.basisLabel) + '. Phase-in (share of covered emissions actually surrendered this year, euets-art3gb): ' + Math.round(e.phase * 100) + '%.">Covered CO₂e <b>' + fmtI(e.basis_t) + ' mt</b></div>' +
       '<div class="kvz" title="EUAs × the EUA price set in Settings.">Cost @ €' + fmtI(S.euaPrice) + ' <b>€ ' + fmtI(e.cost) + '</b></div>' +
     '</div></div>';
 
@@ -444,7 +496,10 @@ function znfsRenderKpis(){
   var uk =
     '<div' + znkOpen("ukets", "UK ETS") + '><h3>UK ETS' + yr + '</h3><div class="body">' +
       (u.active
-        ? '<div class="hero"><span class="n">' + fmtI(u.tco2e) + '</span><span class="u">UKAs</span></div>' +
+        /* 2026-08-01 (Aurvin, owner instruction): hero 0dp -> 1dp, same reasoning as the EU ETS
+           hero above. The "Covered CO₂e ... mt" row below (and the dimmed "Computed CO₂e" row
+           in the no-obligation branch) keep their inline unit and stay untouched. */
+        ? '<div class="hero"><span class="n">' + fmtF(u.tco2e, 1) + '</span><span class="u">UKAs</span></div>' +
           '<div class="kvz" title="UK ETS scope: UK→UK voyages plus UK in-port activity (ukets-sch2a-p7). Prescribed GWP: CH₄ 28, N₂O 265 (ukets-sch2a-p35). CO₂ / CH₄ / N₂O: ' + fmtI(u.co2) + ' / ' + fmtF(u.ch4, 3) + ' / ' + fmtF(u.n2o, 3) + '.">Covered CO₂e <b>' + fmtI(u.tco2e) + ' mt</b></div>' +
           '<div class="kvz" title="UKAs × the UKA price set in Settings.">Cost @ £' + fmtI(S.ukaPrice) + ' <b>£ ' + fmtI(u.cost) + '</b></div>'
         : '<div class="hero"><span class="n dim">—</span><span class="u">no obligation in ' + R.year + '</span></div>' +
@@ -1406,14 +1461,21 @@ function znfsFeuProjection(pts, days){
 }
 
 /* ---- axis scaling ----------------------------------------------------------------------
-   Left axis (compliance balance, t CO2eq) can be positive or negative, so it reuses
-   znfsNiceCeil/znfsNiceFloor (both defined for v>0, above) on the MAGNITUDE of whichever
-   bound is being computed, then restores the sign. `wantGE` true means "return a nice value
-   >= v" (for the axis ceiling), false means "<= v" (for the floor). */
-function znfsFeuBound(v, wantGE){
-  if(!(Math.abs(v) > 0)) return 0;
-  if(wantGE) return v >= 0 ? znfsNiceCeil(v) : -znfsNiceFloor(-v);
-  return v <= 0 ? -znfsNiceCeil(-v) : znfsNiceFloor(v);
+   2026-07-31 (owner instruction) — REWORKED to round to a step derived from the SPAN of the
+   data being plotted, not from the absolute magnitude of the values (the old znfsFeuBound /
+   znfsNiceFloor/znfsNiceCeil combination snapped to the value's own base-10 decade — e.g. any
+   GHG intensity value in the 80s/90s rounded straight to a multiple of 10, so a real change of
+   under 1 g/MJ always rendered as a dead-flat line between 80 and 100). znfsNiceStep(span, want)
+   already derives its step size from the SPAN's own magnitude, so reusing it here (instead of
+   znfsNiceCeil/znfsNiceFloor) is what makes both axes auto-tighten to however much the plotted
+   values actually move. */
+function znfsFeuAxisFromRange(loRaw, hiRaw, want){
+  if(!(hiRaw > loRaw)) hiRaw = loRaw + 1;
+  var step = znfsNiceStep(hiRaw - loRaw, want || 5);
+  var lo = Math.floor(loRaw / step) * step;
+  var hi = Math.ceil(hiRaw / step) * step;
+  if(hi <= lo) hi = lo + step;
+  return { lo:lo, hi:hi };
 }
 function znfsFeuYScaleLeft(pts, projected){
   var vals = [0], i;
@@ -1421,45 +1483,44 @@ function znfsFeuYScaleLeft(pts, projected){
   if(projected != null) vals.push(projected);
   var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
   var span = (mx - mn) || Math.max(1, Math.abs(mx) || 1);
-  var lo = znfsFeuBound(mn - span*0.08, false);
-  var hi = znfsFeuBound(mx + span*0.15, true);
-  if(hi <= lo) hi = lo + 1;
-  return { lo:lo, hi:hi };
+  /* floor tracks the lowest point (real data, or the 31-Dec projection if that runs lower)
+     tightly — owner instruction 2026-07-31: the projection should read as sitting at/near the
+     bottom of the axis, not lost under a wide margin of empty space below it. */
+  var sc = znfsFeuAxisFromRange(mn - span*0.04, mx + span*0.12, 5);
+  return { lo: sc.lo, hi: sc.hi };
 }
 function znfsFeuYScaleRight(pts, target){
   var vals = [target], i;
   for(i = 0; i < pts.length; i++) if(pts[i].ghgie != null) vals.push(pts[i].ghgie);
   var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
-  if(mn === mx){ mn *= 0.95; mx *= 1.05; }
+  if(mn === mx){ mn -= 0.5; mx += 0.5; }
   var span = mx - mn;
-  var lo = znfsNiceFloor(Math.max(0, mn - span*0.15));
-  var hi = znfsNiceCeil(mx + span*0.15);
-  if(hi <= lo) hi = lo + 1;
-  return { lo:lo, hi:hi };
+  var sc = znfsFeuAxisFromRange(mn - span*0.2, mx + span*0.2, 5);
+  return { lo: sc.lo, hi: sc.hi };
 }
 
 /* ---- the chart --------------------------------------------------------------------------
    Same hand-rolled inline SVG approach as the CII chart (no charting library — the app must
    work offline from file://, per CLAUDE.md), on the same 1000×470 viewBox so both popups feel
    like one family. */
-/* 2026-07-30f (Aurvin, owner instruction) — COLOUR SCHEME MATCHED TO THE OWNER'S REFERENCE
-   SCREENSHOTS (the "ZeroNorth" policy dashboard he pasted for Tasks 1/2). Read the actual pixel
-   colours before changing these — do not guess from memory. The two reference images show:
-   a light blue-grey plot background (not white, not dark navy — sampled: very close to this
-   app's own --bg), a solid TEAL balance curve with a light blue area-fill wash underneath it, a
-   dashed/solid RED line marking the regulatory threshold (zero balance / the GHGIE target), and
-   a dark curve for the attained-intensity line sitting near that red line. This app already had
-   var(--blue)/var(--blue2)/var(--red) tokens defined for exactly this palette (used elsewhere in
-   the app), so the popup now reuses them instead of the ad-hoc "#4d7ea8" this block used to
-   define — one less colour invented, one more point of consistency with the rest of the UI. */
+/* 2026-07-31 (Aurvin, owner instruction) — RED REMOVED FROM THIS CHART. The owner asked that no
+   red appear here at all, and to reuse the app's own existing (non-red) tokens rather than invent
+   a separate "ZeroNorth brand" palette (none exists in this project outside styles.css's :root).
+   The zero-balance/threshold line and the dashed Target GHGIE line now use var(--amber) instead
+   of var(--red) — same "regulatory reference" role, just not red. The penalty-exposure tint below
+   zero balance is the amber family at low alpha instead of the old red-family wash. The GHG
+   intensity curve keeps a BLUE family (owner's choice, 2026-07-31: "blue but different than
+   compliance balance") but a distinctly different shade — a deep steel-navy — from the teal used
+   for the compliance-balance curve, so the two lines never read as the same colour. Was
+   2026-07-30f's screenshot-matched red/teal/dark-ink scheme; superseded by this instruction. */
 var ZNFT_GEO = { x0:74, x1:906, y0:26, y1:400 };
-var ZNFT_INK = "var(--blue)";        // the compliance-balance curve — teal, matches the reference screenshot
+var ZNFT_INK = "var(--blue)";        // the compliance-balance curve — teal
 var ZNFT_HALO = ZNCT_HALO;
-var ZNFT_GHG = ZNCT_INK;             // GHG intensity curve — the dark ink, distinct from the teal balance curve and the red reference line
-var ZNFT_REF = "var(--red)";         // the regulatory reference colour: the zero/threshold line AND the dashed GHGIE target line — same red the CII popup already uses for its required-CII line
-var ZNFT_AREA = "var(--blue2)";      // light wash under the balance curve, matching the reference screenshot's shaded area
-var ZNFT_BG = "var(--bg)";           // plot-area background wash — the reference screenshots are NOT white or dark navy, they are this app's own pale blue-grey card colour
-var ZNFT_PENALTY_FILL = "rgba(193,117,112,.16)";  // below-zero tint: the same red family as the CII E-band, at low alpha (decision 2 — a wash, not a second data series)
+var ZNFT_GHG = "#1c4f7c";            // GHG intensity curve — a distinct steel-navy blue, different from the teal balance curve (2026-07-31, owner instruction)
+var ZNFT_REF = "var(--amber)";       // the regulatory reference colour: the zero/threshold line AND the dashed GHGIE target line — amber, NOT red (2026-07-31, owner instruction: no red in this chart)
+var ZNFT_AREA = "var(--blue2)";      // light wash under the balance curve
+var ZNFT_BG = "var(--bg)";           // plot-area background wash — this app's own pale blue-grey card colour
+var ZNFT_PENALTY_FILL = "rgba(178,106,0,.14)";  // below-zero tint: the amber family (var(--amber) = #b26a00), at low alpha — NOT red (2026-07-31, owner instruction)
 function znfsFeuPath(pts, X, Y, field){
   var d = "", pen = false, i;
   for(i = 0; i < pts.length; i++){
@@ -1492,8 +1553,7 @@ function znfsFeuTrendChart(){
   var yZero = YL(0);
   s.push('<rect x="' + G.x0 + '" y="' + yZero.toFixed(1) + '" width="' + (G.x1 - G.x0) + '" height="' +
          Math.max(0, G.y1 - yZero).toFixed(1) + '" fill="' + ZNFT_PENALTY_FILL + '" shape-rendering="crispEdges"></rect>');
-  /* the zero/threshold line — RED, matching the reference screenshot's solid threshold line
-     (2026-07-30f; was a neutral grey before the colour pass). */
+  /* the zero/threshold line — AMBER (var(--amber)), not red (2026-07-31, owner instruction). */
   s.push('<line x1="' + G.x0 + '" y1="' + yZero.toFixed(1) + '" x2="' + G.x1 + '" y2="' + yZero.toFixed(1) +
          '" stroke="' + ZNFT_REF + '" stroke-width="1.4"></line>');
 
@@ -1540,17 +1600,16 @@ function znfsFeuTrendChart(){
            '" stroke="#8a9aa6" stroke-width="1" stroke-dasharray="1 3"></line>');
   }
 
-  /* --- target GHG intensity: flat for the year, dashed, right axis (Task 2). RED, matching the
-     reference screenshot's dashed threshold line — the same colour the zero line above uses and
-     the same colour the CII popup already uses for its required-CII line (2026-07-30f). --- */
+  /* --- target GHG intensity: flat for the year, dashed, right axis (Task 2). AMBER, the same
+     colour the zero line above uses — not red (2026-07-31, owner instruction). --- */
   var yTgt = YR(ZNFT.target).toFixed(1);
   s.push('<line x1="' + G.x0 + '" y1="' + yTgt + '" x2="' + G.x1 + '" y2="' + yTgt +
          '" stroke="' + ZNFT_HALO + '" stroke-width="4" stroke-opacity=".65"></line>');
   s.push('<line x1="' + G.x0 + '" y1="' + yTgt + '" x2="' + G.x1 + '" y2="' + yTgt +
          '" stroke="' + ZNFT_REF + '" stroke-width="1.6" stroke-dasharray="5 4"></line>');
 
-  /* --- GHG intensity curve (right axis) — dark ink, sitting apart from both the teal balance
-     curve and the red reference lines (2026-07-30f). --- */
+  /* --- GHG intensity curve (right axis) — steel-navy, sitting apart from both the teal balance
+     curve and the amber reference lines (2026-07-31). --- */
   var ghgPath = znfsFeuPath(cur.pts, X, YR, "ghgie");
   if(ghgPath){
     s.push('<path d="' + ghgPath + '" fill="none" stroke="' + ZNFT_HALO + '" stroke-width="4.4" ' +
@@ -1602,6 +1661,20 @@ function znfsFeuTrendChart(){
            'stroke-dasharray="2 4" stroke-opacity=".75"></line>');
     s.push('<circle cx="' + X(days).toFixed(1) + '" cy="' + YL(projected).toFixed(1) +
            '" r="3.6" fill="#fff" stroke="' + ZNFT_INK + '" stroke-width="1.8"></circle>');
+    /* --- projected-value callout (2026-07-31, owner instruction): name the projected 31-Dec
+       number directly on the chart, not just as a dot, so it is unmistakable what the
+       extrapolation is projecting. Anchored to the right edge; flips above/below the point
+       depending on how close it sits to the top/bottom of the plot area so the label never
+       runs off the chart. --- */
+    var pjX = X(days), pjY = YL(projected);
+    var pjLabel = "Projected 31 Dec: " + fmtI(projected) + " t CO₂eq";
+    var pjAbove = (pjY - G.y0) > 22;              // room above? put label there; else below
+    var pjTy = pjAbove ? (pjY - 12) : (pjY + 20);
+    var pjW = Math.min(190, 7.1 * pjLabel.length + 12);
+    s.push('<rect x="' + (pjX - pjW).toFixed(1) + '" y="' + (pjTy - 12).toFixed(1) + '" width="' + pjW.toFixed(1) +
+           '" height="16" rx="3" fill="#fff" fill-opacity=".92" stroke="' + ZNFT_INK + '" stroke-opacity=".35"></rect>');
+    s.push('<text x="' + (pjX - 6).toFixed(1) + '" y="' + (pjTy - 0.5).toFixed(1) +
+           '" text-anchor="end" font-size="10.5" font-weight="700" fill="' + ZNFT_INK + '">' + pjLabel + '</text>');
   }
   if(last){
     s.push('<circle cx="' + X(last.doy).toFixed(1) + '" cy="' + YL(last.cb).toFixed(1) +
@@ -1642,8 +1715,8 @@ function znfsFeuTrendProvenance(){
     "for real data. It is a naive trend, not a forecast: FuelEU intensity does not actually move " +
     "linearly through a year (it depends on which fuels are burned when), so treat it as \"if the " +
     "year continues exactly as it has so far\", nothing more.";
-  h += "<br><br><b>GHG intensity vs target</b><br>The dark line is the cumulative attained " +
-    "well-to-wake GHG intensity (g/MJ) on the right-hand axis; the dashed red line is the year's " +
+  h += "<br><br><b>GHG intensity vs target</b><br>The steel-blue line is the cumulative attained " +
+    "well-to-wake GHG intensity (g/MJ) on the right-hand axis; the dashed amber line is the year's " +
     "target — both read straight off the same engine call as the balance, at no extra risk of " +
     "disagreeing with the card.";
   h += "<br><br><b>Known limitation</b><br>A row with no date at all cannot be placed on this " +
@@ -1729,9 +1802,13 @@ function znfsFeuTrendRender(){
     : '<p class="znct-note">There is no dated activity in ' + ZNFT.year + ' to plot. Import an MDA or OVD file, ' +
       'or add dated rows on the Workspace tab.</p>';
 
+  /* 2026-07-31 (owner instruction): the bottom reconciliation note (raw vs card compliance
+     balance) is removed from this view entirely — no replacement text on the chart. The same
+     explanation still lives in the ⓘ provenance tooltip (znfsFeuTrendProvenance, "What is
+     plotted" section) for anyone who wants it. znfsFeuTrendWarnings() itself is left in place,
+     unused here, in case it is wanted again later — it is not called by anything else. */
   host.innerHTML = '<div class="znct-box" role="dialog" aria-modal="true" aria-label="Year to date FuelEU compliance balance">' +
     head + '<div class="znct-body">' + legend + chart +
-    (ZNFT.cur ? znfsFeuTrendWarnings() : "") +
     '</div></div>';
 
   if(ZNFT.cur) znfsFeuTrendBindHover();
@@ -1757,6 +1834,7 @@ function znfsFeuTrendHover(ev, svg){
   var vx = (ev.clientX - box.left) / box.width * 1000;
   var frac = (vx - ZNFT_GEO.x0) / (ZNFT_GEO.x1 - ZNFT_GEO.x0);
   var doy = Math.round(1 + Math.max(0, Math.min(1, frac)) * (geo.days - 1));
+
   var p = null, i;
   for(i = 0; i < cur.pts.length; i++){
     if(cur.pts[i].doy <= doy && cur.pts[i].cb != null) p = cur.pts[i];

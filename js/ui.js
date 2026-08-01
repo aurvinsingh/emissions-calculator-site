@@ -1950,6 +1950,21 @@ function hfoEqPerNmCellHtml(v){
   return `<span style="display:block;font-size:11px;font-weight:600;color:#1e293b;cursor:help" title="Equivalent HFO fuel consumption per nautical mile for this leg: all fuel actually burned, converted to how much HFO would carry the same energy, divided by the leg's distance. Informational only — not a regulatory figure.">${fmtF(v,1)}<span style="font-size:70%;font-weight:400;color:#64748b;margin-left:2px">kg/nm</span></span>`;
 }
 
+/* 2026-08-01 (Aurvin, owner instruction): kg/nm has been given its OWN column (LEGS col 10,
+   VOYAGES col 6 — see imoLeg in breakdownGrid and voyageGrid's body), displacing the IMO EEOI
+   that used to sit there. This is the NUMBER-ONLY render for that relocated slot: same value
+   as hfoEqPerNmCellHtml above (still used by the second-line spot on the Results-tab card,
+   and directly by the self-tests), but WITHOUT the inline "kg/nm" unit span or its smaller
+   font-size treatment — the column header itself now carries the unit (colHdr("kg/nm","")),
+   matching how eeoiCellHtml/ciiCellHtml render their own dash/value in a header-labelled
+   column rather than repeating the unit inline. No plausibility cutoff, same as
+   hfoEqPerNmCellHtml/legHfoEqPerNm (owner's standing instruction, 2026-07-26v) — this always
+   shows its raw value rather than being withheld. */
+function hfoEqPerNmValueHtml(v){
+  if(v==null) return `<span style="color:#94a3b8;font-size:10.5px;cursor:help" title="No equivalent HFO fuel/nm: no fuel is recorded for this leg (or voyage's sailing legs), or there is no distance to divide by.">—</span>`;
+  return `<span style="cursor:help" title="Equivalent HFO fuel consumption per nautical mile: all fuel actually burned, converted to how much HFO would carry the same energy, divided by distance. Informational only — not a regulatory figure.">${fmtF(v,1)}</span>`;
+}
+
 /* 2026-07-26m (Aurvin, owner instruction, from a reference photo): the pill is now ONE SOLID
    COLOUR throughout (the rating colour) with two white ROUNDED-RECTANGLE "cutouts" punched
    into it for the two numbers — replacing the 2026-07-26l version (three touching segments,
@@ -2063,10 +2078,14 @@ function renderLive(){
   const f = R.fueleu, e = R.ets, u = R.ukets, c = R.cii, sc = R.scc, ec = R.econ, sm = R.summary;
   el.innerHTML = `
   <div class="strip">
-    <div class="sbox" style="grid-column:span 2"><div class="v">${fmt(e.euas,0)}</div><div class="l">EUA <b>tCO₂e</b></div></div>
-    <div class="sbox" style="grid-column:span 2"><div class="v">${fmt(u.tco2e,0)}</div><div class="l">UKA <b>tCO₂e</b></div></div>
+    <div class="sbox" style="grid-column:span 2"><div class="v">${fmt(e.euas,1)}</div><div class="l">EUA <b>tCO₂e</b></div></div>
+    <div class="sbox" style="grid-column:span 2"><div class="v">${fmt(u.tco2e,1)}</div><div class="l">UKA <b>tCO₂e</b></div></div>
     <div class="sbox" style="grid-column:span 2"><div class="v">${fmtF(sc.weighted,2)}</div><div class="l">EEOI <b>gCO₂/t·nm</b></div></div>
-    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${(f.cbFinal??0)>=0?"var(--green)":"var(--red)"}">${fmt((f.cbFinal??0)/1e6,0)}</div><div class="l">FEU-CB <b>tCO₂eq</b></div></div>
+    <!-- 2026-08-01 (Aurvin, owner instruction): EUA/UKA/FEU-CB hero numbers moved 0dp -> 1dp.
+         These three had no unit touching the big number itself (the unit sits in the small
+         caption below), unlike €/£ cost figures which keep the currency symbol inline — those
+         are unchanged. Any already-2dp figure (EEOI above) is also left alone. -->
+    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${(f.cbFinal??0)>=0?"var(--green)":"var(--red)"}">${fmt((f.cbFinal??0)/1e6,1)}</div><div class="l">FEU-CB <b>tCO₂eq</b></div></div>
     <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${f.penalty>0?"var(--red)":"var(--green)"}">${f.penalty>0?"€"+fmtI(f.penalty):"OK"}</div><div class="l">FEU PENALTY <b>€</b></div></div>
   </div>
 
@@ -3535,6 +3554,122 @@ function gridMinWidth(g){
     .reduce((s,m)=>s+parseInt(m.replace(/\D+/,""),10),0);
 }
 function gridBox(g){ return "width:100%;min-width:"+gridMinWidth(g)+"px;"; }
+
+/* =========================================================================================
+   2026-08-01c (Aurvin, owner instruction) — HIDEABLE REGULATION COLUMNS on LEGS / VOYAGES
+   -----------------------------------------------------------------------------------------
+   The "▦ Edit columns" picker could already hide columns on REPORTS (an ordinary <table>).
+   LEGS and VOYAGES are CSS GRIDS: every cell carries a hardcoded `grid-column:N` and the
+   track list (BR_GRID / VW_GRID) is a fixed 20-track string, so hiding a column means
+   RENUMBERING every later cell and rebuilding the track string. That renumbering is what
+   `emcPlan()` below does, and it is the whole of the "phase 2" work the 2026-07-30i session
+   deferred — now done for the four REGULATION groups only, per the owner's answers this
+   session (EU ETS, UK ETS, FuelEU Maritime, and Sea Cargo Charter on VOYAGES).
+
+   WHY THIS IS THE LOW-RISK PART OF THE GRID: all four groups sit at the RIGHT-HAND END of
+   both tables — LEGS columns 14-20, VOYAGES columns 10-20. Everything to their left (the
+   frozen checkbox and Activity columns, the Eligibility badge block that spans 6-8, the IMO
+   pair, Fuel metrics) is untouched and never renumbered, so none of the awkward spanning /
+   sticky / absolutely-positioned cells are involved.
+
+   THE BYTE-IDENTICAL GUARANTEE (columns.js rule 1) IS PRESERVED: when nothing is hidden —
+   which includes ALWAYS, on the ordinary tabs, because colVis() returns true whenever the
+   full-screen overlay is closed — emcPlan() returns the ORIGINAL grid string, the ORIGINAL
+   gridBox(), and an identity column map, so every renderer below emits exactly the same
+   characters it did before this existed. That is what keeps the ~504 self-tests and the
+   tools/verify_*.js literal-substring assertions passing untouched.
+
+   NOT AFFECTED, deliberately: engine.js and every calculation (hiding a column removes a
+   <div>, nothing else); the TOTAL row's arithmetic (it still sums the same rows — only its
+   cells move); and every download/Excel export, which never consults colVis() at all.
+   ========================================================================================= */
+
+/* key → PHYSICAL 1-based grid column, for the hideable columns of each grid view.
+   These MUST agree with the group/column lists in js/columns.js (EMCOLS_DEFS) and with the
+   column maps documented above breakdownGrid() / voyageGrid(). Three lists, one contract. */
+const EMC_LEGS_COLS = [                       /* BR_GRID, 20 tracks */
+  { key:"calcs.euets.euas",  col:14 },        /* EU ETS   — EUAs         */
+  { key:"calcs.ukets.ukas",  col:15 },        /* UK ETS   — UKAs         */
+  { key:"calcs.feu.elig",    col:16 },        /* FuelEU   — Elig. mt     */
+  { key:"calcs.feu.energy",  col:17 },        /*          — Energy       */
+  { key:"calcs.feu.eelig",   col:18 },        /*          — Elig. energy */
+  { key:"calcs.feu.cb",      col:19 },        /*          — CB           */
+  { key:"calcs.feu.pen",     col:20 }         /*          — Penalty      */
+];
+/* 2026-08-01f (Aurvin, owner instruction — screenshot review): REVERSES the 2026-08-01 note
+   this replaces. The "IMO EEOI" column at physical 14 was originally made UNHIDEABLE and given
+   its own separate, untinted header tag, on the reasoning that it was a fixed IMO figure, not
+   part of the Sea Cargo Charter group. The owner has now seen it on screen and asked for the
+   opposite: fold it INTO the Sea Cargo Charter tinted header (which now spans 10-14, 5 wide,
+   not 10-13) and make it a genuine 5th hideable checkbox in that picker group, alongside its 4
+   SCC neighbours. It is renamed "EEOI (IMO)" on screen and in the picker to stay distinct from
+   the group's own "EEOI (WtW)" column beside it. Nothing about the VALUE or FORMULA changes —
+   still vwGroupEEOI(g), still tank-to-wake/CO₂-only — only its header grouping and hideability.
+   See HANDOFF_LOG.md 2026-08-01f for the full before/after column map. */
+const EMC_VOY_COLS = [                        /* VW_GRID, 21 tracks */
+  { key:"voy.scc.wtw",       col:10 },        /* Sea Cargo Charter — WtW           */
+  { key:"voy.scc.cargo",     col:11 },        /*                   — Cargo         */
+  { key:"voy.scc.tw",        col:12 },        /*                   — T-Work        */
+  { key:"voy.scc.eeoi",      col:13 },        /*                   — EEOI (WtW)    */
+  { key:"voy.scc.eeoiImo",   col:14 },        /*                   — EEOI (IMO)    */
+  { key:"voy.euets.euas",    col:15 },        /* EU ETS   — EUAs                   */
+  { key:"voy.ukets.ukas",    col:16 },        /* UK ETS   — UKAs                   */
+  { key:"voy.feu.elig",      col:17 },        /* FuelEU   — Elig. mt                */
+  { key:"voy.feu.energy",    col:18 },        /*          — Energy                  */
+  { key:"voy.feu.eelig",     col:19 },        /*          — Elig. energy            */
+  { key:"voy.feu.cb",        col:20 },        /*          — CB                      */
+  { key:"voy.feu.pen",       col:21 }         /*          — Penalty                 */
+];
+
+/* Build the plan for one render pass. `hideable` is one of the two lists above.
+   Returned object:
+     .any        did anything actually get hidden? (false ⇒ everything below is a no-op)
+     .grid/.box  the track string and gridBox() to render with — the ORIGINALS when !any
+     .on(c)      is PHYSICAL column c still visible?
+     .m(c)       PHYSICAL column c → RENDERED column, or 0 if it is hidden
+     .span(s,n)  a group header covering physical columns s..s+n-1 → {start,span} in rendered
+                 coordinates, or null if the whole group is gone
+   Splitting BR_GRID/VW_GRID on a plain space is safe: every track is `minmax(a,b)` and there
+   is no space inside the parentheses (see the two const definitions). */
+function emcPlan(GRID, hideable){
+  const idn = { any:false, grid:GRID, box:gridBox(GRID),
+                on:()=>true, m:c=>c, span:(s,n)=>({start:s,span:n}) };
+  if(typeof colVis !== "function") return idn;         // columns.js absent (standalone smoke tests)
+  const hidden = {};
+  let any = false;
+  for(const h of hideable){ if(!colVis(h.key)){ hidden[h.col] = true; any = true; } }
+  if(!any) return idn;                                  // ← the byte-identical fast path
+  const tracks = GRID.split(" ");
+  const keep = [], m = {};
+  let next = 0;
+  for(let c=1;c<=tracks.length;c++){
+    if(hidden[c]) continue;
+    keep.push(tracks[c-1]);
+    m[c] = ++next;
+  }
+  const g = keep.join(" ");
+  return {
+    any: true, grid: g, box: gridBox(g),
+    on: c => !hidden[c],
+    m:  c => m[c] || 0,
+    span: (s,n) => {
+      const live = [];
+      for(let c=s;c<s+n;c++) if(m[c]) live.push(m[c]);
+      return live.length ? { start: live[0], span: live.length } : null;
+    }
+  };
+}
+/* The right-hand divider of a group rides on that group's LAST column. If the user hides
+   exactly that column, the group would lose its wall and run into whatever follows, so the
+   wall is grafted onto whichever column is now last. Returns "" whenever the natural last
+   column is still visible — so with nothing hidden not one character changes, same technique
+   as trFirstVis() uses for REPORTS. */
+function emcWall(P, first, last){
+  if(!P.any || P.on(last)) return "";
+  for(let c=last-1;c>=first;c--) if(P.on(c)) return c;
+  return "";
+}
+const EMC_WALL = "border-right:1px solid #e2e8f0;";
 const TR_SELCOL_W = 34;                   // reports: fixed width of the checkbox column,
                                           // so the frozen Event column knows where to sit
 const TR_FREEZE_SEL = "position:sticky;left:0;";
@@ -3590,8 +3725,15 @@ function breakdownGrid(R, tips){
      2026; FuelEU is locked AR4 (25/298); SCC is AR6. euAR is the EU-ETS tag for THIS year. */
   const euAR = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
   const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
+  /* 2026-08-01c: the hideable-regulation-column plan for this render pass — see emcPlan().
+     P.any is false (and everything below is a no-op emitting the original characters) unless
+     the full-screen picker has actually unticked something in EU ETS / UK ETS / FuelEU. */
+  const P = emcPlan(BR_GRID, EMC_LEGS_COLS);
+  const BR_G = P.grid, BR_B = P.box;
+  /* FuelEU's right-hand wall normally rides on Penalty (col 20); move it if Penalty is hidden */
+  const feuWallAt = emcWall(P, 16, 20);
   const header = `
-    <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${BR_B}grid-template-columns:${BR_G};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("br")}</div>
       <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Activity &amp; timeframe</div>
       <!-- 2026-07-26g (Aurvin, owner instruction): Voyage No / Cargo / Dist headers restyled to
@@ -3629,9 +3771,9 @@ function breakdownGrid(R, tips){
            (11-13); EU ETS group narrowed from span 2 (13-14) to column 14 only (EUAs). See
            HANDOFF_LOG.md 2026-07-26 entry. */""}
       <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      ${P.on(14)?`<div style="grid-column:${P.m(14)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>`:""}
+      ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>`:""}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(16,5))}
       <!-- sub-header row (row 2): same three eligibility labels/styling as Report-Wise's thSub
            cells (10px, #94a3b8, centered, asymmetric 8/1/1/8 padding so the gap between the
            three badges is smaller than the gap to the group's own outer wall). -->
@@ -3642,21 +3784,27 @@ function breakdownGrid(R, tips){
       <div style="grid-column:12;grid-row:2;padding:6px 10px 6px 4px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;line-height:1.3" title="Fuel consumed (tonnes)">${colHdr("Cons.","mt")}</div>
       ${/* 2026-07-26d (Aurvin): the "rating · % of required" sub-label was removed to narrow
             this column — that explanation now lives in the IMO section's info icon. */""}
-      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:center" title="INDICATIVE per-leg CII: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, with the leg's equivalent HFO fuel consumption per nautical mile (kg/nm) shown below it. CII is a whole-year, whole-ship metric in law — this shows what the rating would be if the entire year looked like this leg. Port stays have no distance, so they show the stay's equivalent HFO fuel consumption per day (t/d) instead — see the IMO section's ⓘ for the full explanation.">${colHdr("CII / Performance","")}</div>
-      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right" title="IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — this leg's own CO₂ ÷ its own transport work (cargo × laden distance). Nothing is carried in from ballast legs or port stays. A ballast leg or port stay has no transport work, so it shows a dash.">${colHdr("EEOI","gCO₂/t·nm")}</div>
+      <div style="grid-column:9;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:center" title="INDICATIVE per-leg CII: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill. CII is a whole-year, whole-ship metric in law — this shows what the rating would be if the entire year looked like this leg. Port stays have no distance, so they show the stay's equivalent HFO fuel consumption per day (t/d) instead — see the IMO section's ⓘ for the full explanation. (2026-08-01: the equivalent HFO fuel/nm figure that used to sit under this pill now has its own column, kg/nm, immediately to the right.)">${colHdr("CII / Performance","")}</div>
+      <!-- 2026-08-01 (Aurvin, owner instruction): this column used to show the IMO EEOI
+           (MEPC.1/Circ.684) — that figure has NOT been deleted, it moved to the "IMO — CII"
+           KPI card on the full-screen dashboard (js/fullscreen.js, znfsRenderKpis) — see the
+           still-computed-but-unrendered legEeoi local in imoLeg below. This slot now shows
+           kg/nm (equivalent HFO fuel/nm), the SAME figure that used to sit as a second line
+           under the CII pill in column 9 — see legHfoEqPerNm/hfoEqPerNmValueHtml. -->
+      <div style="grid-column:10;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Equivalent HFO fuel consumption per nautical mile for this leg: all fuel actually burned, converted to how much HFO would carry the same energy, divided by the leg's distance. Informational only — not a regulatory figure. Port stays have no distance, so they show a dash. (The IMO EEOI that used to be shown here has moved to the IMO — CII KPI card on the full-screen dashboard.)">${colHdr("kg/nm","")}</div>
       ${/* 2026-07-26p (Aurvin, owner instruction): this is now a Fuel-metrics TOTAL — full fuel
            actually burned on this leg, same CO2+CH4/N2O GWP treatment EU ETS uses, but NOT cut
            down by the EU ETS coverage rule (100% intra-EU / 50% extra-EU / 0% out of scope).
            The border-right that used to sit after Cons. (col 12, marking the old Fuel
            metrics/EU ETS boundary) moved to here, since Fuel metrics now ends at this column. */""}
       <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap" title="${R.year>=2026?"Total CO₂e of ALL fuel consumed on this leg (CO₂+CH₄/N₂O, "+euEUAsUnit+") — the full amount burned, NOT scaled by EU ETS coverage. See EUAs (EU ETS group) for the EU-ETS-eligible/scoped figure.":"Total CO₂ of ALL fuel consumed on this leg (CO₂ only before 2026) — the full amount burned, NOT scaled by EU ETS coverage."}">${colHdr(R.year>=2026?"Total CO₂e":"Total CO₂", euEUAsUnit)}</div>
-      <div style="grid-column:14;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>
-      <div style="grid-column:15;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>
-      <div style="grid-column:16;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>
-      <div style="grid-column:17;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>
-      <div style="grid-column:18;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>
-      <div style="grid-column:19;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>
-      <div style="grid-column:20;grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>
+      ${P.on(14)?`<div style="grid-column:${P.m(14)};grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>`:""}
+      ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>`:""}
+      ${P.on(16)?`<div style="grid-column:${P.m(16)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===16?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>`:""}
+      ${P.on(17)?`<div style="grid-column:${P.m(17)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===17?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>`:""}
+      ${P.on(18)?`<div style="grid-column:${P.m(18)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===18?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>`:""}
+      ${P.on(19)?`<div style="grid-column:${P.m(19)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===19?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>`:""}
+      ${P.on(20)?`<div style="grid-column:${P.m(20)};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>`:""}
     </div>`;
 
   let zi=0;
@@ -3752,8 +3900,17 @@ function breakdownGrid(R, tips){
        keeping "PORT STAY" on one line. (Root cause of that gap turned out to be the dates
        block's flex:1 1 auto below stretching to fill leftover width in the row, pushing the
        tag away from the dates even though "PORT STAY" itself fits comfortably on one line
-       within this column's width — see the fix at the dates/tag row below.) */
-    const legTag = isBerth ? "PORT STAY" : "VOYAGE";
+       within this column's width — see the fix at the dates/tag row below.)
+       2026-08-01b (Aurvin, owner instruction): renamed AGAIN, "PORT STAY" → "AT-BERTH", and the
+       reason is the opposite of 07-26t's. The Trends popup gained an At Sea / In-Port / At-Berth
+       filter this session, in which AT-BERTH means exactly this window — between the derived
+       Arrival and the derived Departure. Having the same period called "PORT STAY" here and
+       "At-Berth" there would be two names for one thing, which is worse than 07-26t's original
+       worry that a reader might take "@BERTH" literally. One vocabulary now: At-Berth is the
+       Arrival→Departure window in both places. Scope of this change was confirmed with the owner:
+       THE LEGS TAG ONLY. Still display-only — isBerth (d.kind!=="voyage") is untouched, and so are
+       the frozen derivation ladder, the AT_BERTH data field, every tooltip and every export. */
+    const legTag = isBerth ? "AT-BERTH" : "VOYAGE";
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
     const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
     const voyNo = brVoyNos(segs, d);        // 2026-07-23f: canonical voyage number(s) for this leg
@@ -3767,6 +3924,15 @@ function breakdownGrid(R, tips){
       const cbC = fu.isTotal ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d")
                              : (covEU>0 ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8");
       const cell = (col,extra,val)=>`<div style="grid-column:${col+1};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
+      /* 2026-08-01c: same as cell(), but for the hideable regulation columns 14-20 — drops the
+         cell entirely when hidden and renumbers it when something to its left went. `col` keeps
+         cell()'s 0-based convention (col+1 is the physical grid column), so the call sites below
+         are unchanged apart from the helper name. */
+      const rcell = (col,extra,val)=>{
+        const phys = col+1;
+        if(!P.on(phys)) return "";
+        return `<div style="grid-column:${P.m(phys)};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}${feuWallAt===phys?EMC_WALL:""}">${val}</div>`;
+      };
       /* 2026-07-26o: the three per-fuel "Cov." cells (9/12/14 in the old layout) are gone —
          coverage is now shown ONCE per leg, as badges in the ELIGIBILITY block (columns 6-8,
          see eligLeg below), not repeated on every fuel sub-row. Fuel type/Cons. shifted to
@@ -3775,13 +3941,13 @@ function breakdownGrid(R, tips){
         <div style="grid-column:11;grid-row:${rr};padding:7px 6px 7px 10px;border-bottom:1px solid ${bb};font-weight:${fu.isTotal?700:600};color:${fu.isTotal?"#0f172a":"#334155"};line-height:1.3;overflow-wrap:anywhere">${esc(fu.label)}</div>
         ${cell(11,"padding-left:4px;", fmtF(fu.tonnes,1))}
         ${cell(12,"border-right:1px solid #e2e8f0;", brNum(R.year>=2026? fu.totalCO2e : fu.totalCO2))}
-        ${cell(13,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
-        ${cell(14,"border-right:1px solid #e2e8f0;font-weight:600;color:#6d4fa3;", covUK>0? fmtF(fu.ukCO2e,2) : brDash)}
-        ${cell(15,"", brNum(fu.eligibleEU,1))}
-        ${cell(16,"", brNum(fu.energy))}
-        ${cell(17,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
-        ${cell(18,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
-        ${cell(19,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}`;
+        ${rcell(13,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
+        ${rcell(14,"border-right:1px solid #e2e8f0;font-weight:600;color:#6d4fa3;", covUK>0? fmtF(fu.ukCO2e,2) : brDash)}
+        ${rcell(15,"", brNum(fu.eligibleEU,1))}
+        ${rcell(16,"", brNum(fu.energy))}
+        ${rcell(17,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
+        ${rcell(18,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
+        ${rcell(19,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}`;
     }).join("");
 
     /* 2026-07-26c (Task 2, Aurvin, owner instruction): the Sea Cargo Charter leg-level block
@@ -3803,7 +3969,14 @@ function breakdownGrid(R, tips){
        the cell's own horizontal centre) rather than trying to track the letter's position. */
     const imoCellStyleCII = "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-variant-numeric:tabular-nums;";
     const legCiiRes = legCII(d, R.cii, S);
-    const legEeoi = legEEOI(d);
+    /* 2026-08-01 (Aurvin, owner instruction): column 10 of THIS table no longer shows the IMO
+       EEOI (it shows kg/nm instead — see imoLeg below and colHdr("kg/nm","") in the header
+       above). legEEOI() itself is UNTOUCHED and legEeoi is kept here (unused in this render)
+       only because removing it would be an unrelated change — same precedent as eeoiTot in
+       brTotalsHtml below. The displaced EEOI figure is not lost: it lives on in the
+       window-level "IMO — CII" KPI card on the full-screen dashboard (js/fullscreen.js,
+       znfsRenderKpis). */
+    const legEeoi = legEEOI(d); void legEeoi;
     /* 2026-07-26u (Aurvin, owner instruction): port stays used to show a bare dash in the CII
        column (no distance, no CII). That slot now carries the equivalent HFO fuel/day figure
        instead — see legHfoEqPerDay above for the full formula and reasoning. */
@@ -3860,19 +4033,23 @@ function breakdownGrid(R, tips){
        close. This changes the self-test at "CII column (grid-column:9) cell uses centered
        flex-column layout" (below) — updated in the same commit, per CLAUDE.md's rule that a
        test only changes with an explicit owner instruction, stated here. */
+    /* 2026-08-01 (Aurvin, owner instruction): the second line that used to sit under the CII
+       pill on a voyage row (equivalent HFO fuel/nm, hfoEqPerNmCellHtml(legHfoEqNm)) is REMOVED
+       from here — it is not shown twice. Column 9 is otherwise unchanged: same isBerth branch,
+       same centered-pill / absolute-position technique, same min-height:70px guard (kept so
+       this column still shares its literal vertical anchor with the Eligibility cell — see the
+       2026-07-26w note above — even though it now only ever holds one line). */
     const imoLeg = `
         <div style="grid-column:9;grid-row:1 / span ${span};${
           isBerth ? `padding:${cellPad};${imoCellStyleCII}`
                   : `position:relative;min-height:70px`}">${
           isBerth ? hfoEqCellHtml(legHfoEq)
-                  : `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${ciiCellHtml(legCiiRes)}</div>`+
-                    `<div style="position:absolute;top:calc(50% + 22px);left:50%;transform:translateX(-50%);white-space:nowrap">${hfoEqPerNmCellHtml(legHfoEqNm)}</div>`}</div>
-        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};${imoCellStyle}border-right:1px solid #e2e8f0;font-weight:600;color:#1d7a5f">${
-          eeoiCellHtml(legEeoi, isBerth?"A port stay carries no cargo over a distance, so it has no EEOI."
-                                       :"No transport work on this leg — the departure (SOSP) report shows no cargo (ballast leg), so there are no tonne-miles to divide by.")}</div>`;
+                  : `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${ciiCellHtml(legCiiRes)}</div>`}</div>
+        <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};${imoCellStyle}border-right:1px solid #e2e8f0;font-weight:600;color:#1e293b">${
+          hfoEqPerNmValueHtml(legHfoEqNm)}</div>`;
 
     return `
-      <div class="hirow" style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+      <div class="hirow" style="display:grid;${BR_B}grid-template-columns:${BR_G};background:${bg};border-bottom:1px solid #e2e8f0">
         <div class="hicell" style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("br",i)}</div>
         <div class="hicell" style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
@@ -3942,7 +4119,11 @@ function breakdownGrid(R, tips){
      header + totals are wrapped in one sticky block so both stay pinned while the legs
      scroll underneath. The totals row aggregates the TICKED rows (all rows when none are
      ticked) — see ROWSEL above. */
-  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${BR_BOX}">${header}<div id="brTotals">${brTotalsHtml()}</div></div>`;
+  /* 2026-08-01c: BR_B not BR_BOX — the sticky wrapper carries the table's own min-width, so if
+     it kept the full 20-column figure while the grid inside it shrank, the survivors could not
+     stretch into the freed space (the owner's chosen behaviour) and the header would sit wider
+     than its body. Identical string when nothing is hidden. */
+  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${BR_B}">${header}<div id="brTotals">${brTotalsHtml()}</div></div>`;
   return `<div class="tablescroll" style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${stuck}${bodyWrapped}${empty}</div>`;
 }
 
@@ -4012,10 +4193,34 @@ function brTotalsHtml(){
     : null;
   const twImo = dets.filter(d=>d.kind==="voyage" && d.tw>0);
   const twImoTot = twImo.reduce((a,d)=>a+d.tw,0);
-  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null;
+  /* 2026-08-01 (Aurvin, owner instruction): column 10 of the TOTAL row no longer shows this
+     IMO EEOI total — it shows a TOTAL-row kg/nm figure instead (below). eeoiImoTot is kept
+     (unused) only because removing it would be an unrelated change, same precedent as the
+     eeoiTot sccDets figure a few lines above. The displaced figure lives on in the
+     window-level "IMO — CII" KPI card on the full-screen dashboard. */
+  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null; void eeoiImoTot;
+  /* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm — sums the SAME HFO-equivalent-KG
+     core (legHfoEqTonnes(d)*1000) the per-leg figure uses, over imoDets (the same
+     dist>0 voyage-leg set already built above for the CII total), divided by imoDist (also
+     already computed above). Kept in step with the per-leg formula on purpose so the TOTAL
+     row and any single leg can never disagree on how kg/nm is built — only the level (one
+     leg vs. every ticked leg) differs. */
+  const hfoEqKgTot = imoDets.reduce((a,d)=>{ const t=legHfoEqTonnes(d); return a+(t!=null? t*1000 : 0); },0);
+  const hfoEqPerNmTot = imoDist>0 ? hfoEqKgTot/imoDist : null;
   const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  /* 2026-08-01c: this row is rebuilt on its own whenever the tick selection changes, so it
+     re-reads the column plan itself rather than inheriting breakdownGrid()'s — that also means
+     it stays correct if the picker is changed while rows are ticked. The SUMS are untouched:
+     hiding a column removes its cell, never a row from `dets`. */
+  const P = emcPlan(BR_GRID, EMC_LEGS_COLS);
+  const feuWallAt = emcWall(P, 16, 20);
+  const rcell=(col,extra,val)=>{
+    const phys = col+1;
+    if(!P.on(phys)) return "";
+    return `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${feuWallAt===phys?EMC_WALL:""}">${val}</div>`;
+  };
   return `
-    <div style="display:grid;${BR_BOX}grid-template-columns:${BR_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${P.box}grid-template-columns:${P.grid};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
       <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
@@ -4032,7 +4237,7 @@ function brTotalsHtml(){
            The CII cell reuses ciiCellHtml, so the TOTAL row's badge and percentage look
            exactly like the leg rows' and the Results tab's. IMO now sits LEFT of Fuel metrics. */""}
       <div style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
-      ${cell(9,"border-right:1px solid #e2e8f0;color:#1d7a5f;", eeoiImoTot!=null? fmtF(eeoiImoTot,2) : brDash)}
+      ${cell(9,"border-right:1px solid #e2e8f0;color:#1e293b;", hfoEqPerNmValueHtml(hfoEqPerNmTot))}
       ${cell(11,"padding-left:4px;", fmtF(sumF("tonnes"),1))}
       ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
            the SAME number of decimal places as the leg rows underneath it in every column.
@@ -4042,13 +4247,13 @@ function brTotalsHtml(){
       ${/* 2026-07-26p: Total CO2e moved to Fuel metrics — sums det.totalCO2/totalCO2e (full
            fuel burned, not EU-ETS-coverage-scoped). Border-right moved here from Cons. (col 11). */""}
       ${cell(12,"border-right:1px solid #e2e8f0;", fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
-      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
-      ${cell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
-      ${cell(15,"", fmtF(sumF("eligibleEU"),1))}
-      ${cell(16,"", fmtF(sumEnergy,2))}
-      ${cell(17,"", fmtF(sum("E")/1e6,2))}
-      ${cell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
-      ${cell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
+      ${rcell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
+      ${rcell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
+      ${rcell(15,"", fmtF(sumF("eligibleEU"),1))}
+      ${rcell(16,"", fmtF(sumEnergy,2))}
+      ${rcell(17,"", fmtF(sum("E")/1e6,2))}
+      ${rcell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
+      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
     </div>`;
 }
 
@@ -4449,8 +4654,14 @@ function vwGroups(state){
    8-11: WtW/Cargo/T-Work/EEOI) swapped places — every other track, including everything
    from EUAs (13) onward, keeps its EXACT same width and position; the physical column count
    (20) and every individual track's px/fr value are UNCHANGED, so no column got any wider
-   or narrower — only the ORDER of these five tracks moved. */
-const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+   or narrower — only the ORDER of these five tracks moved.
+   2026-08-01 (Aurvin, owner instruction): a new track was inserted right after the SCC EEOI
+   track (was position 13) and before the old EUAs track (was 14, now 15) — the new "IMO EEOI"
+   column mirrored beside the Sea Cargo Charter EEOI, see EMC_VOY_COLS / voyageGrid. Its width
+   (minmax(78px,0.6fr)) reuses the SAME track width as column 6 (the original IMO EEOI, now
+   kg/nm) — a known-good width for this exact figure. Every other track's width/order is
+   UNCHANGED; only this one new token was added, and the physical column count went 20 → 21. */
+const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(78px,0.6fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
 let VW_LAST = null;
 
@@ -4477,6 +4688,28 @@ function vwGroupEEOI(g){
   if(!g || !(g.tw>0)) return null;
   const v = (Number(g.co2)||0)*1e6/g.tw;
   return isFinite(v) ? v : null;
+}
+/* 2026-08-01 (Aurvin, owner instruction): the VOYAGES-table twin of legHfoEqPerNm — kg/nm for
+   a whole voyage group, scoped to this voyage's own SAILING LEGS ONLY (g.dets entries with
+   d.kind==="voyage" — the same filter idiom vwGroupPorts above already uses). IN-PORT stays
+   are deliberately excluded (owner's instruction): a port stay has no distance of its own to
+   divide by, and folding its fuel into a distance-based ratio would distort the figure. Sums
+   the SAME HFO-equivalent-KG core (legHfoEqTonnes(d)*1000) the per-leg figure uses, so the
+   per-leg and per-voyage figures are built the same way and can never drift apart on that
+   shared step — only the level (one leg vs. a whole voyage's legs) differs. Returns null when
+   there is no sailing distance to divide by, mirroring legHfoEqPerNm's own guard. */
+function vwGroupHfoEqPerNm(g){
+  if(!g || !g.dets) return null;
+  const legs = g.dets.filter(d=>d.kind==="voyage");
+  let kg = 0, dist = 0;
+  for(const d of legs){
+    const t = legHfoEqTonnes(d);
+    if(t!=null) kg += t*1000;
+    dist += Number(d.dist)||0;
+  }
+  if(!(dist>0)) return null;
+  const perNm = kg/dist;
+  return isFinite(perNm) ? perNm : null;
 }
 
 /* the ports a whole voyage group ran between: first leg's origin → last leg's destination */
@@ -4510,13 +4743,33 @@ function voyageGrid(R, tips){
   VW_LAST={ R, cellPad };
   rowselReset("vw", G.length);
   const th=(col,txt,extra,title)=>`<div style="grid-column:${col+1};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
+  /* 2026-08-01c: th() for the HIDEABLE sub-header cells (physical columns 10-20) — drops the
+     cell when hidden, renumbers it otherwise, and grafts a group's right wall onto its last
+     surviving column. `col` keeps th()'s 0-based convention (col+1 = physical column). */
+  const rth=(col,txt,extra,title)=>{
+    const phys = col+1;
+    if(!P.on(phys)) return "";
+    const wall = (sccWallAt===phys || feuWallAt===phys) ? EMC_WALL : "";
+    return `<div style="grid-column:${P.m(phys)};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}${wall}"${title?` title="${title}"`:""}>${txt}</div>`;
+  };
   /* 2026-07-23 (owner, Aurvin): EU-ETS CO₂e GWP set for THIS year — AR5 default / AR4 in
      Settings, and only from 2026 (before that EU ETS is CO₂ only). UK ETS = AR5, FuelEU =
      AR4, SCC = AR6, all locked by their regulations. See breakdownGrid for the full note. */
   const euAR = (R.year>=2026 && R.ets && R.ets.gwp) ? ((R.ets.gwp.label.match(/AR\d/)||[""])[0]) : "";
   const euEUAsUnit = euAR ? `tCO₂e (${euAR})` : "tCO₂ (CO₂ only)";
+  /* 2026-08-01f (Aurvin, owner instruction): hideable-regulation-column plan for this pass —
+     Sea Cargo Charter (10-14, now 5 wide — see EMC_VOY_COLS), EU ETS (15), UK ETS (16) and
+     FuelEU (17-21). See emcPlan(). No-op unless the full-screen picker has unticked something,
+     so the default output is byte-identical. */
+  const P = emcPlan(VW_GRID, EMC_VOY_COLS);
+  const VW_G = P.grid, VW_B = P.box;
+  /* each group's right-hand wall rides on its last column — move it if that one is hidden.
+     2026-08-01f: sccWallAt's range widened 10-13 -> 10-14 now that the relocated IMO EEOI
+     column (physical 14) joined the Sea Cargo Charter hideable group. */
+  const sccWallAt = emcWall(P, 10, 14);
+  const feuWallAt = emcWall(P, 17, 21);
   const header=`
-    <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${VW_B}grid-template-columns:${VW_G};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("vw")}</div>
       <div style="grid-column:2;grid-row:1 / span 2;${BR_FREEZE2}z-index:3;display:flex;align-items:flex-end;padding:7px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#0f172a">Voyage &amp; timeframe</div>
       <!-- 2026-07-26g (Aurvin, owner instruction): same Report-Wise-matched restyle as
@@ -4538,10 +4791,15 @@ function voyageGrid(R, tips){
            to the right to make room, EU ETS/UK ETS/FuelEU keep their EXACT same column numbers
            (14/15/16-20) — this reorder only touches columns 7-13. See HANDOFF_LOG.md. */""}
       <div style="grid-column:7 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
-      <div style="grid-column:10 / span 4;grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>
-      <div style="grid-column:14;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>
-      <div style="grid-column:15;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>
-      <div style="grid-column:16 / span 5;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>
+      ${/* 2026-08-01f (Aurvin, owner instruction — screenshot review): the tan Sea Cargo Charter
+           tag now spans 5 physical columns (10-14), not 4 (10-13) — it absorbed the relocated
+           "EEOI (IMO)" column, which used to render as its own separate, untinted #f1f5f9 tag
+           right after this one (deleted below the old code lived here). This REVERSES the
+           2026-08-01 "own tag" decision — see EMC_VOY_COLS/HANDOFF_LOG.md 2026-08-01f. */""}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>`:"")(P.span(10,5))}
+      ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>`:""}
+      ${P.on(16)?`<div style="grid-column:${P.m(16)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>`:""}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(17,5))}
       ${/* 2026-07-26e: IMO pair, identical treatment to Leg-Wise, now LEFT of Fuel metrics. Both
            are VOYAGE-level and span the fuel sub-rows. See the IMO info icon for the caveat. */""}
       ${/* 2026-07-26 (Task, Aurvin): header text centred over this column instead of the
@@ -4550,24 +4808,49 @@ function voyageGrid(R, tips){
            (Leg-Wise got "CII / Performance"; Voyage-Wise stays "CII" per owner instruction).
            Column width (VW_GRID) untouched — text-align only. */""}
       ${th(4,colHdr("CII",""),"text-align:center;","INDICATIVE CII for this voyage: the CII Percentage (attained ÷ required × 100), the rating letter, and the attained CII itself — also called AER — in one pill, rated on THIS voyage's own end-year bands. CII is a whole-year, whole-ship metric in law. See the IMO section's ⓘ.")}
-      ${th(5,colHdr("EEOI","gCO₂/t·nm"),"border-right:1px solid #e2e8f0;","IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — this voyage's own CO₂ (its legs AND its port stays) ÷ its transport work. NOT the Sea Cargo Charter EEOI four columns to the right, which is well-to-wake CO₂e with ballast carry-in.")}
+      ${/* 2026-08-01 (Aurvin, owner instruction): this column no longer shows the IMO EEOI — it
+           shows kg/nm for the voyage's own SAILING LEGS ONLY (in-port stays excluded, see
+           vwGroupHfoEqPerNm). The displaced EEOI is not lost: it is repeated verbatim at the
+           new physical-14 column beside the Sea Cargo Charter EEOI (see above), and it also
+           still feeds the "IMO — CII" KPI card on the full-screen dashboard. */""}
+      ${th(5,colHdr("kg/nm",""),"border-right:1px solid #e2e8f0;","Equivalent HFO fuel consumption per nautical mile for this voyage's own SAILING LEGS (in-port stays excluded — they have no distance to divide by): all fuel actually burned on those legs, converted to how much HFO would carry the same energy, divided by their distance. Informational only — not a regulatory figure. The IMO EEOI that used to sit here is now shown again beside the Sea Cargo Charter EEOI (four columns to the right), and on the IMO — CII KPI card on the full-screen dashboard.")}
       <div style="grid-column:7;grid-row:2;padding:6px 6px 6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;line-height:1.3">Fuel type</div>
       ${th(7,colHdr("Cons.","mt"),"padding-left:4px;","Fuel consumed (tonnes) over the whole voyage")}
       ${/* 2026-07-26q3: Total CO2e moved here, next to Cons., now that Fuel metrics is one
            contiguous group again (see the header-tag comment above) — same value/tooltip as
            before, just relocated from the old isolated column 12. */""}
       ${th(8,colHdr(R.year>=2026?"Total CO₂e":"Total CO₂",euEUAsUnit),"white-space:nowrap;border-right:1px solid #e2e8f0;",R.year>=2026?"Total CO₂e of ALL fuel consumed on this voyage (CO₂+CH₄/N₂O, "+euEUAsUnit+") — the full amount burned, NOT scaled by EU ETS coverage. See EUAs (EU ETS group) for the EU-ETS-eligible/scoped figure.":"Total CO₂ of ALL fuel consumed on this voyage (CO₂ only before 2026) — the full amount burned, NOT scaled by EU ETS coverage.")}
-      ${th(9,colHdr("WtW","mt (AR6)"),"","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
-      ${th(10,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
-      ${th(11,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
-      ${th(12,colHdr("EEOI","gCO₂e/t·nm"),"border-right:1px solid #e2e8f0;","Sea Cargo Charter EEOI: WELL-TO-WAKE CO₂e (AR6) including emissions carried in from preceding ballast legs. NOT the IMO EEOI in the IMO section — that one is tank-to-wake, CO₂ only, with nothing carried in.")}
-      ${th(13,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
-      ${th(14,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
-      ${th(15,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
-      ${th(16,colHdr("Energy","10⁶ MJ"))}
-      ${th(17,colHdr("Elig. energy","10⁶ MJ"))}
-      ${th(18,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
-      ${th(19,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
+      ${rth(9,colHdr("WtW","mt (AR6)"),"","Well-to-wake CO₂e (tonnes) — this voyage's SCC numerator, port stays included")}
+      ${rth(10,colHdr("Cargo","mt"),"","Cargo carried on this voyage — the sum of its laden legs' DEPARTURE (SOSP) quantities")}
+      ${rth(11,colHdr("T-Work","10⁶ t·nm"),"","Transport work for the whole voyage = Σ (cargo × laden distance), in millions of tonne-miles")}
+      ${/* 2026-08-01f: this sub-header is no longer the SCC group's rightmost static column
+           (EEOI (IMO) joined it to its right) — its hardcoded border-right is removed; rth()'s
+           own dynamic `wall` logic (sccWallAt) now supplies the border-right correctly for
+           whichever column ends up last when something is hidden. */""}
+      ${rth(12,colHdr("EEOI","gCO₂e/t·nm"),"","Sea Cargo Charter EEOI: WELL-TO-WAKE CO₂e (AR6) including emissions carried in from preceding ballast legs. NOT the EEOI (IMO) column beside it — that one is tank-to-wake, CO₂ only, with nothing carried in.")}
+      ${/* 2026-08-01f (Aurvin, owner instruction — screenshot review): renamed "EEOI (IMO)" (was
+           "EEOI") to stay distinct from its SCC neighbour's "EEOI (WtW)" label, and merged into
+           the Sea Cargo Charter tinted group (see the header-tag edit above) — REVERSES the
+           2026-08-01 "own separate untinted tag, unhideable" decision. It is now a genuine 5th
+           hideable column in that picker group (voy.scc.eeoiImo, EMC_VOY_COLS). It keeps its
+           border-right: it is now correctly the group's last static-default column. Nothing
+           about the VALUE changes at all — still vwGroupEEOI(g) via rcell(13) below.
+           2026-08-01g (Aurvin, owner instruction — screenshot review): "EEOI (IMO)" wrapped onto
+           two lines in this narrow track ("EEOI" / "(IMO)"), wasting header row height — reverted
+           the on-screen NAME back to bare "EEOI" (one line, fits). The disambiguation from the
+           SCC EEOI beside it is still there — different unit line (gCO₂ vs gCO₂e), different
+           value colour, and the tooltip below — just not repeated a third time in the name itself.
+           The "▦ Edit columns" PICKER entry (js/columns.js, voy.scc.eeoiImo) is untouched and still
+           says "EEOI (IMO)": that list isn't a narrow grid column, so the extra word costs nothing
+           there and keeps the two SCC checkboxes ("EEOI (WtW)" / "EEOI (IMO)") easy to tell apart. */""}
+      ${rth(13,colHdr("EEOI","gCO₂/t·nm"),"border-right:1px solid #e2e8f0;","IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — the SAME value as the IMO EEOI at columns 5-6, shown again here next to the Sea Cargo Charter's own EEOI (WtW) for easy comparison. NOT the Sea Cargo Charter figure, which is well-to-wake CO₂e with ballast carry-in.")}
+      ${rth(14,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
+      ${rth(15,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
+      ${rth(16,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
+      ${rth(17,colHdr("Energy","10⁶ MJ"))}
+      ${rth(18,colHdr("Elig. energy","10⁶ MJ"))}
+      ${rth(19,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
+      ${rth(20,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
     </div>`;
 
   let zi=0;
@@ -4589,6 +4872,21 @@ function voyageGrid(R, tips){
        that span instead of pinned to its top edge on a multi-fuel voyage. */
     const cell=(col,row,extra,val)=>`<div style="grid-column:${col+1};grid-row:${row};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
     const fl=(col,get,extra)=>lines.map((f,k)=>`<div style="grid-column:${col+1};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}">${get(f)}</div>`).join("");
+    /* 2026-08-01c: hideable-column variants of cell() and fl() for physical columns 10-20 —
+       drop when hidden, renumber otherwise, and carry a group's right wall if its natural last
+       column went. Same 0-based `col` convention as the originals (col+1 = physical column). */
+    const rcell=(col,row,extra,val)=>{
+      const phys=col+1;
+      if(!P.on(phys)) return "";
+      const wall=(sccWallAt===phys||feuWallAt===phys)?EMC_WALL:"";
+      return `<div style="grid-column:${P.m(phys)};grid-row:${row};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;${extra||""}${wall}">${val}</div>`;
+    };
+    const rfl=(col,get,extra)=>{
+      const phys=col+1;
+      if(!P.on(phys)) return "";
+      const wall=(sccWallAt===phys||feuWallAt===phys)?EMC_WALL:"";
+      return lines.map((f,k)=>`<div style="grid-column:${P.m(phys)};grid-row:${k+1};padding:${cellPad};text-align:right;font-variant-numeric:tabular-nums;${extra||""}${wall}">${get(f)}</div>`).join("");
+    };
     /* the SCC ⊕ marker: this voyage absorbed a preceding wholly-ballast voyage's emissions */
     const eeoiCell = g.sccNoFactor ? brNoFactor
       : g.eeoi!=null ? fmtF(g.eeoi,2)+(g.sccBallastIn>0?`<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(g.sccNumerator,2)} t WtW CO₂e = this voyage's own ${fmtF(g.sccWtW,2)} + ${fmtF(g.sccBallastIn,2)} carried in from ${g.sccBallastLegs} preceding ballast leg(s) with no cargo of their own (SCC 2025 Technical Guidance Appendix 3)."> ⊕</span>`:"")
@@ -4614,7 +4912,7 @@ function voyageGrid(R, tips){
     if(g.seg&&g.seg.retimed) flags.push(`<span style="color:#9a6b1f;cursor:help" title="The MDA file first showed this voyage number on the report at ${esc(g.seg.atReport)}, which is the same day or the day after a departure — so the change was re-timed back to that departure (${esc(g.seg.viaDeparture)}).">re-timed</span>`);
     if(g.dets.some(d=>d.vwSplit)) flags.push(`<span style="color:#9a6b1f;cursor:help" title="A sea leg in this voyage was split because the voyage number changed mid-passage with no departure on the same or the previous day (an abrupt charterer change).">leg split</span>`);
     const head=`
-      <div class="hirow" style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:${bg};border-bottom:1px solid #e2e8f0">
+      <div class="hirow" style="display:grid;${VW_B}grid-template-columns:${VW_G};background:${bg};border-bottom:1px solid #e2e8f0">
         <div class="hicell" style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("vw",i)}</div>
         <div class="hicell" style="grid-column:2;grid-row:1 / span ${span};${BR_FREEZE2}z-index:2;background:${bg};display:flex;border-right:1px solid #e2e8f0">
           <div style="position:relative;width:${GUTTER_W}px;flex:none;display:flex;align-items:center;justify-content:center">
@@ -4648,31 +4946,45 @@ function voyageGrid(R, tips){
              Leg-Wise, and the Voyage-Wise TOTAL sits much closer to the annual CII. Rated on
              g.cii, THIS voyage's own end-year bands, never the fallback year's. */""}
         ${cell(4,"1 / span "+span,"",ciiCellHtml(vwGroupCII(g)))}
-        ${cell(5,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#1d7a5f;font-weight:600;",
-               eeoiCellHtml(vwGroupEEOI(g),"No transport work on this voyage — no cargo was carried on any of its legs, so there are no tonne-miles to divide by."))}
+        ${/* 2026-08-01 (Aurvin, owner instruction): this cell no longer shows the IMO EEOI — it
+             shows kg/nm for the voyage's own SAILING LEGS ONLY (vwGroupHfoEqPerNm excludes
+             in-port stays, same idiom vwGroupPorts uses). The displaced EEOI value is repeated
+             verbatim at the new rcell(13) below (physical 14), beside the SCC EEOI. */""}
+        ${cell(5,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#1e293b;font-weight:600;",
+               hfoEqPerNmValueHtml(vwGroupHfoEqPerNm(g)))}
         ${/* 2026-07-26q3: Total CO2e relocated here, next to Cons. — Fuel metrics is one
              contiguous group again (fixes the "two Fuel metrics tags" mistake from 2026-07-26p;
              full fuel burned, NOT EU-ETS-coverage-scoped, same as before). Sea Cargo Charter's
              own WtW/Cargo/T-Work/EEOI (below) each shifted one column right to make room. */""}
         ${fl(8,f=>brNum(R.year>=2026?f.totalCO2e:f.totalCO2,2),"border-right:1px solid #e2e8f0;")}
-        ${fl(9,f=>f.noFactor?brNoFactor:brNum(f.sccWtW,2),"color:#9a6b1f;")}
-        ${cell(10,"1 / span "+span,"color:#475569;",g.cargo>0?fmtF(g.cargo,0):`<span title="No cargo on any leg of this voyage — a ballast voyage. Its WtW CO₂e carries into the next voyage that loads (SCC Appendix 3).">0</span>`)}
-        ${cell(11,"1 / span "+span,"color:#475569;",g.tw>0?fmtF(g.tw/1e6,2):brDash)}
-        ${cell(12,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#9a6b1f;font-weight:600;",eeoiCell)}
-        ${fl(13,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
-        ${fl(14,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
-        ${fl(15,f=>brNum(f.eligibleEU,1))}
-        ${fl(16,f=>brNum(f.energy,2))}
-        ${fl(17,f=>brNum(f.E/1e6,2))}
-        ${fl(18,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
-        ${fl(19,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${rfl(9,f=>f.noFactor?brNoFactor:brNum(f.sccWtW,2),"color:#9a6b1f;")}
+        ${rcell(10,"1 / span "+span,"color:#475569;",g.cargo>0?fmtF(g.cargo,0):`<span title="No cargo on any leg of this voyage — a ballast voyage. Its WtW CO₂e carries into the next voyage that loads (SCC Appendix 3).">0</span>`)}
+        ${rcell(11,"1 / span "+span,"color:#475569;",g.tw>0?fmtF(g.tw/1e6,2):brDash)}
+        ${/* 2026-08-01f: hardcoded border-right removed — this SCC EEOI-WtW cell is no longer
+             the group's rightmost column (EEOI (IMO) joined it to its right). */""}
+        ${rcell(12,"1 / span "+span,"color:#9a6b1f;font-weight:600;",eeoiCell)}
+        ${/* 2026-08-01f (Aurvin, owner instruction — screenshot review): the "EEOI (IMO)" column,
+             physical 14 — renders vwGroupEEOI(g) UNCHANGED (same value, same eeoiCellHtml, same
+             dash/title), just merged into the Sea Cargo Charter group's hideability/tinting
+             (see EMC_VOY_COLS/header edits above). Its border-right is unchanged: it is now
+             correctly the group's last static-default column. */""}
+        ${rcell(13,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#1d7a5f;font-weight:600;",
+               eeoiCellHtml(vwGroupEEOI(g),"No transport work on this voyage — no cargo was carried on any of its legs, so there are no tonne-miles to divide by."))}
+        ${rfl(14,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${rfl(15,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${rfl(16,f=>brNum(f.eligibleEU,1))}
+        ${rfl(17,f=>brNum(f.energy,2))}
+        ${rfl(18,f=>brNum(f.E/1e6,2))}
+        ${rfl(19,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
+        ${rfl(20,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
       </div>`;
     return head;
   }).join("");
 
   const bodyWrapped = G.length? `<div style="position:relative">${body}</div>` : "";
   const empty = !G.length? `<div style="padding:22px;text-align:center;color:#64748b">No activity rows for ${R.year}.</div>` : "";
-  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${VW_BOX}">${header}<div id="vwTotals">${vwTotalsHtml()}</div></div>`;
+  /* 2026-08-01c: VW_B not VW_BOX — see the matching note in breakdownGrid's `stuck`. */
+  const stuck = `<div style="position:sticky;top:0;z-index:12;background:#ffffff;${VW_B}">${header}<div id="vwTotals">${vwTotalsHtml()}</div></div>`;
   return `<div class="tablescroll" style="font-size:12.5px;overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px">${stuck}${bodyWrapped}${empty}</div>`;
 }
 /* 2026-07-23d (Aurvin, owner instruction): the expandable per-leg list that used to sit
@@ -4733,35 +5045,72 @@ function vwTotalsHtml(){
         : brDash);
   const twImo=sel.filter(g=>g.tw>0);
   const twImoTot=twImo.reduce((a,g)=>a+g.tw,0);
+  /* 2026-08-01 (Aurvin, owner instruction): this figure no longer renders at column 6 — it
+     renders at the new mirrored IMO-EEOI column instead (rcell(13) below, physical 14),
+     unchanged in value. */
   const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null;
+  /* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm for column 6 — the SAME
+     HFO-equivalent-KG core (legHfoEqTonnes(d)*1000) the per-voyage figure uses
+     (vwGroupHfoEqPerNm), summed over every TICKED voyage group's own SAILING LEGS ONLY
+     (in-port stays excluded, same idiom as vwGroupHfoEqPerNm/vwGroupPorts). */
+  const hfoEqLegsTot = sel.reduce((a,g)=>a.concat(g.dets.filter(d=>d.kind==="voyage")),[]);
+  const hfoEqKgVoyTot = hfoEqLegsTot.reduce((a,d)=>{ const t=legHfoEqTonnes(d); return a+(t!=null? t*1000 : 0); },0);
+  const hfoEqDistVoyTot = hfoEqLegsTot.reduce((a,d)=>a+(Number(d.dist)||0),0);
+  const hfoEqPerNmVoyTot = hfoEqDistVoyTot>0 ? hfoEqKgVoyTot/hfoEqDistVoyTot : null;
   const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  /* 2026-08-01c: this totals row is rebuilt on its own when the tick selection changes, so it
+     re-reads the column plan rather than inheriting voyageGrid()'s. The SUMS above are
+     untouched — hiding a column removes a cell, never a voyage group from `sel`.
+     2026-08-01f (Aurvin, owner instruction): sccWallAt's range widened 10-13 -> 10-14 now that
+     the relocated EEOI (IMO) column (physical 14) joined the Sea Cargo Charter hideable group —
+     see EMC_VOY_COLS for the full before/after map. */
+  const P = emcPlan(VW_GRID, EMC_VOY_COLS);
+  const sccWallAt = emcWall(P, 10, 14);
+  const feuWallAt = emcWall(P, 17, 21);
+  const rcell=(col,extra,val)=>{
+    const phys=col+1;
+    if(!P.on(phys)) return "";
+    const wall=(sccWallAt===phys||feuWallAt===phys)?EMC_WALL:"";
+    return `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${wall}">${val}</div>`;
+  };
   const k=ROWSEL.vw.sel.size;
   const label=k? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
                 : `Total — all ${G.length} voyage${G.length===1?"":"s"} · ${R.year}`;
   return `
-    <div style="display:grid;${VW_BOX}grid-template-columns:${VW_GRID};background:#eef2f7;border-bottom:2px solid #cbd5e1">
+    <div style="display:grid;${P.box}grid-template-columns:${P.grid};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(label)}</div>
       <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
       <div style="grid-column:5;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTotCell}</div>
-      ${cell(5,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash)}
+      ${/* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm, not the IMO EEOI total any
+           more — see hfoEqPerNmVoyTot above. The EEOI total (eeoiImoTot) moved to the new
+           rcell(13) below, unchanged in value. */""}
+      ${cell(5,"border-right:1px solid #e2e8f0;color:#1e293b;",hfoEqPerNmValueHtml(hfoEqPerNmVoyTot))}
       ${cell(7,"padding-left:4px;",fmtF(sumFu("tonnes"),1))}
       ${/* 2026-07-26q3: Total CO2e relocated here, next to Cons. — full fuel burned, not
            EU-ETS-coverage-scoped, same figure as before, just moved next to Fuel metrics'
            other two columns instead of sitting isolated after Sea Cargo Charter. */""}
       ${cell(8,"border-right:1px solid #e2e8f0;",fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
-      ${cell(9,"color:#9a6b1f;",fmtF(sum("sccWtW"),2))}
-      ${cell(10,"color:#475569;",fmtF(sum("cargo"),0))}
-      ${cell(11,"color:#475569;",fmtF(sum("tw")/1e6,2))}
-      ${cell(12,"border-right:1px solid #e2e8f0;color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
-      ${cell(13,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
-      ${cell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
-      ${cell(15,"",fmtF(sumFu("eligibleEU"),1))}
-      ${cell(16,"",fmtF(sumFu("energy"),2))}
-      ${cell(17,"",fmtF(sum("E")/1e6,2))}
-      ${cell(18,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
-      ${cell(19,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
+      ${rcell(9,"color:#9a6b1f;",fmtF(sum("sccWtW"),2))}
+      ${rcell(10,"color:#475569;",fmtF(sum("cargo"),0))}
+      ${rcell(11,"color:#475569;",fmtF(sum("tw")/1e6,2))}
+      ${/* 2026-08-01f: hardcoded border-right removed from the SCC EEOI-WtW TOTAL cell — it is
+           no longer the group's rightmost column (EEOI (IMO) TOTAL joined it to its right). */""}
+      ${rcell(12,"color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
+      ${/* 2026-08-01f (Aurvin, owner instruction — screenshot review): the "EEOI (IMO)" column's
+           own TOTAL cell, physical 14 — eeoiImoTot, unchanged in value, now merged into the Sea
+           Cargo Charter group's hideability/tinting (see EMC_VOY_COLS/header edits above). Its
+           border-right is unchanged: it is now correctly the group's last static-default
+           column. */""}
+      ${rcell(13,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash)}
+      ${rcell(14,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
+      ${rcell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
+      ${rcell(16,"",fmtF(sumFu("eligibleEU"),1))}
+      ${rcell(17,"",fmtF(sumFu("energy"),2))}
+      ${rcell(18,"",fmtF(sum("E")/1e6,2))}
+      ${rcell(19,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
+      ${rcell(20,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
     </div>`;
 }
 function downloadVoyageXlsx(){
@@ -6074,11 +6423,21 @@ function runSelfTests(){
     const col9Blocks = [...html.matchAll(/grid-column:9;grid-row:1[\s\S]*?(?=grid-column:10)/g)].map(m=>m[0]);
     ckT("CII column (grid-column:9), PORT-STAY row: still centered flex-column layout",
         col9Blocks.some(t=>/flex-direction:column;align-items:center/.test(t)));
-    ckT("CII column (grid-column:9), VOYAGE row: pill+caption now use the SAME absolute-position/min-height:70px anchors as the Eligibility cell",
+    /* 2026-08-01 (Aurvin, owner instruction): the second line under the CII pill (the
+       "top:calc(50% + 22px)" caption anchor, which used to hold hfoEqPerNmCellHtml(legHfoEqNm))
+       was REMOVED — kg/nm moved to its own column (10), not shown twice. So this VOYAGE-row
+       check now only requires the min-height:70px / top:50% pill-centering anchor that column 9
+       shares with the Eligibility cell (unchanged), not the second anchor that no longer exists.
+       This is a narrowing of what the test checks, not a weakening of a passing behaviour — the
+       behaviour itself (one centered pill, no second line) is the explicit new spec. */
+    ckT("CII column (grid-column:9), VOYAGE row: pill still uses the SAME absolute-position/min-height:70px anchor as the Eligibility cell (no second line any more)",
         col9Blocks.some(t=>/position:relative;min-height:70px/.test(t) &&
-                            /top:50%;left:50%;transform:translate\(-50%,-50%\)/.test(t) &&
-                            /top:calc\(50% \+ 22px\);left:50%;transform:translateX\(-50%\)/.test(t)));
-    ckT("EEOI column (grid-column:10) cell is unaffected — still right-aligned, single line",
+                            /top:50%;left:50%;transform:translate\(-50%,-50%\)/.test(t)) &&
+        col9Blocks.every(t=>!/top:calc\(50% \+ 22px\)/.test(t)));
+    /* 2026-08-01: this column no longer shows the EEOI — it shows kg/nm (relocated from the
+       second line of column 9, see above). Layout is otherwise unaffected — still right-aligned,
+       single line — so the shape of this check is unchanged, only its name. */
+    ckT("kg/nm column (grid-column:10) cell is unaffected in layout — still right-aligned, single line",
         /grid-column:10;grid-row:1[^"]*justify-content:flex-end/.test(html));
   })();
   /* ==========================================================================================
@@ -6178,10 +6537,26 @@ function runSelfTests(){
     ckT("28j T3: Leg-Wise — all 5 group headers use the same #f1f5f9 / #475569 ZN header style",
         (brHtml.match(/grid-row:1;padding:6px 10px;background:#f1f5f9/g)||[]).length===5 &&
         !/grid-row:1;padding:6px 10px;background:#f1f5f9[^"]*color:#(1d7a5f|0e7490|3652a3|6d4fa3|3d7a3a)/.test(brHtml));
-    ckT("28j T3: Voyage-Wise — all 5 group headers use the same #f1f5f9 / #475569 ZN header style",
+    /* 2026-08-01f (Aurvin, owner instruction — screenshot review): REVERSES the 2026-08-01 "6,
+       not 5" note this replaces. That note counted a 6th #f1f5f9 tag for the mirrored "IMO
+       EEOI" column's own separate, untinted header box. The owner has now asked for that column
+       to be folded INTO the tan Sea Cargo Charter tag (background #f2e8d9, not #f1f5f9) instead
+       — see EMC_VOY_COLS/the header-tag edit in voyageGrid(). So the count of #f1f5f9-styled
+       tags on Voyage-Wise goes back to 5 (IMO, Fuel metrics, EU ETS, UK ETS, FuelEU Maritime),
+       matching Leg-Wise's own count above. */
+    ckT("28j T3: Voyage-Wise — all 5 group headers use the same #f1f5f9 / #475569 ZN header style (2026-08-01f: EEOI (IMO) merged into the tan SCC tag, no longer its own #f1f5f9 box)",
         (vwHtml.match(/grid-row:1;padding:6px 10px;background:#f1f5f9/g)||[]).length===5);
-    ckT("28j T3: the regulation colours on the VALUES are deliberately untouched (EUAs blue, UKAs purple, EEOI green)",
-        /color:#3652a3/.test(brHtml) && /color:#6d4fa3/.test(brHtml) && /color:#1d7a5f/.test(brHtml));
+    /* 2026-08-01 (Aurvin, owner instruction): this used to also check Leg-Wise for the EEOI
+       green (#1d7a5f) — that no longer applies. The IMO EEOI was displaced out of the Leg-Wise
+       table entirely (column 10 there now shows kg/nm, colour #1e293b — see imoLeg in
+       breakdownGrid); the EEOI figure survives on Voyage-Wise (its own columns 5-6 are
+       untouched, plus a new mirrored column beside the Sea Cargo Charter EEOI), so the green
+       colour is checked on vwHtml instead. EUAs blue / UKAs purple are unaffected on both
+       tables and are still checked on brHtml. */
+    ckT("28j T3: the regulation colours on the VALUES are deliberately untouched (EUAs blue, UKAs purple)",
+        /color:#3652a3/.test(brHtml) && /color:#6d4fa3/.test(brHtml));
+    ckT("28j T3 (2026-08-01): Voyage-Wise still carries the EEOI green — it was never removed there, only relocated on Leg-Wise",
+        /color:#1d7a5f/.test(vwHtml));
   })();
   /* 2026-07-26d (Task 3): Voyage-Wise IMO figures. A voyage GROUP includes its port stays,
      which is the documented difference from Leg-Wise. */
@@ -6217,6 +6592,55 @@ function runSelfTests(){
     ckT("Including the voyage's port stays makes its CII worse than legs alone",
         vwGroupCII(g).attained > legOnly.attained);
     S.ship = shipKeep;
+  })();
+  /* 2026-08-01 (Aurvin, owner instruction): vwGroupHfoEqPerNm — the VOYAGES-table kg/nm
+     figure that now sits at column 6 (displacing the IMO EEOI, which moved to a new mirrored
+     column beside the Sea Cargo Charter EEOI — see the rendering test below). Mirrors
+     legHfoEqPerNm's own null-guard tests (~line 6255-6270 above) but at group level, and adds
+     the one thing that IS new at this level: sailing-legs-only aggregation, with IN-PORT
+     stays excluded even when they burn fuel (vwGroupPorts already uses the same
+     d.kind==="voyage" filter idiom, reused here). */
+  (function(){
+    const leg1 = {kind:"voyage", dist:100, fuels:[{id:"HFO", tonnes:1}]};   // 1000 kg / 100 nm
+    const leg2 = {kind:"voyage", dist:50,  fuels:[{id:"HFO", tonnes:2}]};   // 2000 kg / 50 nm
+    const portStay = {kind:"port", dist:0, fuels:[{id:"HFO", tonnes:50}]}; // must be EXCLUDED
+    const g1 = {dets:[leg1, portStay, leg2]};
+    ck("Voyage kg/nm sums HFO-equivalent kg over SAILING LEGS ONLY, divided by their distance",
+       vwGroupHfoEqPerNm(g1), (1000+2000)/(100+50), 1e-9);
+    ckT("A port stay's fuel does NOT feed this figure even though it burns plenty",
+        Math.abs(vwGroupHfoEqPerNm(g1) - (1000+2000+50000)/150) > 1e-6);
+    ckT("A single-leg voyage's kg/nm equals legHfoEqPerNm's own figure for that same leg",
+        Math.abs(vwGroupHfoEqPerNm({dets:[leg1]}) - legHfoEqPerNm(leg1)) < 1e-9);
+    ckT("A voyage group that is berth-only (no sailing legs) has no kg/nm figure",
+        vwGroupHfoEqPerNm({dets:[portStay]})===null);
+    ckT("A voyage group whose only sailing leg has zero distance has no kg/nm figure",
+        vwGroupHfoEqPerNm({dets:[{kind:"voyage",dist:0,fuels:[{id:"HFO",tonnes:5}]}]})===null);
+    ckT("A voyage group with no dets at all has no kg/nm figure", vwGroupHfoEqPerNm({dets:[]})===null);
+    ckT("No group at all has no kg/nm figure", vwGroupHfoEqPerNm(null)===null && vwGroupHfoEqPerNm(undefined)===null);
+  })();
+  /* 2026-08-01 (Aurvin, owner instruction): the new "IMO EEOI" column mirrored beside the Sea
+     Cargo Charter EEOI (physical 14) must render vwGroupEEOI(g) UNCHANGED — same value, same
+     eeoiCellHtml — just at its new grid position, so it can be compared side-by-side against
+     the Sea Cargo Charter's own EEOI four columns to its left. Built via a REAL render
+     (vwGroups + voyageGrid), not a hand-assembled fixture, so this also proves the column
+     actually reaches the page rather than just existing as an unused function. */
+  (function(){
+    const sMirror = {year:2026, ship:{typeId:"bulk", capacity:50000}, rows:[
+      {kind:"voyage", from:"EEA", to:"EEA", dist:1000, cargo:5000, tStart:"2026-01-01T00:00", tEnd:"2026-01-02T00:00", fuels:[{fuelId:"HFO",tonnes:50}]}
+    ]};
+    VW_LAST=null;
+    const vg = vwGroups(sMirror);
+    const vwR2 = { groups: vg.groups, year:2026, ets:{ gwp: euetsGwp(sMirror) } };
+    const html2 = voyageGrid(vwR2, {voy:"",lcv:"",feu:"",euets:"",ukets:"",scc:"",imo:""});
+    const eeoiVal = vwGroupEEOI(vg.groups[0]);
+    const eeoiTxt = fmtF(eeoiVal,2);
+    ckT("Voyage-Wise: column 6 now carries kg/nm, not the IMO EEOI",
+        html2.indexOf("grid-column:6;grid-row:1")>-1);
+    ckT("Voyage-Wise: the mirrored IMO EEOI column (physical 14) exists and sits right after the SCC EEOI (13)",
+        html2.indexOf("grid-column:13;grid-row:1")>-1 && html2.indexOf("grid-column:14;grid-row:1")>-1);
+    ckT("Voyage-Wise: the mirrored column renders vwGroupEEOI(g)'s exact value, unchanged",
+        eeoiVal!=null &&
+        (html2.match(new RegExp(">"+eeoiTxt.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"<","g"))||[]).length>=1);
   })();
   ck("FuelEU target 2025", fueleuTarget(2025), 89.3368, 1e-9);
   ck("FuelEU target 2030", fueleuTarget(2030), 85.6904, 1e-9);
@@ -7736,15 +8160,14 @@ function runSelfTests(){
     ckT("30-07e T7: the hover capture rect exists", svgF.indexOf('id="znft-hit"')>0);
     ckT("30-07e T7: both hover dots exist (balance + intensity)",
         svgF.indexOf('id="znft-dot"')>0 && svgF.indexOf('id="znft-dot2"')>0);
-    /* 2026-07-30f — COLOUR SCHEME matched to the owner's reference screenshots (sampled
-       directly, not guessed): a light plot background (not white, not dark navy), a teal
-       balance curve with a light-blue area-fill wash under it, and a RED reference colour for
-       both the zero/threshold line and the dashed GHGIE target line. */
+    /* 2026-07-31 (owner instruction, superseding 2026-07-30f) — NO RED in this chart. The
+       balance curve stays teal; the zero/threshold line and the dashed GHGIE target line now
+       use the app's existing var(--amber) token instead of var(--red). */
     ckT("30-07e T7: the balance curve is teal (var(--blue)), matching the reference screenshot",
         ZNFT_INK==="var(--blue)");
-    ckT("30-07e T7: the reference colour (zero line + target line) is red, distinct from both curves",
-        ZNFT_REF==="var(--red)" && ZNFT_REF!==ZNFT_INK && ZNFT_REF!==ZNFT_GHG);
-    ckT("30-07e T7: the reference lines are drawn in that red", svgF.indexOf(ZNFT_REF)>0);
+    ckT("30-07e T7: the reference colour (zero line + target line) is amber, not red, distinct from both curves",
+        ZNFT_REF==="var(--amber)" && ZNFT_REF!==ZNFT_INK && ZNFT_REF!==ZNFT_GHG);
+    ckT("30-07e T7: the reference lines are drawn in that amber", svgF.indexOf(ZNFT_REF)>0);
     ckT("30-07e T7: the plot area is washed with the app's own pale background colour, not left white",
         svgF.indexOf('fill="' + ZNFT_BG + '"')>0);
     ckT("30-07e T7: the area-fill wash under the balance curve uses the light-blue token",

@@ -542,7 +542,24 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    deliberate exception and it never fires on a laptop.
    (2026-07-30h had made this 5 columns for the Sea Cargo Charter card. That card was deleted in
    07-30m, so the maximum is 4 again.) */
-.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:26px 30px 2px}   /* was 14px 30px 2px, then 34px 30px 2px; 5 cols during 07-30h..l */
+/* 2026-08-01j (Aurvin, owner instruction): TOP PADDING 26px -> 12px, to give the table under the
+   strip more visible rows on a MacBook. Owner's scope for this change was deliberately limited to
+   the KPI strip and the tab row below it; he explicitly chose NOT to touch the white .znfs-top
+   header block, whose ~100px of whitespace (the 46px gap under the vessel title especially) is the
+   larger prize but is his own 2026-07-28k "airier top" decision, and NOT to gate any of this
+   behind a height media query, to avoid two different spacings to reason about. Measured chrome
+   above the table before this change, at ~1440x900 (no media query fires there): .znfs-top ~206px
+   + this strip ~154px + .znfs-tabs ~65px + 20px slot pad = ~445px. This change plus the tab-row
+   and .znk ones below reclaim ~31px in total — under one table row, which the owner was told
+   before choosing this scope. Values kept gentle on purpose: he was concerned about the cards
+   looking cramped, so nothing here changes a font size or drops any content. */
+/* 2026-08-01k (Aurvin, owner instruction): top padding 12px -> 22px, i.e. MOST of the 08-01j cut
+   is given back. The owner reviewed 08-01j on screen, said it read cramped, and asked for the
+   spacing above/below the cards to be loosened once the ~48px of dead space under the table was
+   recovered instead (see the #znfs-slot .card.panelA rule further down). 22px rather than the
+   original 26px: the difference is not perceptible next to the cards' own 8px header padding,
+   and the 4px stays with the table. */
+.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:22px 30px 2px}   /* was 14px, 34px, 26px, then 12px 30px 2px; 5 cols during 07-30h..l */
 .znfs-kpis[data-n="1"]{grid-template-columns:minmax(0,1fr)}
 .znfs-kpis[data-n="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
 .znfs-kpis[data-n="3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -551,15 +568,20 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    quietly tighter as the window narrows. This changes SPACING AND TYPE SIZE ONLY — no content is
    dropped and no card is hidden, so nothing a test asserts on can move. Two steps, both well
    below any MacBook full-screen width, so the normal case is untouched. */
+/* 2026-08-01j: both narrow-window top paddings brought down in step with the then-new 12px base
+   above. Left as-is they would have been LARGER than the base value, i.e. a narrower window would
+   have got MORE whitespace than a wide one — the opposite of this block's whole purpose.
+   2026-08-01k: base went back up to 22px, so these go back up too (10 -> 18, 8 -> 14), staying
+   BELOW the base as this block intends. Nothing else in these two rules is touched. */
 @media(max-width:1180px){
-  .znfs-kpis{gap:9px;padding:20px 18px 2px}
+  .znfs-kpis{gap:9px;padding:18px 18px 2px}
   .znk>h3{padding:7px 10px;font-size:11.5px}
   .znk .body{padding:8px 10px 9px;gap:4px}
   .znk .hero .n{font-size:20px}
   .znk .hero .u,.znk .kvz{font-size:11px}
 }
 @media(max-width:980px){
-  .znfs-kpis{gap:7px;padding:16px 14px 2px}
+  .znfs-kpis{gap:7px;padding:14px 14px 2px}
   .znk>h3{padding:6px 8px;font-size:11px;letter-spacing:0}
   .znk .body{padding:7px 8px 8px}
   .znk .hero{gap:5px}
@@ -578,10 +600,20 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    from the title. Order matters: chevron immediately after the words, year hard right. */
 .znk-click>h3 .yr{order:2}
 .znk{background:#fff;border:1px solid #e6eaed;border-radius:4px;display:flex;flex-direction:column;min-width:0}
-.znk>h3{margin:0;padding:8px 13px;border-bottom:1px solid #eef2f4;font-size:12.5px;font-weight:700;   /* was 13px 16px / 14.5px */
+/* 2026-08-01j took 1px off the card header's vertical padding, 1px off each of the body's, and the
+   row gap 5px -> 4px. 2026-08-01k REVERTS all three back to the 2026-07-28c values: the owner
+   reviewed 08-01j and said the cards read cramped, and the ~48px recovered from under the table
+   (see #znfs-slot .card.panelA) means these 6px do not need to be fought for. The cards are
+   therefore now IDENTICAL to their pre-08-01j appearance — only the strip's own top padding
+   (22px vs 26px) differs. */
+.znk>h3{margin:0;padding:8px 13px;border-bottom:1px solid #eef2f4;font-size:12.5px;font-weight:700;   /* was 13px 16px / 14.5px; 7px during 08-01j */
   color:#0e2c40;display:flex;align-items:center;gap:8px;letter-spacing:.02em}
-.znk>h3 .yr{margin-left:auto;font-size:10.5px;font-weight:700;color:#7a8896;letter-spacing:.05em}
-.znk .body{padding:9px 13px 10px;display:flex;flex-direction:column;gap:5px;flex:1 1 auto}          /* was 13px 16px 14px / gap 9px */
+/* 2026-08-01n: the stamp is no longer always 4 digits — it reads "Date Filter" when the From/To
+   window is narrowed (js/fullscreen.js, znfsRenderKpis). nowrap + flex:0 0 auto keep that longer
+   text on ONE line and stop it stealing width from the card title; nothing else about the stamp
+   changed. */
+.znk>h3 .yr{margin-left:auto;font-size:10.5px;font-weight:700;color:#7a8896;letter-spacing:.05em;white-space:nowrap;flex:0 0 auto}
+.znk .body{padding:9px 13px 10px;display:flex;flex-direction:column;gap:5px;flex:1 1 auto}          /* was 13px 16px 14px / gap 9px; 8/9 + gap 4 during 08-01j */
 .znk .hero{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:1px}
 .znk .hero .n{font-size:23px;font-weight:800;letter-spacing:-0.6px;color:#0e2c40;line-height:1.05}   /* was 29px */
 .znk .hero .u{font-size:11.5px;color:#5c6c7a;font-weight:600}
@@ -778,7 +810,14 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    controls as well as the pills, right-aligned via .znfs-filters{margin-left:auto}, so the
    date filter sits directly above the table it filters instead of up in the header. */
 /* 2026-07-28k: padding 18px 30px 10px -> 22px 30px 12px */
-.znfs-tabs{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:22px 30px 12px;flex-wrap:wrap}   /* was 18px 30px 10px */
+/* 2026-08-01j (Aurvin, owner instruction): 22px/12px -> 12px/10px, the tab-row half of the ~31px
+   reclaimed for the table.
+   2026-08-01k: 12px/10px -> 18px/12px. The owner's screenshot review found the 12px top the most
+   cramped part of 08-01j — it is the gap between the KPI cards and the tab pills, so it was
+   carrying the "squeezed" impression on its own. Restored to 18px (the 2026-07-28b value, i.e.
+   4px under the 07-28k 22px) now that the ~48px under the table pays for it. Pills and their
+   7px 17px padding were never touched, so no tab click target has changed at any point. */
+.znfs-tabs{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:18px 30px 12px;flex-wrap:wrap}   /* 18px 30px 10px -> 22px 30px 12px -> 12px 30px 10px -> here */
 .znfs-tabs .tt{background:#fff;border:1px solid #d5dde3;color:#5c6c7a;border-radius:4px;
   padding:7px 17px;font-size:12.5px;font-weight:700;letter-spacing:.06em;cursor:pointer}
 .znfs-tabs .tt:hover{border-color:#9fc6ce;color:var(--blue)}
@@ -792,8 +831,37 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    would push it away from the filters, so it is neutralised here. */
 .znfs-extras{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .znfs-extras .dfextra{margin-left:0 !important}
+/* 2026-08-01k: bottom padding 20px -> 10px, part of reclaiming the dead band under the table's
+   horizontal scrollbar (owner bug report with screenshot). See the .card.panelA rule just below
+   for the other 48px and for the full accounting. 10px rather than 0 so the table's bottom border
+   stays visibly clear of the window edge and the horizontal scrollbar is comfortable to grab. */
 #znfs-slot{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;
-  padding:0 30px 20px;overflow:hidden}
+  padding:0 30px 10px;overflow:hidden}
+/* ---- 2026-08-01k (Aurvin, owner bug report — "there is ample space below the horizontal scroll
+   button… perhaps we can totally use that bottom space") ----
+   WHAT THE WASTE WAS, in plain language: each panel wraps its table in `<div class="card panelA">`,
+   and the GLOBAL `.card` rule (line ~67 of this file) carries `padding:16px 18px`,
+   `margin-bottom:16px`, a 1px border, a 12px radius and a shadow. But the table inside already
+   draws its OWN border and 8px radius (set inline by trTable/breakdownGrid/voyageGrid in
+   js/ui.js). So in full screen the table sat inside a SECOND frame with 16px of empty white
+   between the two outlines — a double border, and 48px of unusable height:
+       16px card top padding (between the tab row and the table's header)
+     + 16px card bottom padding (the white band under the horizontal scrollbar)
+     + 16px card margin-bottom
+   Dropping the outer frame here collapses it to the table's own single border, which is both
+   cleaner and the largest single height win available in this view — more than everything the
+   2026-08-01j padding pass reclaimed at the top (~32px).
+   SCOPED TO #znfs-slot ON PURPOSE: `.card` is used all over the app (Workspace, Settings, the
+   Annual summary, the SCC and P&L cards, the workings block). The global rule is NOT touched, so
+   the calculator's own tabs look exactly as before — this only applies to the panels while they
+   are moved into the full-screen overlay. `.panelB` is included for symmetry: no panel uses it
+   today, but body.shell's own geometry rules above treat panelA/panelB as a pair, and a future
+   second panel would otherwise silently reintroduce the double frame.
+   background:transparent (not white) so the frame disappears completely — the overlay's own
+   #f5f7f8 shows through at the table's rounded corners, which is what a single-framed table on a
+   grey page should look like. */
+#znfs-slot .card.panelA,#znfs-slot .card.panelB{padding:0;margin:0;border:0;border-radius:0;
+  box-shadow:none;background:transparent}
 /* 2026-07-28b (Aurvin, owner instruction — "Task 3"): the collapsible
    "FuelEU allocation & EU ETS working — <year>" block (details.workings, rendered by
    renderCalcs in js/ui.js) is not wanted in this view, so the table gets its height.
@@ -1042,6 +1110,60 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    zngBindScrollSync(). Do not give .zng-scroll its scrollbar back — that reintroduces the bug. */
 .zng-scroll{flex:1 1 auto;min-width:0;overflow-x:hidden;overflow-y:hidden}
 .zng-inner{position:relative;display:inline-block;min-width:100%}
+/* 2026-08-01b (Aurvin, owner instruction — Task 2): the operational-state band strip. Pinned
+   between the scrolling panes and the date row, so it is always on screen beside whichever panel
+   you are reading and takes no height from the panels themselves. overflow-x is HIDDEN here, not
+   auto: the single horizontal scrollbar stays on .zng-xscroll (see the 2026-07-31h note above) and
+   this row is driven from script by zngBindScrollSync(), exactly like .zng-scroll. Giving this row
+   its own scrollbar would put two bars on one timeline. */
+/* position:relative is LOAD-BEARING here for the same reason it is on .zng-erow: since 2026-08-01e
+   this row hosts its own hover card, .zng-btip, which anchors to it with top:100%. */
+.zng-brow{flex:0 0 auto;display:flex;align-items:flex-start;border-top:1px solid #eef2f4;
+  margin-top:2px;position:relative}
+.zng-bscroll{flex:1 1 auto;min-width:0;overflow-x:hidden;overflow-y:hidden}
+
+/* 2026-08-01d (Aurvin, owner instruction): the PINNED Eligibility strip. Same construction as the
+   Operation row above it — fixed height, no scrollbar of its own (script-driven, see the 07-31h
+   note), locked outside .zng-panes so it can never scroll out of view.
+   position:relative is LOAD-BEARING: .zng-ptip below anchors to this row with bottom:100%, which is
+   what makes the shared card open UPWARD over the panels instead of downward into the date axis. */
+.zng-erow{flex:0 0 auto;display:flex;align-items:flex-start;border-top:1px solid #eef2f4;
+  margin-top:2px;position:relative}
+.zng-escroll{flex:1 1 auto;min-width:0;overflow-x:hidden;overflow-y:hidden}
+/* the pinned left pad: the strip's name, and the single "100" tick the owner chose over a full
+   0/50/100 scale. The 50% GRIDLINE is still drawn in the strip itself — only its label is dropped,
+   so a half-scope leg is still readable against a line. */
+.zng-epad{flex:0 0 auto;box-sizing:border-box;position:relative;display:flex;align-items:center;
+  gap:4px;padding-right:7px;font-size:9.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;color:#a3b0b9}
+.zng-epad em{font-style:normal;font-size:9px;font-weight:600;color:#b8c3cb}
+.zng-epad i{position:absolute;right:7px;top:0;font-style:normal;font-size:9.5px;font-weight:600;
+  letter-spacing:0;text-transform:none;color:#8a97a1}
+
+/* 2026-08-01e (Aurvin, owner instruction): the 08-01d SHARED card is split into TWO one-row cards,
+   .zng-etip on the Eligibility row and .zng-btip on the Operation row, and the date header is gone
+   from both. The complaint that caused it: the tall shared card opened upward and landed on top of
+   the Total Cons bars — the very data you hover the chart to read.
+   The two cards can never collide because they open in OPPOSITE directions off two rows that are
+   ~70px apart, and because each is exactly one reading tall:
+     .zng-etip  bottom:100%  → upward, over the last ~27px of the panel stack (Total Cons' zero end)
+     .zng-btip  top:100%     → downward, over the 34px date axis, which holds no data values
+   .zng-ptip below is the SHARED look; the two rules after it are the only difference. If a card
+   ever grows a second row, re-measure that clearance — see the note above zngEligTip() in graph.js. */
+.zng-ptip{position:absolute;display:none;pointer-events:none;z-index:6;
+  min-width:150px;max-width:250px;background:#fff;color:#0e2c40;
+  border:1px solid #d3dde3;border-radius:5px;padding:5px 8px;font-size:10.5px;line-height:1.55;
+  box-shadow:0 5px 16px rgba(14,44,64,.16)}
+.zng-etip{bottom:100%;margin-bottom:5px}
+.zng-btip{top:100%;margin-top:4px}
+.zng-ptip.on{display:block}
+.zng-ptip .h{font-weight:700;font-variant-numeric:tabular-nums;padding-bottom:3px;margin-bottom:3px;
+  border-bottom:1px solid #eef2f5}
+.zng-ptip .r{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.zng-ptip .r span{flex:1 1 auto;color:#647684;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.zng-ptip .r span.n{font-style:italic}
+.zng-ptip .r b{flex:0 0 auto;font-variant-numeric:tabular-nums}
+.zng-ptip .r .sw{flex:0 0 auto;width:8px;height:8px;border-radius:2px;display:inline-block}
 .zng-xrow{flex:0 0 auto;display:flex;align-items:flex-start;border-top:1px solid #eef2f4;
   margin-top:2px;padding-top:2px}
 .zng-xpad{flex:0 0 auto;font-size:9.5px;font-weight:700;text-transform:uppercase;
@@ -1133,8 +1255,44 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    the port column down to nothing. The EVENT column in particular has to fit "ARRIVAL ·
    DEPARTURE" (19 chars, the label for a single at-port report that is both ends — js/ui.js
    line ~1086), the single longest value that column ever has to show. */
+/* 2026-08-01p (Aurvin, owner instruction, screenshot of "UST-LUGA — RUSSI…"): the PORT column was
+   too tight — "the port names character limit is too limited… we have ample space". There is no
+   character limit in js/graph.js; the clipping is purely this grid running out of pixels, so this
+   is a CSS-only change. Owner set the target at THIRTY CHARACTERS (offered exactly-double, or
+   all-the-leftover-space, or no-truncation-with-wrapping; he chose a fixed 30) and declined a
+   hover tooltip for the rare name that still overflows — the silent ellipsis stays.
+
+   HOW 235px WAS ARRIVED AT (so the next person can re-derive it rather than guess):
+   the chip is 10px/700 uppercase with letter-spacing .03em in the system sans. Measured off the
+   owner's own screenshot: "UST-LUGA — RUSSI…" is 17 glyphs and filled the whole chip, whose text
+   box was 134px (column) − 14px (.zng-chip padding 1px 7px) = 120px → ≈7.06px per glyph. Rounded
+   UP to 7.3px for safety, because that sample contains a space and an em dash while an all-caps
+   run is wider: 30 × 7.3 = 219px of text + 14px padding = 233px. Given one MORE character of
+   headroom (the 7.3 is an estimate off a single sample, so landing exactly on 30 would put a real
+   30-character name on the boundary), the port track is 243px — arithmetically 31 characters.
+   PORT COLUMN 134px → 243px, so the row grows 580 → 689px (446px of fixed columns + gaps is
+   unchanged: 155 + 175 + 92 + 3×8). If you restyle the chip's font-size, weight or padding, this
+   number stops meaning 30 characters — re-derive it the same way.
+
+   WHY NOT WIDER: the readout is centred over the PLOT AREA (left:calc(50% + 53px) — the
+   2026-07-31j decision, see the note above), so every pixel of width is spent SYMMETRICALLY and
+   the left edge marches toward the "Trends · REPORT TIMELINE" heading. At the popup's full
+   1180px the heading block ends ≈230px in and this row's left edge now sits at ≈299px — about
+   70px of clearance left. There is room for perhaps one more character; there is not room for the
+   "give port everything spare" option, which is why that one would have required un-centring the
+   row and was not taken.
+
+   NARROW WINDOWS (owner's choice: "port column shrinks back"): max-width is now derived from that
+   same clearance rule instead of the old arbitrary "width÷10 vw" ratio. The box is
+   min(1180px, 100vw − 48px) wide and its centre sits 53px right of the box centre, so keeping the
+   left edge clear of a ≈230px heading means the row may be at most (box − 354px) wide — hence
+   calc(100vw − 402px). Above a ≈1091px window that exceeds 689px and the full width applies;
+   below it the row narrows and the port column (the only flexible track) gives the pixels back,
+   which is exactly the requested behaviour. NOT NEW AND NOT FIXED HERE: below a ≈980px window the
+   port track hits its own minmax(90px,…) floor and the grid overflows the hidden box rather than
+   shrinking further — that was already true at 580px and is unchanged in kind. */
 .zng-readout{font-size:11px;color:#0e2c40;font-variant-numeric:tabular-nums;
-  width:580px;max-width:58vw;overflow:hidden;
+  width:689px;max-width:calc(100vw - 402px);overflow:hidden;
   position:absolute;left:calc(50% + 53px);top:50%;transform:translate(-50%,-50%)}
 .zng-readout .zng-hint{display:block;text-align:center;color:#9aa7b0;font-weight:600;font-style:italic}
 /* the fixed 4-slot grid: date | event | EU/non-EU zone | port. Every slot is ALWAYS rendered

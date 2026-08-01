@@ -111,24 +111,42 @@ var EMCOLS_DEFS = {
       ]}
     ]
   },
-  /* ---- phase 2 (listed, not yet wired — see the header note) ---- */
+  /* ---- LEGS / VOYAGES ----
+     2026-08-01c (Aurvin, owner instruction): the four REGULATION groups — EU ETS, UK ETS,
+     FuelEU Maritime and (VOYAGES only) Sea Cargo Charter — are now WIRED UP and hideable,
+     down to the individual column, in both of these grid views. The owner's four answers
+     this session: (1) only these four groups, not Eligibility / IMO / Fuel metrics;
+     (2) group heading AND individual sub-columns; (3) KPI cards and table columns stay
+     INDEPENDENT of each other, as decided on 2026-07-30i; (4) surviving columns stretch to
+     fill the width freed by a hidden one.
+     `phase2` therefore moved from the VIEW to the GROUP — the three groups that are still
+     unwired carry `phase2:true` and keep rendering as greyed rows with the explanatory
+     tooltip; the four regulation groups do not, and are live. The renderer side is
+     `emcPlan()` in js/ui.js (which reads colVis() for exactly the keys listed here) plus the
+     EMC_LEGS_COLS / EMC_VOY_COLS key→physical-column maps beside it. If a group is ever
+     unlocked or locked again, change `phase2` here AND its entry in that map — those two
+     lists are the whole contract. */
   calcs: {
     label:  "LEGS",
     pinned: "Activity & timeframe · Voyage No · Cargo · Dist",
-    phase2: true,
     groups: [
-      { key:"calcs.elig", label:"Eligibility", cols:[
+      { key:"calcs.elig", label:"Eligibility", phase2:true, cols:[
           { key:"calcs.elig.ets", label:"EU ETS" },
           { key:"calcs.elig.feu", label:"FEU"    },
           { key:"calcs.elig.uk",  label:"UK ETS" }
       ]},
-      { key:"calcs.imo", label:"IMO", cols:[
+      { key:"calcs.imo", label:"IMO", phase2:true, cols:[
           { key:"calcs.imo.cii",  label:"CII / Performance" },
-          { key:"calcs.imo.eeoi", label:"EEOI"              }
+          /* 2026-08-01f (Aurvin, owner instruction — unrelated to the VOYAGES SCC merge below,
+             fixed while in this file): a separate earlier change made LEGS' own on-screen
+             "EEOI" column show kg/nm instead — this placeholder row's LABEL is renamed to match,
+             so the disabled picker entry no longer describes a figure the table doesn't render.
+             Still phase2:true, still disabled, still not wired to anything — label only. */
+          { key:"calcs.imo.eeoi", label:"kg/nm"              }
       ]},
       /* 2026-07-30k: "Fuel type" is omitted for the same reason as REPORTS' "Fuel" — it is the
          label for the figures beside it, not a figure. Phase 2 must apply the same derivation. */
-      { key:"calcs.fm", label:"Fuel metrics", cols:[
+      { key:"calcs.fm", label:"Fuel metrics", phase2:true, cols:[
           { key:"calcs.fm.cons",  label:"Cons."     },
           { key:"calcs.fm.co2e",  label:"Total CO₂e" }
       ]},
@@ -150,21 +168,45 @@ var EMCOLS_DEFS = {
   voy: {
     label:  "VOYAGES",
     pinned: "Voyage & timeframe · Voyage No · Dist",
-    phase2: true,
     groups: [
-      { key:"voy.imo", label:"IMO", cols:[
+      { key:"voy.imo", label:"IMO", phase2:true, cols:[
           { key:"voy.imo.cii",  label:"CII / Performance" },
-          { key:"voy.imo.eeoi", label:"EEOI"              }
+          /* 2026-08-01f (Aurvin, owner instruction — unrelated to the Sea Cargo Charter merge
+             below, fixed while in this file): a separate earlier change made VOYAGES' own
+             on-screen "EEOI" column (physical 6) show kg/nm instead — this placeholder row's
+             LABEL is renamed to match. Do NOT confuse this with voy.scc.eeoiImo below, a
+             DIFFERENT row about a DIFFERENT column (physical 14, now hideable). Still
+             phase2:true, still disabled, still not wired to anything — label only. */
+          { key:"voy.imo.eeoi", label:"kg/nm"              }
       ]},
-      { key:"voy.fm", label:"Fuel metrics", cols:[   /* "Fuel type" omitted — see calcs.fm above */
+      { key:"voy.fm", label:"Fuel metrics", phase2:true, cols:[   /* "Fuel type" omitted — see calcs.fm above */
           { key:"voy.fm.cons", label:"Cons."      },
           { key:"voy.fm.co2e", label:"Total CO₂e" }
       ]},
+      /* 2026-08-01c — THIS LIST WAS WRONG and is corrected here, found while wiring the group
+         up. It claimed a "TtW CO₂e" column that the table has NOT rendered since 2026-07-26
+         (owner removed it from both grid views; it survives only in the Excel export), and it
+         omitted the SCC "EEOI" column that IS rendered. Left as it was, unticking "TtW CO₂e"
+         would have hidden nothing and the SCC EEOI could never have been hidden at all. Now
+         listed in the table's own left-to-right order — WtW, Cargo, T-Work, EEOI — matching
+         voyageGrid()'s columns 10-13 exactly. The EEOI label is qualified "(WtW)" because
+         this table carries TWO EEOI columns and the other one is in the IMO group: this is
+         the Sea Cargo Charter well-to-wake AR6 figure with ballast carry-in, NOT the IMO
+         tank-to-wake CO₂-only one. */
+      /* 2026-08-01f (Aurvin, owner instruction — screenshot review): a 5th column,
+         voy.scc.eeoiImo ("EEOI (IMO)"), joined this group. It used to be a separate,
+         untinted, UNHIDEABLE column (physical 14, right after this group) with its own
+         standalone header tag — the owner asked for it to be merged visually into the tan
+         Sea Cargo Charter tag and made genuinely hideable, like its 4 neighbours. This key
+         MUST match EMC_VOY_COLS's "voy.scc.eeoiImo" entry in js/ui.js exactly, or the picker
+         checkbox controls nothing. "EEOI (WtW)" below is left as-is — it already
+         distinguishes itself from this new "EEOI (IMO)" neighbour. */
       { key:"voy.scc", label:"Sea Cargo Charter", cols:[
-          { key:"voy.scc.cargo", label:"Cargo"          },
-          { key:"voy.scc.tw",    label:"Transport work" },
-          { key:"voy.scc.ttw",   label:"TtW CO₂e"       },
-          { key:"voy.scc.wtw",   label:"WtW CO₂e"       }
+          { key:"voy.scc.wtw",     label:"WtW CO₂e"       },
+          { key:"voy.scc.cargo",   label:"Cargo"          },
+          { key:"voy.scc.tw",      label:"Transport work" },
+          { key:"voy.scc.eeoi",    label:"EEOI (WtW)"     },
+          { key:"voy.scc.eeoiImo", label:"EEOI (IMO)"     }
       ]},
       { key:"voy.euets", label:"EU ETS", cols:[
           { key:"voy.euets.euas", label:"EUAs" }
@@ -286,7 +328,7 @@ function emcolsRow(key, label, on, locked, disabled, cls){
   var id = "emc-" + key.replace(/[^a-z0-9]+/gi, "-");
   var lockTip = locked
     ? ' title="Always shown — IMO, FuelEU and EU ETS are the three the owner fixed as permanent."'
-    : (disabled ? ' title="Listed for reference. Column picking is not wired up for this view yet — REPORTS first, LEGS and VOYAGES next."' : "");
+    : (disabled ? ' title="Listed for reference. Column picking is not wired up for this group yet — the four regulation groups (EU ETS, UK ETS, FuelEU Maritime and, on VOYAGES, Sea Cargo Charter) are live; Eligibility, IMO and Fuel metrics are next."' : "");
   return '<label class="emc-row' + (cls ? " " + cls : "") +
     ((locked || disabled) ? " off" : "") + '" for="' + id + '"' + lockTip + '>' +
     '<input type="checkbox" id="' + id + '"' +
@@ -329,12 +371,17 @@ function emcolsRender(){
       "is switched off. " +
       "Ticking or unticking a group heading sets every column beneath it.");
 
+  /* 2026-08-01c: `phase2` is read off the GROUP now, not the view — the four regulation
+     groups are wired and interactive while Eligibility / IMO / Fuel metrics stay greyed.
+     `def.phase2` is still ORed in so that if a whole view is ever parked again, one flag at
+     the view level still disables all of its groups. */
   h += def.groups.map(function(g){
     var vis = g.cols.filter(function(c){ return EMCOLS.cols[c.key] !== false; }).length;
+    var off = !!(def.phase2 || g.phase2);
     return '<div class="emc-grpwrap">' +
-      emcolsRow(g.key, g.label, vis > 0, false, !!def.phase2, "emc-grp") +
+      emcolsRow(g.key, g.label, vis > 0, false, off, "emc-grp") +
       g.cols.map(function(c){
-        return emcolsRow(c.key, c.label, EMCOLS.cols[c.key] !== false, false, !!def.phase2, "emc-col");
+        return emcolsRow(c.key, c.label, EMCOLS.cols[c.key] !== false, false, off, "emc-col");
       }).join("") +
       '</div>';
   }).join("");
