@@ -27,7 +27,7 @@
        reading at each event, not a flow"). The stack HEIGHT is therefore not a physical
        quantity — it is the sum of separate tanks. The panel's tooltip and its ⓘ say so. If a
        future session is asked to "make ROB correct", the answer is a LINE per fuel.
-     • Fuel checkboxes filter the consumption panels and ROB ONLY. Distance and Eligibility are
+     • Fuel checkboxes filter the consumption panels and ROB ONLY. Distance, Cargo and Eligibility are
        not per-fuel quantities, so they ignore the fuel ticks. Scope checkboxes filter EVERY
        panel (they select which reports are on the chart at all). Parameter checkboxes decide
        which panels exist at all, and the remaining panels re-space to fill the freed height.
@@ -156,6 +156,42 @@ function zngFuelColour(name, i){ return ZNG_FUEL_COL[name] || ZNG_FUEL_FALL[i % 
    density) on top of the fill so the distinction does not rest on hue at all — the hatch machinery
    already exists in zngChart() for the excluded-column and unmatched-report cases. */
 var ZNG_DIST_COL = "#2563eb";
+/* 2026-08-02 (Aurvin, owner instruction): CARGO is slate grey (#64748b) — the owner asked for
+   "grayish". Checked against everything else that can appear on the popup, because grey is the one
+   family this file has already spent twice:
+     • the unknown-grade FUEL fallback tans (ZNG_FUEL_FALL) are warm browns — no clash.
+     • the "none" scope bucket grey (#9ca3af) and the To-EU stone grey (#a8a29e) are both LIGHTER
+       and never share a panel with Cargo: bucket colours only ever appear in the pinned
+       Eligibility ribbon and the rail's checkbox list, never as a plot bar.
+     • #64748b is a cool grey with no blue saturation, so it cannot be read as a Distance bar
+       (#2563eb) — the standing "Distance owns blue alone" rule survives intact.
+   Same colour-blindness caveat as the note above: grey vs stone grey is one of the confusions
+   listed there, and the mitigation is the same (they never appear side by side as bars). */
+var ZNG_CARGO_COL = "#64748b";
+/* 2026-08-02 (Aurvin, owner instruction): the OPL marker on the Operation band.
+   THE OWNER ASKED FOR LIGHT BLUE AND THEN CHOSE OTHERWISE, WHICH IS WHY THIS IS NOT BLUE. The
+   instruction was "one light Blue circle saying OPL". Flagged back to him: the Operation band is
+   made of NOTHING BUT blue-greys — pale ice blue (At Sea, #bcd3e0), mid steel blue (In-Port,
+   #7ea0b7), deep navy (At-Berth, #24455c) — so a light-blue dot is crisp on the navy cells and all
+   but invisible on the pale one. Offered light-blue-plus-outline, plain light blue, or a non-blue
+   colour; he chose NON-BLUE. Do not "restore" the light blue without re-reading this.
+
+   WHY ROSE #e11d48 SPECIFICALLY:
+     • It echoes the OPL badge js/ui.js ALREADY draws in the Reports tab and in Leg-Wise, both of
+       which are red (#b91c1c on #fee2e2). The owner's own reference point was "we already have that
+       in the Reports tab", so the same flag reading the same colour family across three views is
+       the consistency that matters here.
+     • It is BRIGHTER than that #b91c1c badge on purpose. #b91c1c is dark red on a pale pill; here
+       the dot must sit directly on deep navy (where every OPL report in the owner's file currently
+       lands), and dark-on-dark is the one failure mode this had to avoid. #e11d48 reads on all three
+       band colours.
+     • It cannot be confused with the amber bunker dot (#eab308) that shares this strip — the two are
+       far apart in hue AND in lightness, which is the standing rule from the 2026-07-31h note above
+       (never distinguish two markers by shades of one hue).
+     • It is adjacent to ZNG_UK_COL (#dc2626) and the crimson zone bucket, and that is SAFE, because
+       neither of those ever appears on the Operation strip: UK red is drawn only as EUA/UKA panel
+       bars and as Scope-ribbon cells, one row away. A dot on this strip has no red neighbour. */
+var ZNG_OPL_COL = "#e11d48";
 var ZNG_ZONE_COL = {
   /* keyed BY ID, so the 2026-07-31i re-ordering and re-labelling of ZNG_ZONES did not touch this
      map at all — only the label words in these comments changed. */
@@ -178,7 +214,7 @@ var ZNG_ZONE_COL = {
      ramp, so that ramp stays as 2026-08-01b set it. */
   euEU:"#6d86a8",     // soft slate-blue — EU-EU, 100% both ends
   atEU:"#06b6d4",     // cyan      — At-EU (EU berth), 100%
-  /* 2026-08-01r (Aurvin, owner instruction) — THE 50% PAIR IS NOW GREEN IN / TERRACOTTA OUT.
+  /* 2026-08-01s (Aurvin, owner instruction) — THE 50% PAIR IS NOW GREEN IN / TERRACOTTA OUT.
      Asked for "To-EU should be lighter green, and From-EU should be lighter red — or some other
      option". Shown six green/red pairings, after which his instruction was: "Put the existing FROM
      EU to To-EU. That will work. Suggest some more color for From-EU." So:
@@ -286,8 +322,27 @@ var ZNG_TTL   = 24;    // title band above a FULL-height panel (scaled per panel
 var ZNG_PGAP  = 13;    // breathing room below a FULL-height panel (likewise)
 var ZNG_TOP   = 8;
 var ZNG_XH    = 34;    // the pinned date-axis strip (its own SVG, see the layout note above)
-var ZNG_BH    = 26;    // the pinned operational-state band strip (2026-08-01b, see zngBandStrip)
-var ZNG_BCELL = ZNG_BH - 11;   // 15 — the Operation strip's visible coloured cells
+/* 2026-08-02 (Aurvin, owner instruction): "Increase the band height (and its circles) of Operation
+   and Scope by 50% of its present height." ONE constant does all of it, deliberately:
+
+     • ZNG_BCELL is derived from ZNG_BH, and ZNG_ECELL from ZNG_BCELL, and every circle radius on
+       either strip is derived from ZNG_BCELL. So scaling the base heights here cascades to the
+       Scope strip and to both marker dots with no second edit — which is the only way the stated
+       "Eligibility bars are 2× the Operation cells" relationship (2026-08-01d, instruction 2) and
+       "marker dot = ¼ of the band" (2026-08-01u) survive a resize instead of quietly drifting.
+     • Asked whether to scale the visible cells only (leaving the padding alone) or everything
+       uniformly, the owner chose UNIFORMLY. So the PADDING scales too — hence ZNG_EPAD_T and the
+       11px bottom-padding term below are written as base × ZNG_BAND_SCALE, not as literals.
+
+   COST, stated plainly because it is permanent: the two pinned strips together go from 26 + 41 =
+   67px to 39 + 61.5 = 100.5px, i.e. ~34px comes off the panel area for good. That is the trade the
+   owner accepted. Fractional pixels (22.5, 61.5, 7.5) are fine — these are SVG user units and CSS
+   px, both of which take decimals; do not "tidy" them to integers, that would break the exact 2:1
+   and 1:4 ratios above.
+   TO REVERT: set ZNG_BAND_SCALE back to 1. Nothing else needs touching. */
+var ZNG_BAND_SCALE = 1.5;
+var ZNG_BH    = 26 * ZNG_BAND_SCALE;          // 39 — the pinned operational-state band strip (2026-08-01b, see zngBandStrip)
+var ZNG_BCELL = ZNG_BH - 11 * ZNG_BAND_SCALE; // 22.5 — the Operation strip's visible coloured cells
 var ZNG_MINSLOT = 9;   // below this the bars stop shrinking and the chart scrolls sideways
 
 /* 2026-08-01d (Aurvin, owner instruction — the LAST word on Eligibility's height, replacing both
@@ -315,9 +370,12 @@ var ZNG_MINSLOT = 9;   // below this the bars stop shrinking and the chart scrol
 
    Row height = the bars, plus the same 5px top / 6px bottom padding the Operation row uses, so the
    two strips are visually consistent blocks. */
-var ZNG_ECELL = ZNG_BCELL * 2;         // 30 — Eligibility bars, twice the Operation cells
-var ZNG_EH    = ZNG_ECELL + 11;        // 41 — the whole pinned Eligibility row
-var ZNG_EPAD_T = 5;                    // top padding inside both pinned strips
+/* 2026-08-02: all three now carry ZNG_BAND_SCALE through the SAME arithmetic they always had, so
+   the 2:1 bars-to-cells relationship and the 5px/6px padding split are unchanged in PROPORTION —
+   only the base unit grew. See the ZNG_BAND_SCALE note above. */
+var ZNG_ECELL = ZNG_BCELL * 2;               // 45 — Eligibility bars, twice the Operation cells
+var ZNG_EH    = ZNG_ECELL + 11 * ZNG_BAND_SCALE;  // 61.5 — the whole pinned Eligibility row
+var ZNG_EPAD_T = 5 * ZNG_BAND_SCALE;         // 7.5 — top padding inside both pinned strips
 
 /* 2026-08-01b (Aurvin, owner instruction — Task 1): "reduce the size of eligibility bars by half
    vertically, this will create more space for other graphs."
@@ -361,7 +419,21 @@ var ZNG_EPAD_T = 5;                    // top padding inside both pinned strips
    (`zngNaturalH` etc. then produce byte-identical output to the pre-08-01b code), and deleting it
    would mean rewriting the same accumulation logic the next time this comes up. Put an id in
    either map to shrink a panel; nothing else needs touching. */
-var ZNG_PH_WT     = {};   // plot area, as a fraction of ZNG_PH_BASE   (empty = every panel full)
+/* 2026-08-02 (Aurvin, owner instruction): "Reduce the height of the Cargo part by 50% of its
+   present height." THE MACHINERY ABOVE IS NOW IN USE AGAIN, for the first time since 08-01d
+   emptied both maps — which is exactly the reason that note argued for keeping it.
+
+   ONLY ZNG_PH_WT IS SET, NOT ZNG_CHROME_WT. Asked whether to halve the plot alone or the whole row,
+   the owner chose the PLOT AREA ONLY, so the title band and the gap stay full size and the words
+   "Cargo (mt)" plus the panel's axis numbers stay legible. That makes this the 08-01b treatment of
+   Eligibility, NOT the 08-01c one (which halved the chrome as well — see the arithmetic table
+   above). Cargo is the right panel to squat: like the old Eligibility panel its bars are ONE flat
+   value per report rather than a stack to pick apart, and the shape you actually read in it (laden
+   plateau, ballast gap, the step where cargo changed) survives being half as tall.
+     cargo row =  24 (title) + 39 (plot) + 13 (gap) = 76px,  against a full panel's 115px.
+   The ~39 freed pixels go to the other ticked panels automatically — they simply take a larger
+   share of the same total. ZNG_PH_MIN (16px) still floors it on a very short window. */
+var ZNG_PH_WT     = { cargo:0.5 };   // plot area, as a fraction of ZNG_PH_BASE   (empty = every panel full)
 var ZNG_CHROME_WT = {};   // title band + gap, as a fraction of ZNG_TTL / ZNG_PGAP
 var ZNG_PH_MIN    = 16;   // a plot area never draws shorter than this
 function zngPanelWt(pn){ var w = pn && ZNG_PH_WT[pn.id]; return (w > 0) ? w : 1; }
@@ -478,7 +550,11 @@ function zngPanelTop(i, ph){
    three panels — EUA/UKA, Total Cons, Eligibility. Distance and ROB moved into the opt-in set
    alongside the four per-machine panels: the owner's stated default is "1. EUA/UKA 2. Total
    consumption 3. Eligibility", i.e. the compliance answer, the burn behind it, and the scope
-   that connects them. Everything else is one tick away. */
+   that connects them. Everything else is one tick away.
+
+   2026-08-02 (Aurvin, owner instruction): CARGO is deliberately NOT in this list — the owner asked
+   for it ticked on when the popup opens, so the default view is EUA/UKA + Total Cons + Cargo (plus
+   the two pinned strips). Asked and answered explicitly; do not "make it consistent with ROB". */
 var ZNG_PANEL_OFF_BY_DEFAULT = { dist:1, me:1, ae:1, blr:1, oth:1, rob:1 };
 
 var ZNG_PANELS = [
@@ -486,13 +562,40 @@ var ZNG_PANELS = [
      EUAs (EU ETS) and UKAs (UK ETS) — per report. See the zngEtsIndex() note for where the
      numbers come from and why this file does not compute them itself. */
   { id:"ets",  title:"EUA/UKA",     unit:"tCO₂e", kind:"ets" },
-  { id:"dist", title:"Distance",    unit:"nm", kind:"single" },
+  /* 2026-08-02: `val` names the point field a "single" panel plots, and `col` its bar colour.
+     Before this both were hard-coded to `p.dist` / ZNG_DIST_COL in four separate places (axis max,
+     total, draw, tooltip), which is why a second single-value panel could not simply be added to
+     this list. Adding a third single panel now needs nothing but a line here. */
+  { id:"dist", title:"Distance",    unit:"nm", kind:"single", val:"dist",  col:ZNG_DIST_COL },
   { id:"me",   title:"ME Cons",     unit:"mt", kind:"stack"  },
   { id:"ae",   title:"AE Cons",     unit:"mt", kind:"stack"  },
   { id:"blr",  title:"BLR Cons",    unit:"mt", kind:"stack"  },
   { id:"oth",  title:"Others Cons", unit:"mt", kind:"stack"  },
   { id:"tot",  title:"Total Cons",  unit:"mt", kind:"stack"  },
-  { id:"rob",  title:"ROB",         unit:"mt", kind:"stack"  }
+  { id:"rob",  title:"ROB",         unit:"mt", kind:"stack"  },
+  /* 2026-08-02 (Aurvin, owner instruction): CARGO ON BOARD, the LAST panel, directly below ROB —
+     "introduce cargo as a parameter below ROB … just like ROB, the total for this is not needed."
+
+     WHAT IT PLOTS. `CARGO_QTY` off the MDA report record (`r.qty`), the very same number the
+     Report-Wise table's Cargo column prints. It is NOT re-derived from the workspace rows and has
+     nothing to do with the leg-level `leg.cargo` in js/ui.js: that one is the SOSP/max-per-leg
+     figure the Sea Cargo Charter transport work is built from (see the 2026-07-22c note there),
+     which is deliberately ONE value per leg. This panel is per REPORT, so it must read the raw
+     per-report quantity or the two would disagree on every report of a leg but one.
+
+     WHY IT IS "single" AND NOT "stack". Cargo has no fuel breakdown, so — exactly like Distance —
+     the fuel checkboxes do not touch it. Owner chose plain grey bars over a step line.
+
+     WHY IT HAS NO TOTAL (ZNG_NO_TOTAL below). Same refusal as ROB, for the same physical reason:
+     cargo on board is a STOCK reading. The 8,000 mt in the holds on Tuesday and the 8,000 mt still
+     in them on Wednesday are the same cargo, not 16,000 mt. Report-Wise already refuses to total
+     this column; this is that refusal, in the chart.
+
+     BLANK vs A REPORTED ZERO (owner's explicit choice). `qtyHas` is js/ui.js's own flag for "the
+     MDA cell actually held a number". A blank draws NOTHING and its tooltip says "not reported";
+     a reported 0 is a real ballast condition and says "0 mt". Report-Wise makes exactly this
+     distinction (dash vs 0) and the chart must not quietly turn missing data into ballast. */
+  { id:"cargo",title:"Cargo",       unit:"mt", kind:"single", val:"cargo", col:ZNG_CARGO_COL }
   /* 2026-08-01d (Aurvin, owner instruction): ELIGIBILITY IS NO LONGER A PANEL. It is a pinned
      strip of its own now (zngEligStrip), locked on screen beside the Operation strip and
      deliberately absent from the Parameter list — see the note above ZNG_EH. Do not add it back
@@ -567,14 +670,42 @@ function zngStamp(iso){
 /* ---------------------------------------------------------------- data build */
 /* The report list, filtered by the SAME From/To range the REPORTS tab honours, so the chart
    and the table can never show different date windows. */
+/* 2026-08-01u (Aurvin, owner instruction — Task 1): FUEL_STOCK REPORTS ARE NOT PLOTTED.
+   Owner: "Remove the FUEL_STOCK events from the trends."
+
+   WHY THIS RETIRES A STANDING RULE, AND WHY THAT IS ACCEPTABLE HERE. Since 2026-07-31e the chart
+   has guaranteed "one plotted column per report the REPORTS tab shows — nothing may silently
+   vanish", and verify_graph_popup.js's very first check enforced it. That rule exists to stop
+   reports disappearing because the chart could not CLASSIFY them (no matched workspace row, no
+   scope bucket) — a silent data loss the reader cannot see or explain. A FUEL_STOCK row is a
+   different animal: it is a STOCK SNAPSHOT, not a period of operation. Measured on the owner's own
+   file, all its columns are empty by construction — 0 fuel, 0 distance, 0 ROB, no allowances — so
+   it drew a blank column, a "no value" hover card in every panel, and a hole in the Operation
+   ribbon, while contributing nothing to any series. It is skipped for consumption everywhere else
+   in the app already (js/ui.js: "stock movements — skipped for consumption and transparent to the
+   derivation logic"), so the chart was the one place still giving it a column.
+   The rule is therefore NARROWED, not abandoned: the agreement test now reads "one column per
+   report EXCEPT FUEL_STOCK", so it still fails loudly if any other report type goes missing.
+
+   SCOPE, confirmed with the owner: THE CHART ONLY. FUEL_STOCK rows remain in the REPORTS table, in
+   the OVD download, in S.mdaReports and — critically — in the derivation, where they are
+   deliberately "transparent" and must never be touched (see the frozen-ladder rule in CLAUDE.md;
+   js/ui.js relies on `rt==="FUEL_STOCK"` in several places to keep a condition chain unbroken).
+   Nothing below this line changes any of that: this filter is applied when READING the report list
+   for the chart, not when building it.
+   NOTE FUEL_OIL_BUNKER IS DELIBERATELY NOT LISTED HERE. The owner kept bunker events plotted — see
+   Task 2 in zngBandStrip(), which joins the Operation ribbon across them and marks them. */
+function zngIsStockOnly(rep){
+  return String((rep && rep.rt) || "").trim().toUpperCase() === "FUEL_STOCK";
+}
 function zngReports(){
   var all = (typeof S !== "undefined" && S && S.mdaReports) || [];
   try{
     if(typeof dateFilterActive === "function" && dateFilterActive() && typeof repInRange === "function"){
-      return all.filter(repInRange);
+      all = all.filter(repInRange);
     }
   }catch(e){}
-  return all;
+  return all.filter(function(r){ return !zngIsStockOnly(r); });
 }
 
 /* 2026-07-31d: the two zone-sides euCoverage() itself used to decide a 0.5 result — read-only,
@@ -696,7 +827,7 @@ function zngEtsIndex(){
 function zngBuild(){
   try{ if(typeof trAnnotate === "function") trAnnotate(); }catch(e){}
   var reps = zngReports();
-  var pts = [], fuelSet = {}, anyMach = false, anyEts = false;
+  var pts = [], fuelSet = {}, anyMach = false, anyEts = false, anyCargo = false;
   /* one engine call for the whole build (2026-08-01) — see the zngEtsIndex() note above */
   var E = zngEtsIndex();
 
@@ -709,7 +840,22 @@ function zngBuild(){
     if(m){ add(m.ME); add(m.AE); add(m.BLR); }
 
     var p = { t:r.t || r.te || r.ts || null, rep:r, rt:r.rt || "", role:r.role || "",
-              dist:Number(r.dist) || 0, me:{}, ae:{}, blr:{}, oth:{}, tot:{}, rob:{},
+              dist:Number(r.dist) || 0,
+              /* 2026-08-02: cargo on board (mt). NULL — not 0 — when the MDA cell was blank, which
+                 is what makes the "gap, not a ballast bar" behaviour possible downstream. `qtyHas`
+                 is js/ui.js's own reported-vs-blank flag, so this can never disagree with the dash
+                 the Report-Wise Cargo column shows for the same report. */
+              cargo:(r.qtyHas ? (Number(r.qty) || 0) : null),
+              /* 2026-08-02: OUTSIDE_PORT_LIMIT, straight off the report record — the SAME `r.opl`
+                 js/ui.js's Report-Wise row uses to draw its red OPL badge. Asked which reports
+                 should be marked, the owner chose "any OPL report", i.e. exactly the table's rule,
+                 NOT the narrower "only when the stay was scored as transit". So this must stay a
+                 plain read of the flag: the moment it becomes a condition on poc/oplCargo the chart
+                 and the table can disagree about the same report, which CLAUDE.md forbids. (In the
+                 owner's file the two rules happen to select the same 7 reports — all At-Berth, all
+                 on stays the engine scored as non-POC — so the distinction is about future files.) */
+              opl:!!r.opl,
+              me:{}, ae:{}, blr:{}, oth:{}, tot:{}, rob:{},
               /* 2026-08-01: per-fuel allowances, filled below. etsRow stays false when this
                  report has no engine-computed row behind it — the panel then draws the same
                  "no confident match" stub the Eligibility panel uses, never a zero. */
@@ -765,6 +911,11 @@ function zngBuild(){
         p.uka[fn] = (Number(fe.ukCO2e) || 0) * share;
       }
     }
+    /* 2026-08-02: did ANY report in this window carry a cargo figure? Drives the "why is this
+       panel blank" caption below — a file with no CARGO_QTY column at all should say so, exactly
+       as the machinery panels already do, rather than showing an empty grid. Note this is true for
+       a reported 0 as well: a genuinely all-ballast window HAS cargo data, it is just zero. */
+    if(p.cargo != null) anyCargo = true;
     pts.push(p);
   }
 
@@ -774,7 +925,7 @@ function zngBuild(){
     var ia = order.indexOf(a) + 1 || 99, ib = order.indexOf(b) + 1 || 99;
     return (ia - ib) || (a < b ? -1 : a > b ? 1 : 0);
   });
-  return { pts:pts, fuels:fuels, anyMach:anyMach, nAll:pts.length,
+  return { pts:pts, fuels:fuels, anyMach:anyMach, anyCargo:anyCargo, nAll:pts.length,
            /* 2026-08-01: reporting year, phase-in and basis wording for the EUA/UKA tooltip and
               its caption — read from the engine result, never restated as a literal here */
            anyEts:anyEts, etsYear:E.year, etsPhase:E.phase, etsBasis:E.basis };
@@ -875,10 +1026,20 @@ function zngSegs(p, panel, fuelsOn){
   }
   return { segs:segs, sum:sum };
 }
+/* 2026-08-02: the value a "single" panel plots for one point, or NULL when this report has no
+   reading at all. Distance is never null (js/ui.js defaults it to 0); Cargo is null on a blank
+   CARGO_QTY, and the callers below each decide what a null means for them — no bar, no
+   contribution to the axis max, and a "not reported" tooltip row. Reading the field name off the
+   panel (rather than testing panel.id) is what keeps the four call sites from drifting apart. */
+function zngSingleVal(p, panel){
+  var v = p[panel.val || "dist"];
+  if(v == null || !isFinite(Number(v))) return null;
+  return Number(v);
+}
 function zngPanelMax(pts, panel, fuelsOn){
   var mx = 0;
   for(var i = 0; i < pts.length; i++){
-    if(panel.kind === "single") mx = Math.max(mx, Number(pts[i].dist) || 0);
+    if(panel.kind === "single") mx = Math.max(mx, zngSingleVal(pts[i], panel) || 0);
     else if(panel.kind === "stack") mx = Math.max(mx, zngSegs(pts[i], panel, fuelsOn).sum);
     /* 2026-08-01: EUA and UKA share ONE axis (both are tCO₂e of allowances), so the range is the
        tallest of either series — not their sum, since they are drawn as separate bars. */
@@ -908,8 +1069,12 @@ function zngPanelMax(pts, panel, fuelsOn){
        produces a number with no physical meaning. js/ui.js's Report-Wise total row refuses to sum
        ROB for exactly this reason, and this refusal is the same refusal.
      • Eligibility is a PERCENTAGE. Percentages of different reports do not add.
-   Both simply render nothing, rather than a "—", so the row stays visually quiet. */
-var ZNG_NO_TOTAL = { rob:1, elig:1 };
+     • CARGO (2026-08-02, owner instruction: "just like ROB, the total for this is not needed") is a
+       STOCK reading like ROB — the same cargo sits in the holds across every report of a laden leg,
+       so adding the column would count one parcel once per report. Report-Wise refuses to total its
+       Cargo column for the same reason.
+   All three simply render nothing, rather than a "—", so the row stays visually quiet. */
+var ZNG_NO_TOTAL = { rob:1, elig:1, cargo:1 };
 /* Returns { total:Number, parts:[{f,v,c}] | null }, or null for a panel that must not be totalled.
    `parts` is null for Distance (not a per-fuel quantity); for the consumption panels it carries ONE
    ENTRY PER FUEL IN THE WORKSPACE — including the fuels you have unticked, which report 0.00 rather
@@ -925,7 +1090,9 @@ function zngPanelTotal(pts, panel, fuels, fuelsOn){
   if(ZNG_NO_TOTAL[panel.id]) return null;
   var i, t = 0;
   if(panel.kind === "single"){
-    for(i = 0; i < pts.length; i++) t += Number(pts[i].dist) || 0;
+    /* 2026-08-02: reads the panel's own field, so this stays right if a third single-value panel
+       is ever added. Cargo never reaches here — ZNG_NO_TOTAL returned null above. */
+    for(i = 0; i < pts.length; i++) t += zngSingleVal(pts[i], panel) || 0;
     return { total:t, parts:null };
   }
   /* 2026-08-01 (owner instruction — "total EUA and total UK, displayed as per the filter
@@ -1142,10 +1309,14 @@ function zngChart(D){
                  '" height="' + pph.toFixed(1) + '" fill="url(#zng-hatch)"></rect>');
           continue;
         }
-        var v = Number(pts[i].dist) || 0; if(!(v > 0)) continue;
+        /* 2026-08-02: `|| 0` collapses BOTH a null (Cargo blank, no reading) and a genuine 0 to no
+           bar. That is deliberate and it is not a lost distinction — a zero-height rect would be
+           invisible anyway, so the honest place to tell blank from ballast is the tooltip, which
+           does (zngTipHtml's single branch). Distance is unaffected: it is never null. */
+        var v = zngSingleVal(pts[i], pn) || 0; if(!(v > 0)) continue;
         var x = i * slot + (slot - barW) / 2, y = Y(v);
         s.push('<rect x="' + x.toFixed(2) + '" y="' + y.toFixed(1) + '" width="' + barW.toFixed(2) +
-               '" height="' + Math.max(0.6, top + pph - y).toFixed(1) + '" fill="' + ZNG_DIST_COL + '"></rect>');
+               '" height="' + Math.max(0.6, top + pph - y).toFixed(1) + '" fill="' + (pn.col || ZNG_DIST_COL) + '"></rect>');
       }
     } else if(pn.kind === "stack"){
       for(var i2 = 0; i2 < n; i2++){
@@ -1372,9 +1543,76 @@ function zngBandStrip(){
   var y = ZNG_EPAD_T, h = ZNG_BCELL;
   var lbl = {};
   for(var z = 0; z < ZNG_STATES.length; z++) lbl[ZNG_STATES[z].id] = ZNG_STATES[z].label;
+  /* 2026-08-02: which columns got a bunker dot, so the OPL pass below can shoulder the two apart
+     instead of drawing one on top of the other. A report CAN be both (a bunkering tagged
+     OUTSIDE_PORT_LIMIT) — it does not happen in the owner's file, but nothing prevents it. */
+  var bunkerAt = {};
   for(var i = 0; i < n; i++){
     var st = pts[i].state;
-    if(st == null) continue;                       // no operational state — leave the cell empty
+    if(st == null){
+      /* 2026-08-01u (Aurvin, owner instruction — Task 2): A BUNKER EVENT NO LONGER BREAKS THE
+         RIBBON. Owner: "Don't break the operation band because of FUEL_OIL_BUNKER events — copy
+         the ongoing colour in the operation band if there happens to be a gap due to
+         FUEL_OIL_BUNKER. This applies only to the operation band. Put a small yellow circle of
+         the diameter of quarter of the operation band width where you are filling the empty space."
+
+         WHY THE GAP EXISTS AT ALL. zngStateOf() returns null for a stock-movement report, because
+         a bunkering is not a period of operation — the ship does not stop being at berth or at sea
+         while it takes fuel. The null was honest about the DATA and wrong about the PICTURE: it cut
+         the ribbon in half at the one moment nothing operational actually changed.
+
+         THREE THINGS THIS IS CAREFUL NOT TO DO, each pinned by a check in verify_graph_popup.js:
+          1. It does NOT change zngStateOf(), and it does NOT write to pts[i].state. The point's
+             state stays null, so the report keeps its IMMUNITY from the Operation tick boxes
+             (owner's choice this session: "Keep it immune — colour is cosmetic"). Untick At Sea and
+             the real At Sea cells hatch while this one stays painted and marked. That preserves the
+             standing 2026-07-31e rule that a report which cannot be classified can never be hidden
+             by the filter that failed to classify it.
+          2. It is confined to the OPERATION band, per the owner's "This applies only to the
+             operation band". The Scope ribbon, the panels and every figure are untouched — a
+             bunker column still draws no bars, because it burned no fuel.
+          3. It only fills for FUEL_OIL_BUNKER. A report with a BLANK report type also has a null
+             state, and it still leaves a real gap — we know why a bunker event has no band, we do
+             not know why a typeless row has none, and inventing a colour for the second case would
+             be a guess.
+
+         THE FILL RULE, chosen by the owner over "fill only when both sides agree": CARRY THE
+         PREVIOUS BAND FORWARD, falling back to the NEXT one when the bunker is the very first
+         column (no previous to carry). It follows the physical reading — the ship was doing
+         something, it took fuel, it carried on — and it never leaves the ribbon broken.
+         THE MARKER: a dot of diameter ZNG_BCELL / 4 (15 / 4 = 3.75px), centred in the cell, so the
+         reader can always see that this cell is a JOIN and not a real reading. Sized off the band's
+         HEIGHT, not the column width (owner's choice): the columns get thin on a long voyage and a
+         width-derived dot would shrink below a pixel and vanish exactly when the ribbon is busiest.
+         Amber #eab308, which is not in ZNG_STATE_COL and not in the fuel or zone palettes, so it
+         cannot be mistaken for a band or a bucket. */
+      var bRt = String(((pts[i].rep) || {}).rt || "").trim().toUpperCase();
+      if(bRt !== "FUEL_OIL_BUNKER") continue;      // no operational state — leave the cell empty
+      var carry = null, carryDir = "";
+      for(var b0 = i - 1; b0 >= 0; b0--) if(pts[b0].state != null){ carry = pts[b0].state; carryDir = "before"; break; }
+      if(carry == null){
+        for(var b1 = i + 1; b1 < n; b1++) if(pts[b1].state != null){ carry = pts[b1].state; carryDir = "after"; break; }
+      }
+      if(carry == null) continue;                  // a chart of nothing but bunkers — nothing to copy
+      var bx = i * slot;
+      /* the join itself. NOTE it is drawn with the plain band colour even when that band is
+         UNTICKED: hatching it would say "this report is excluded", which is exactly what the
+         owner's "keep it immune" answer says it is not. */
+      /* CLASS NOTE: the join is `zng-bfill`, deliberately NOT `zng-bcell`. verify_graph_popup.js
+         asserts "one .zng-bcell per report that HAS a band" — an agreement check that would quietly
+         lose its meaning if joins counted toward it. Keeping the two classes separate lets that
+         check stay exact and lets a new one count the joins on their own. */
+      s.push('<rect class="zng-bfill" x="' + bx.toFixed(2) + '" y="' + y + '" width="' + (slot + 0.4).toFixed(2) +
+             '" height="' + h + '" fill="' + (ZNG_STATE_COL[carry] || "#c3ced4") + '">' +
+             '<title>' + zngEsc(zngStamp(pts[i].t)) + ' — bunkering (no operational state of its own; ' +
+             'the band is carried through from the report ' + carryDir + ', ' + zngEsc(lbl[carry] || carry) +
+             ')</title></rect>');
+      bunkerAt[i] = 1;
+      s.push('<circle class="zng-bbunker" cx="' + (bx + slot / 2 - (pts[i].opl ? ZNG_BCELL / 8 + 1.2 : 0)).toFixed(2) +
+             '" cy="' + (y + h / 2).toFixed(2) +
+             '" r="' + (ZNG_BCELL / 8).toFixed(2) + '" fill="#eab308" pointer-events="none"></circle>');
+      continue;
+    }
     var off = ZNG.states && ZNG.states[st] === false;
     var x = i * slot;
     /* +0.4 on the width closes the hairline seam antialiasing leaves between butted cells */
@@ -1384,6 +1622,42 @@ function zngBandStrip(){
            '" height="' + h + '" fill="' + (off ? "url(#zng-bhatch)" : (ZNG_STATE_COL[st] || "#c3ced4")) + '">' +
            '<title>' + zngEsc(zngStamp(pts[i].t)) + " — " + zngEsc(lbl[st] || st) +
            (off ? " (unticked — excluded from every panel)" : "") + '</title></rect>');
+  }
+  /* 2026-08-02 (Aurvin, owner instruction): THE OPL MARKER. Owner: "Introduce one light Blue circle
+     saying 'OPL' when the Operating condition (Operation) has OPL (we already have that in the
+     Reports tab). Tool tip card will also show OPL. (Non POC). Size same as fuel oil bunker circle
+     (quarter of band width)."
+
+     SIZE is `ZNG_BCELL / 8` radius — literally the same expression the bunker dot uses, not a copy
+     of its computed value, so the two can never drift apart when ZNG_BAND_SCALE changes. Same
+     reasoning as 08-01u's: derived from the band's HEIGHT, never the column width, because columns
+     get thin on a long voyage and a width-derived dot would vanish when the strip is busiest.
+
+     COLOUR is rose, not the light blue asked for — see the long ZNG_OPL_COL note for why the owner
+     changed his mind when the band's own blue-greys were pointed out.
+
+     WHICH REPORTS: every report whose OUTSIDE_PORT_LIMIT is TRUE, which is precisely the rule
+     js/ui.js's Report-Wise OPL badge uses. The owner picked this over the narrower "only on a stay
+     scored as non-POC" so that the chart and the table can never mark different rows. His "(Non
+     POC)" is therefore descriptive — what OPL usually IMPLIES — and is carried in the tooltip
+     wording rather than in the selection rule.
+
+     WHY A SEPARATE PASS AFTER THE CELL LOOP, and why it is not inside either branch:
+       1. An OPL report can have a real band (the normal case — all 7 in the owner's file are
+          At-Berth) OR no band at all (a bunkering, which takes the `st == null` branch and
+          `continue`s). One pass after the loop catches both without duplicating the code.
+       2. SVG paints in document order, so drawing here guarantees the dots sit ON TOP of the cells
+          and of the carried-forward bunker fill.
+     `pointer-events="none"` matches the bunker dot: the cell underneath keeps its own <title> and
+     the strip's hit rect keeps driving the hover card, so the marker cannot create a dead spot.
+     A dot is drawn even when the band is UNTICKED (hatched) — OPL is a fact about the report, not
+     about the filter, exactly as 08-01u decided for the bunker join. */
+  for(var oi = 0; oi < n; oi++){
+    if(!pts[oi].opl) continue;
+    var or_ = ZNG_BCELL / 8;
+    var ocx = oi * slot + slot / 2 + (bunkerAt[oi] ? or_ + 1.2 : 0);
+    s.push('<circle class="zng-bopl" cx="' + ocx.toFixed(2) + '" cy="' + (y + h / 2).toFixed(2) +
+           '" r="' + or_.toFixed(2) + '" fill="' + ZNG_OPL_COL + '" pointer-events="none"></circle>');
   }
   /* the strip's own sync marker, moved by zngHoverAt() — the panels' sync line lives in the other
      SVG and cannot reach across, so without this the strip is the one row you cannot read on hover */
@@ -1452,7 +1726,7 @@ function zngRail(D){
 
   var fuelRows = D.fuels.map(function(f, i){
     var on = ZNG.fuels[f] !== false;
-    return '<label class="zng-ck" title="' + zngEsc(f) + ' — shows or hides this fuel&#39;s colour band in the five consumption panels and in ROB, and removes its share of the EUA/UKA figures (2026-08-01). Distance and Eligibility are not per-fuel and are unaffected.">' +
+    return '<label class="zng-ck" title="' + zngEsc(f) + ' — shows or hides this fuel&#39;s colour band in the five consumption panels and in ROB, and removes its share of the EUA/UKA figures (2026-08-01). Distance, Cargo and Eligibility are not per-fuel and are unaffected.">' +
       '<input type="checkbox" ' + (on ? "checked " : "") + 'onchange="zngToggleFuel(\'' + zngEsc(f) + '\',this.checked)">' +
       '<i class="sw" style="background:' + zngFuelColour(f, i) + '"></i>' +
       '<span>' + zngEsc(f) + '</span></label>';
@@ -1511,7 +1785,18 @@ function zngRail(D){
 function zngTipHtml(p, panel, fuelsOn){
   var rows = "";
   if(panel.kind === "single"){
-    rows = '<div class="r"><span>Distance</span><b>' + zngNum(p.dist, 1) + ' nm</b></div>';
+    /* 2026-08-02: was hard-coded to "Distance … nm". Now reads the panel's own name, unit and
+       field, and — the part that matters — tells a BLANK apart from a reported ZERO. Cargo is the
+       only panel that can be null, and the wording is the same distinction the Report-Wise Cargo
+       column already makes (a dash for blank, a 0 for a real ballast reading).
+       STILL EXACTLY ONE ROW TALL in every branch, which is load-bearing: verify_graph_popup.js's
+       "each card is exactly ONE reading tall" check is the entire reason two hover cards anchored
+       70px apart cannot collide. Do not add a second row here without re-measuring that. */
+    var sv = zngSingleVal(p, panel);
+    rows = (sv == null)
+      ? '<div class="r zng-dim"><span>' + zngEsc(panel.title) + '</span><b>not reported</b></div>'
+      : '<div class="r"><span>' + zngEsc(panel.title) + '</span><b>' +
+        zngNum(sv, 1) + ' ' + zngEsc(panel.unit) + '</b></div>';
   } else if(panel.kind === "stack"){
     var sg = zngSegs(p, panel, fuelsOn);
     if(!sg.segs.length){
@@ -1535,17 +1820,42 @@ function zngTipHtml(p, panel, fuelsOn){
     } else {
       var eS = zngEtsSums(p, fuelsOn);
       var D0 = ZNG.data || {};
+      /* 2026-08-01s (Aurvin, owner instruction — Task 5): the per-fuel rows carry THEIR UNIT after
+         the fuel name, "HFO (tCO₂e)". These rows are NOT tonnes of fuel — they are that fuel's
+         share of the allowances, i.e. tonnes of CO₂-equivalent, and they sit two panels above the
+         Total Cons card whose identically-named rows ARE tonnes of fuel (mt). Without the unit the
+         two cards look like the same quantity disagreeing with itself. Owner asked for the unit on
+         the FUEL rows only ("Fuel rows only, in EUA/UKA card"); the EUA and UKA rows below stay
+         bare, because the panel's own axis title already reads "EUA/UKA (tCO₂e)" and an allowance
+         is a tCO₂e by definition. */
       for(var fi2 = 0; fi2 < fuelsOn.length; fi2++){
         var fN = fuelsOn[fi2];
         var fV = (Number((p.eua || {})[fN]) || 0) + (Number((p.uka || {})[fN]) || 0);
         if(!(fV > 0)) continue;
         rows += '<div class="r"><i class="sw" style="background:' + zngFuelColour(fN, fi2) + '"></i><span>' +
-                zngEsc(fN) + '</span><b>' + zngNum(fV, zngValDp(fV)) + '</b></div>';
+                zngEsc(fN) + ' (tCO₂e)</span><b>' + zngNum(fV, zngValDp(fV)) + '</b></div>';
       }
-      rows += '<div class="r"><i class="sw" style="background:' + ZNG_EU_COL + '"></i><span>EUA (EU ETS)</span><b>' +
-              zngNum(eS.eua, zngValDp(eS.eua)) + '</b></div>';
-      rows += '<div class="r"><i class="sw" style="background:' + ZNG_UK_COL + '"></i><span>UKA (UK ETS)</span><b>' +
-              zngNum(eS.uka, zngValDp(eS.uka)) + '</b></div>';
+      /* 2026-08-01s (owner instruction — Tasks 4 and 6). TWO changes to the scheme lines:
+         (a) the scheme name in brackets is dropped — "EUA (EU ETS)" → "EUA", "UKA (UK ETS)" → "UKA".
+             Owner: "no need to keep (UK ETS) after UKA, and (EU ETS) after EUA, as this is
+             understood." An EUA is by definition an EU ETS allowance and a UKA a UK ETS one, so the
+             bracket restated the acronym it followed. Same argument 08-01e used on the scope card.
+         (b) A ZERO LINE IS NO LONGER DRAWN AT ALL. Owner: "No need to show UKA or EUA if they are
+             zero in the top card." Previously both lines were unconditional, so a ship trading
+             wholly outside Europe hovered onto a card reading "EUA 0 / UKA 0 / outside EU and UK
+             ETS scope" — three rows to say nothing happened. Note this is a DISPLAY test on the
+             already-computed figure (eS.eua / eS.uka from zngEtsSums); nothing about the
+             calculation, the eligibility, or the phase-in changes. The zero is still fully
+             readable: the bar is drawn (at zero) in the panel, the figure is in the REPORTS table,
+             and the scope card one strip below still states the 0% that caused it. */
+      if(eS.eua > 0){
+        rows += '<div class="r"><i class="sw" style="background:' + ZNG_EU_COL + '"></i><span>EUA</span><b>' +
+                zngNum(eS.eua, zngValDp(eS.eua)) + '</b></div>';
+      }
+      if(eS.uka > 0){
+        rows += '<div class="r"><i class="sw" style="background:' + ZNG_UK_COL + '"></i><span>UKA</span><b>' +
+                zngNum(eS.uka, zngValDp(eS.uka)) + '</b></div>';
+      }
       /* 2026-08-01e (Aurvin, owner instruction — Task 1): the "phase-in <year> <pct>%" row was
          REMOVED. Owner: "for another parameter EUA/UKA tool tip the 'phase-in 100%' is not needed.
          These are extra info." It was never a per-report reading — it is one file-wide constant
@@ -1554,9 +1864,14 @@ function zngTipHtml(p, panel, fuelsOn){
          UNCHANGED and still applied inside the engine (engine.js ~698, covered CO₂e × eligibility ×
          phase-in); only the restatement in this card is gone. It is still readable in the panel's
          own ⓘ / total tooltip, which names the year and the basis — see zngTotalsLayer(). */
-      if(!(eS.eua > 0) && !(eS.uka > 0)){
-        rows += '<div class="r zng-dim"><span>outside EU and UK ETS scope</span><b>0</b></div>';
-      }
+      /* 2026-08-01s (owner instruction — Task 4): the "outside EU and UK ETS scope" consolation row
+         is REMOVED. Owner: "Remove 'Outside EU and UK scope' from top popup card." With Task 6 also
+         hiding the two zero lines, a report with no allowances now yields NO ROWS AT ALL from this
+         branch — and the caller (zngHoverAt) reads that empty string as "do not show this card",
+         which is what the owner chose when asked ("Hide the card entirely"). The fact is not lost:
+         the scope card on the pinned strip below the panels still reads "Non EU/UK 0%" on the same
+         hover, which is the CAUSE rather than the symptom. The SVG <title> on the grey 0% ribbon
+         cell (zngEligStrip, ~line 1333) also still spells it out on a slow hover. */
     }
   }
   /* 2026-08-01d: the old `else` branch here was the Eligibility tooltip. Eligibility is no longer a
@@ -1590,7 +1905,11 @@ function zngTipHtml(p, panel, fuelsOn){
    whole no-collision guarantee here is "one row each", and tools/verify_graph_popup.js pins it. */
 
 /* the Eligibility card. Same figures and same wording as the shared card carried, minus the date.
-   2026-08-01e (owner instruction): the scheme names "EU ETS / FuelEU" and "UK ETS" are REPLACED by
+   2026-08-01e (owner instruction) — SUPERSEDED THE SAME DAY BY 2026-08-01s, see the note directly
+   above zngEligTip() below: 08-01e replaced the scheme names with the word "Eligibility"; 08-01s
+   removed that word too, leaving swatch + zone + %. The 08-01e reasoning is kept because 08-01s
+   extends it rather than reversing it — both say the zone word already names the regime.
+   the scheme names "EU ETS / FuelEU" and "UK ETS" are REPLACED by
    the single word "Eligibility". Owner: "As these things are understood, when the scope text is
    visible." He is right — the zone label that follows it (From-EU / To-EU / EU-EU / At-EU, or
    UK-UK / At-UK) already names the regime unambiguously, and the swatch carries the bucket colour,
@@ -1598,19 +1917,33 @@ function zngTipHtml(p, panel, fuelsOn){
    swatch + scope text only. NOTE the known limitation this inherits — see the "NOT COLOUR-BLIND
    SAFE" note above ZNG_ZONE_COL: with the scheme name gone, EU vs UK now rests on the zone WORD
    (still fine in greyscale) rather than on the colour, which is if anything an improvement. */
+/* 2026-08-01s (Aurvin, owner instruction — Task 2, confirmed in the clarifying round): THE WORD
+   "Eligibility" IS GONE FROM THIS CARD ALTOGETHER, and is NOT replaced by "Scope". Owner: "In the
+   pop-up card remove the text 'Eligibility —' as without, user can understand meaning… Remove the
+   text 'Scope' from the bottom popup card." So the reading is now swatch + zone + percentage, e.g.
+     ▪ Non EU/UK   0%      (was:  ▪ Eligibility — Non EU/UK   0%)
+   This finishes what 2026-08-01e started. That change had already deleted the SCHEME name ("EU ETS
+   / FuelEU", "UK ETS") on the grounds that the zone word behind it names the regime; the leading
+   noun was the last remaining restatement of the row's own identity — the card hangs off the strip
+   labelled "Scope" and shows a percentage, so "Eligibility —" was telling you where you already
+   were. The strip label (zngRender, ~line 1982) is the one place the word is still spelled out.
+   FALLBACK when the zone is unrecognised: the label falls back to the plain word "Scope" rather
+   than to an empty <span>, so the row can never render as a bare number with no name. Only zone ids
+   outside ZNG_ZONES reach that, which today is none of them ("none" is a listed zone, "Non EU/UK"). */
 function zngEligTip(p){
   if(!p) return "";
   var rows = "";
   if(p.eu == null && p.uk == null){
-    rows += '<div class="r zng-dim"><span>Eligibility</span><b>–</b></div>' +
+    /* the no-match stub keeps a name — there is no zone word here to carry it, and an unnamed "–"
+       would read as "zero", which is exactly the distinction this stub exists to make. */
+    rows += '<div class="r zng-dim"><span>Scope</span><b>–</b></div>' +
             '<div class="r zng-dim"><span class="n">no matched voyage/port entry</span></div>';
   } else {
     var zTip = null;
     for(var zt = 0; zt < ZNG_ZONES.length; zt++) if(ZNG_ZONES[zt].id === p.zone) zTip = ZNG_ZONES[zt];
     var euV = (p.eu != null && p.eu > 0) ? p.eu : null;
     var pct = euV != null ? euV : ((p.uk != null && p.uk > 0) ? p.uk : null);
-    var lbl = "Eligibility";
-    if(zTip) lbl += " — " + zTip.label;
+    var lbl = zTip ? zTip.label : "Scope";
     var col = ZNG_ZONE_COL[p.zone] || (euV != null ? ZNG_EU_COL : ZNG_UK_COL);
     rows += '<div class="r"><i class="sw" style="background:' + col + '"></i><span>' + zngEsc(lbl) + '</span><b>' +
             (pct == null ? "0%" : zngNum(pct, pct % 1 ? 1 : 0) + "%") + '</b></div>';
@@ -1625,16 +1958,52 @@ function zngEligTip(p){
   return rows;
 }
 
-/* the Operation card — the other half of the 2026-08-01e split. One row, no date. */
+/* the Operation card — the other half of the 2026-08-01e split. One row, no date.
+   2026-08-01t (Aurvin, owner instruction): the word "Operation" is REMOVED FROM THIS CARD, exactly
+   as 08-01s removed "Eligibility" from the scope card, and for the same reason — the card hangs off
+   a strip whose left label already says OPERATION, so the noun was naming the row you are already
+   hovering. The reading is now swatch + band, e.g.  ▪ At Sea.
+   READ THIS BEFORE "TIDYING" THE LEFT LABEL: the owner was explicit that this is the CARD only —
+   "The word 'operation' to be removed only from the pop-up tooltip card and not the labels on the
+   left. Let there be no confusion." The .zng-xpad label in zngRender() still reads "Operation" and
+   must stay. Same split as 08-01s made for Scope. Pinned by a check in verify_graph_popup.js. */
+/* 2026-08-02 (Aurvin, owner instruction): "Tool tip card will also show OPL. (Non POC)".
+   IT IS AN INLINE PILL ON THE EXISTING ROW, NOT A SECOND ROW — and that is deliberate, not a
+   shortcut. The whole no-collision guarantee for the two pinned cards is "exactly ONE reading tall"
+   (see the long clearance note above zngEligTip, and the check in verify_graph_popup.js that pins
+   it): the Operation card opens DOWNWARD over the date axis, and a second row would push it into
+   the axis labels and close the ~70px gap that keeps it clear of the Eligibility card. So the OPL
+   flag rides on the same row as the band name:
+       ▪ At-Berth  OPL
+   It mirrors the pill js/ui.js already draws in Report-Wise (#b91c1c on #fee2e2) so the two views
+   read as the same badge. The tooltip TEXT is where the owner's "(Non POC)" lives — it spells out
+   the consequence (outside port limits, so normally scored as transit rather than a port of call)
+   rather than the chart re-deriving any of it. Styles are inline for the same reason ui.js's badge
+   is: this is one span, and adding a stylesheet rule for it would mean the standalone build and the
+   site could drift. */
+function zngOplPill(){
+  return '<span style="margin-left:6px;font-size:8.5px;font-weight:700;letter-spacing:0.05em;' +
+         'color:#b91c1c;background:#fee2e2;padding:1px 4px;border-radius:3px;line-height:1.3" ' +
+         'title="OUTSIDE_PORT_LIMIT = TRUE on this report — the activity was reported outside port ' +
+         'limits, which normally means the stay is scored as transit (NOT a port of call) and is ' +
+         'excluded from EU ETS / UK ETS / FuelEU. Same flag as the OPL badge in the Report-Wise ' +
+         'tab.">OPL</span>';
+}
 function zngOpTip(p){
   if(!p) return "";
   var rows = "", sLbl = null;
+  var pill = p.opl ? zngOplPill() : "";
   for(var si = 0; si < ZNG_STATES.length; si++) if(ZNG_STATES[si].id === p.state) sLbl = ZNG_STATES[si].label;
   if(sLbl){
     rows += '<div class="r"><i class="sw" style="background:' + (ZNG_STATE_COL[p.state] || "#c3ced4") +
-            '"></i><span>Operation</span><b>' + zngEsc(sLbl) + '</b></div>';
+            '"></i><b>' + zngEsc(sLbl) + '</b>' + pill + '</div>';
   } else {
-    rows += '<div class="r zng-dim"><span>Operation</span><b>–</b></div>';
+    /* the fallback KEEPS the word, for the same reason the scope card's no-match stub does (see
+       zngEligTip): there is no band word here to carry the meaning, and a lone dim "–" beside a
+       grey swatch would be unreadable. It only appears when a report has no operational state. */
+    /* 2026-08-02: the pill rides the fallback row too, so a bunkering that is ALSO flagged
+       OUTSIDE_PORT_LIMIT still reports its OPL. Still one row. */
+    rows += '<div class="r zng-dim"><span>Operation</span><b>–</b>' + pill + '</div>';
   }
   if(zngStateExcluded(p)){
     rows += '<div class="r zng-dim"><span class="n">excluded — Operation filter</span></div>';
@@ -1730,11 +2099,21 @@ function zngHoverAt(idx){
     if(!el) continue;
     /* 2026-08-01b: name WHICH filter ruled the column out — with two filters able to exclude, a
        bare "excluded" leaves you hunting through two lists for the tick you turned off. */
-    el.innerHTML = excluded
+    var html = excluded
       ? '<div class="r zng-dim"><span>excluded — ' +
         (zngZoneExcluded(p) ? (zngStateExcluded(p) ? "Scope and Operation" : "Scope") : "Operation") +
         ' filter</span><b>—</b></div>'
       : zngTipHtml(p, pn, fuelsOn);
+    /* 2026-08-01s (owner instruction — Task 6, "Hide the card entirely"): a panel whose tooltip
+       builder returns NOTHING gets no card on screen, instead of an empty white box floating over
+       the bars. Today only the EUA/UKA panel can return "" — when both allowance figures are zero
+       and, per Task 4, there is no consolation row left to draw. Every other kind always emits at
+       least one row (Distance always has a number; a stack with no segments emits "no value"), so
+       this is a safety net for one case rather than a new general behaviour. It must clear the
+       "on" class, not just blank the HTML: .zng-tip is styled with a background and a border, so
+       an empty-but-visible card would show as a small blank rectangle. */
+    if(!html){ el.classList.remove("on"); continue; }
+    el.innerHTML = html;
     el.style.top = (zngPanelTop(i) + 2) + "px";
     el.style.left = flip ? "" : (cx + 10) + "px";
     el.style.right = flip ? (P.W - cx + 10) + "px" : "";
@@ -1856,10 +2235,10 @@ function zngRender(){
         "<b>Parameter</b> ticks show or hide a panel completely; the panels that stay ticked grow " +
         "to fill the freed space, so the popup's overall height never changes — only how that " +
         "height is divided between the panels you actually want. On a fresh workspace two are " +
-        "ticked — <b>EUA/UKA</b> and <b>Total Cons</b> — and the rest are one tick away. " +
+        "ticked — <b>EUA/UKA</b>, <b>Total Cons</b> and <b>Cargo</b> — and the rest are one tick away. " +
         "(Eligibility is not in this list: it is permanently on screen as a locked strip — see " +
         "below.) <b>Fuel</b> ticks change the five " +
-        "consumption panels, ROB and EUA/UKA — Distance and Eligibility are not per-fuel quantities. " +
+        "consumption panels, ROB and EUA/UKA — Distance, Cargo and Eligibility are not per-fuel quantities. " +
         "<b>Scope</b> ticks do not " +
         "remove anything from the timeline: an unticked zone's reports stay in their exact column " +
         "(the X axis never moves) but draw hatched/greyed in every panel, so a ruled-out period is " +
@@ -1873,14 +2252,23 @@ function zngRender(){
         "ticked — so you can isolate, say, At-Berth time in EU ports. Worth knowing: <b>In-Port " +
         "time is charged to the voyage leg, not the port stay</b>, so an EU call with a long " +
         "anchorage wait shows In-Port sitting inside a 50% To-EU/From-EU colour. That is the " +
-        "regulation's own boundary, not a discrepancy.<br><br>" +
+        "regulation's own boundary, not a discrepancy. A rose dot on the Operation band marks a " +
+        "report flagged <b>OPL</b> (OUTSIDE_PORT_LIMIT = TRUE) — the same flag the Report-Wise tab " +
+        "badges, and the hover card repeats it. OPL activity is normally scored as transit rather " +
+        "than a port of call, so it falls outside EU ETS / UK ETS / FuelEU. An amber dot on the same " +
+        "band is a bunkering join, not an OPL.<br><br>" +
         "<b>Totals</b> sit at the right-hand end of each parameter's own row, split by fuel and then " +
         "combined. They follow both the Scope and the Fuel ticks, so a total always equals the bars " +
         "you can actually see; a fuel you have unticked reads 0 rather than vanishing from the list. " +
-        "<b>ROB has no total</b> — it is a stock reading, and adding one event's tanks to the " +
-        "next event's produces a number with no physical meaning. (Eligibility has none either, " +
-        "percentages not being addable, but it is no longer a panel so there is no row to omit.)" +
-        "<br><br>" +
+        "<b>ROB and Cargo have no total</b> — both are stock readings, and adding one event's tanks " +
+        "(or holds) to the next event's produces a number with no physical meaning. (Eligibility has " +
+        "none either, percentages not being addable, but it is no longer a panel so there is no row " +
+        "to omit.)<br><br>" +
+        "<b>Cargo</b> is the cargo on board at each report — the same CARGO_QTY the Report-Wise " +
+        "table shows, in mt, in slate grey. It is not per-fuel, so the Fuel ticks leave it alone. A " +
+        "report whose MDA file left the cargo cell BLANK draws no bar and its card reads " +
+        "“not reported”; a reported <b>0</b> is a real ballast condition and reads “0.0 mt”. That is " +
+        "the same blank-versus-zero distinction the Report-Wise Cargo column makes.<br><br>" +
         "<b>ROB is a stock reading, not a flow.</b> It is stacked here by explicit instruction, but the " +
         "stack HEIGHT is the sum of separate tanks and has no physical meaning — read the individual " +
         "bands, not the top of the bar. (The Report-Wise table refuses to total ROB for this reason.)<br><br>" +
@@ -1957,6 +2345,16 @@ function zngRender(){
                 'EUA/UKA are unavailable.</div>';
       });
     }
+    /* 2026-08-02: and the same courtesy for Cargo. Blank here means not one report in the window
+       carried a CARGO_QTY value — an import without that column, not a ship that sailed empty
+       (a ballast voyage reports 0 and so counts as data). */
+    if(!D.anyCargo){
+      P.forEach(function(pn, i){
+        if(pn.id !== "cargo") return;
+        caps += '<div class="zng-cap" style="top:' + (zngPanelTop(i, capPh) + zngPanelPh(i, capPh) / 2 - 8) + 'px">' +
+                'No cargo quantity reported in any report in this window — Cargo is unavailable.</div>';
+      });
+    }
     body =
       '<div class="znct-body zng-body">' +
         zngRail(D) +
@@ -1979,7 +2377,15 @@ function zngRender(){
              upward off this row, #zng-btip opens downward off the Operation row into the date axis.
              See the note above zngEligTip() for why that cannot collide. */
           '<div class="zng-erow">' +
-            '<div class="zng-epad" style="width:' + ZNG_AXW + 'px">Eligibility<em>%</em><i>100</i></div>' +
+            /* 2026-08-01s (Aurvin, owner instruction — Task 1, confirmed in the clarifying round):
+               the strip's LEFT-HAND LABEL reads "Scope", not "Eligibility". Owner: "Rename
+               'Eligibility' with 'Scope' in the left graphs header list." Scoped to THIS label
+               only — the Reports/Legs table column group, the ⓘ help text and the self-test
+               wording still say "Eligibility" (owner: "Chart strip label only"), because those
+               name the CALCULATION (js/ui.js trCoverage → engine euCoverage), which is unchanged.
+               The <em>%</em> unit and the <i>100</i> axis top are kept: the bars are still a
+               percentage on a fixed 0–100 scale. */
+            '<div class="zng-epad" style="width:' + ZNG_AXW + 'px">Scope<em>%</em><i>100</i></div>' +
             '<div class="zng-escroll" id="zng-escroll">' + zngEligStrip() + '</div>' +
             '<div class="zng-ptip zng-etip" id="zng-etip"></div>' +
           '</div>' +
@@ -2032,8 +2438,8 @@ function zngRender(){
     b.type = "button";
     b.className = "znfs-graphbtn";
     /* the class stays .znfs-graphbtn — internal name, see the NAMING note at the top of the file */
-    b.title = "Trends — EUA/UKA allowances, distance, consumption by fuel, ROB and EU/UK " +
-              "eligibility across every imported report, on one shared timeline.";
+    b.title = "Trends — EUA/UKA allowances, distance, consumption by fuel, ROB, cargo on board and " +
+              "EU/UK eligibility across every imported report, on one shared timeline.";
     b.innerHTML = '<span class="ic">📈</span>Trends';
     b.onclick = function(){ zngToggle(); };
     /* leftmost item in the right-hand header group, ahead of Vessel Reporting / Year / Download */

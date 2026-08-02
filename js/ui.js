@@ -309,6 +309,21 @@ function portIndex(){
   return _PORTS;
 }
 function portName(code){ portIndex(); return _PORT_BY_CODE[(code||"").toUpperCase()] || null; }
+/* 2026-08-02 (Aurvin, owner instruction): resolve a port reported by NAME only (blank UN/LOCODE)
+   to a real LOCODE, so its zone/coverage and label come out right instead of carrying the previous
+   port's code forward (owner's POLLUX file booked a Sulina cargo call as "Tarragona"). Tries the
+   whole name, then the name with common anchorage / waiting-area descriptors stripped ("Fair Buoy",
+   "Anchorage", "Roads", "OPL", "Off", "Pilot", "Outer/Inner", ...) — e.g. "Sulina Fair Buoy" → ROSUL.
+   Accepts ONLY a single unambiguous port-search hit; never guesses among several. Returns LOCODE or null. */
+function resolvePortByName(name){
+  name=(name||"").trim(); if(name.length<3) return null;
+  const one=q=>{ q=(q||"").trim(); if(q.length<3) return null; const r=portSearch(q,6); return r.length===1 ? r[0][0] : null; };
+  let hit=one(name); if(hit) return hit;
+  const base=name.replace(/\b(fair(way)?\s*buoys?|anchorages?|anch\.?|roads?|opl|outer\s*port\s*limits?|pilot(\s*station)?|off|outer|inner|approaches?|terminals?|bunkering?)\b/ig," ")
+                 .replace(/[.,()]/g," ").replace(/\s+/g," ").trim();
+  if(base && base.toLowerCase()!==name.toLowerCase()) { hit=one(base); if(hit) return hit; }
+  return null;
+}
 function portSearch(q, limit){
   q=(q||"").trim().toLowerCase(); if(q.length<2) return [];
   limit=limit||15;
@@ -468,8 +483,23 @@ function parseOVD(text){
        landed on a phantom zero-length berth row at the DESTINATION port (seen on the 2026
        file: "At berth Singapore", 31 t HFO, 01 Jan 06:00→06:00). Open the sea leg BEFORE
        choosing the consumption target so the fuel goes to the voyage. Only fires in the
-       no-context start state (no curPort, no port row, no leg yet). */
-    if(mode==="port" && !curPort && !portRow && !seaLeg && pair && dist>0
+       no-context start state (no curPort, no port row, no leg yet).
+       2026-08-02 (Aurvin — owner instruction): also fire when the opening report has ZERO
+       distance but is an AT-ANCHOR waiting report — a file that opens mid-voyage on an
+       anchorage/waiting stretch (OPERATING_CONDITION ANCHORED, no distance yet, POC=NO). Without
+       this that whole waiting period landed on a phantom "at berth <destination>" row that
+       DEFAULTED to a port of call (poc undefined → true) at an EEA destination, scoping a month
+       of anchor waiting at 100% EU ETS/FuelEU (owner's POLLUX file: ~5.6 t HFO + 54 t MDO booked
+       as an "at berth Tarragona" call). Routing it to the voyage makes it NOT a port of call —
+       its fuel carries the voyage's coverage. The signal is an `OPENANCH` marker mdaToOVD writes
+       in the POC_Flag column for a loose (un-derived) at-anchor POC=NO report — the POC_Flag
+       column is display-only and is never read to set a berth's POC, so unlike the raw POC
+       column it cannot flip a real stay (e.g. a MANOEUVRING approach report of a genuine call).
+       And because only THIS no-context opening test reads it, the marker is inert everywhere
+       else. A file opening AT BERTH gets no OPENANCH (that report is AT_BERTH), so it is
+       untouched and still yields a berth row. */
+    const openAnch = iFlagG>=0 && String(row[iFlagG]||"").indexOf("OPENANCH")>=0;
+    if(mode==="port" && !curPort && !portRow && !seaLeg && pair && (dist>0 || openAnch)
        && !isDep && !isBosp && !ev.includes("arrival")){
       seaLeg = makeLeg(from,to); mode="sea";
     }
@@ -835,6 +865,11 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
                 /* display-only retention for the trace table (2026-07-17): voyage no */
                 voy:String(G(r,"VOYAGE_NUMBER")).trim(),
                 opl:truthy(G(r,"OUTSIDE_PORT_LIMIT")),
+                /* 2026-08-02d TEMPORARY (part of the V1 branch — delete on revert): `opl` above
+                   is a boolean, so a BLANK cell and a reported FALSE look identical to it. The
+                   per-stay V1 detector needs to tell those apart, because "OUTSIDE_PORT_LIMIT is
+                   not populated at all" is one of the two signatures of a V1-style stay. */
+                oplHas:String(G(r,"OUTSIDE_PORT_LIMIT")).trim()!=="",
                 pocFile:String(G(r,"POC")).trim().toUpperCase(),
                 tEnd: endRaw!==""? (iso(mdaDate(endRaw))||iso(dt)) : iso(dt),
                 tStartOwn: startRaw!==""? iso(mdaDate(startRaw)) : null,
@@ -919,6 +954,9 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   /* ---- pass 2: port stays → derive ARRIVAL / DEPARTURE / POC ---- */
   const notes=[];
   let nDerived=0,nTransit=0,nQty=0,nMismatch=0,nIncomplete=0,nOPL=0,nOplKept=0,usedDefaultDwt=false;
+  /* 2026-08-02d TEMPORARY (V1 per-stay extension — delete on revert). Declared out here, beside
+     the other counters, because the notes block further down is a SEPARATE `if(hasOC)` scope. */
+  let nMixedStays=0,nMixedRows=0,mixedFirst=null,mixedLast=null;
   if(hasOC){
     let dwt=Number(dwtOpt)||0;
     if(!(dwt>0)){
@@ -941,8 +979,73 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     }
     if(cur && (cur.members.length||cur.eosp)) stays.push(cur);
 
+    /* ========== TEMPORARY V1, PER-STAY EXTENSION (2026-08-02d, Aurvin, owner instruction) ==========
+       THE BUG THIS FIXES. The `isV1` flag above is FILE-WIDE and binary: a file is V1 only when
+       OPERATING_CONDITION carries no AT_BERTH and no AT_ANCHOR ANYWHERE. Reported by the owner on
+       blumenthal_PAPUA_9266906.xlsx, which is a genuinely MIXED file — its reports run 13 Dec 2024
+       to 21 Jul 2026 and switch vocabulary partway: everything before 21 Jan 2025 is V1-style, from
+       then on it is V3 (180 AT_BERTH + 131 AT_ANCHOR rows). Because those V3 rows exist, `isV1` is
+       false for the WHOLE file, so the V1 branch never engaged for the December part — and a real
+       10-day cargo call at Ust-Luga (14–24 Dec 2024, PORT_STATE=AT_BERTH ×11, CARGO_OP=True,
+       POC=YES) derived NO arrival and NO departure, produced no port-stay row, and was swallowed by
+       the adjacent sea leg. Worse, because the file-wide resolved-port-stay pass then had no stay to
+       resolve, Ust-Luga vanished as a VOYAGE ENDPOINT too: 13 Dec – 20 Jan became one Tallinn →
+       Vitoria voyage, and 21.1 mt of MGO burnt alongside in a NON-EEA port was scored at the 50%
+       EEA→non-EEA voyage rate instead of 0% at berth. An over-count, not an under-count.
+
+       WHAT THIS DOES. Exactly what the owner chose when shown the options: resolve V1-vs-V3 PER
+       STAY instead of per file. A stay that is V1-shaped gets `ocD` from PORT_STATE — the same
+       substitution the file-wide branch makes, applied to that stay only. Every other stay is
+       untouched, so a V3 stay renders bit-identically whether or not the file also contains V1 ones.
+
+       WHY IT CANNOT CATCH A V3 STAY. The owner's per-row alternative was rejected for a specific
+       reason recorded in the V1 block above: in a real V3 file OC=BERTHING appears on 38 rows, and
+       15 of those DO carry PORT_STATE=AT_BERTH — they are the manoeuvring approach and are
+       deliberately EXCLUDED from the ladder. A per-row PORT_STATE fallback would pull them in and
+       move V3 arrivals earlier, breaking the standing "V1 must never change V3" rule. So the test
+       here is not "this row lacks a V3 token" but "this whole STAY is V1-shaped", which requires
+       ALL FOUR of:
+         1. no member carries AT_BERTH / AT_ANCHOR in OPERATING_CONDITION  (the ladder IS broken here)
+         2. some member carries AT_BERTH / AT_ANCHOR in PORT_STATE          (and PORT_STATE can fix it)
+         3. no member has ASSOCIATED_ACTIVITY                               (V1 signature — blank in V1)
+         4. no member has OUTSIDE_PORT_LIMIT populated                      (V1 signature — blank in V1)
+       Conditions 3 and 4 are what make this safe: a V3 stay populates those columns, so a V3
+       BERTHING-only stay fails the test and keeps today's behaviour. Proven, not argued — the
+       intermediate-CSV SHA-256 of both V3 reference files and of the pure-V1 file is unchanged by
+       this block (tools/verify_v1_mda_format.js).
+
+       REVERT NOTE: this whole block, `oplHas` in pass 1, the `stayV1` reads in the ladder loop and
+       the mixed-format note go together with the rest of the V1 branch. */
+    if(!isV1 && psHasV3State){
+      for(const st of stays){
+        const live=st.members.filter(m=>!m.transparent);
+        if(!live.length) continue;
+        if(live.some(m=> m.oc==="AT_BERTH" || m.oc==="AT_ANCHOR")) continue;   // 1
+        if(!live.some(m=> m.ps==="AT_BERTH" || m.ps==="AT_ANCHOR")) continue;  // 2
+        if(live.some(m=> m.aa)) continue;                                      // 3
+        if(live.some(m=> m.oplHas)) continue;                                  // 4
+        st.v1=true; nMixedStays++; nMixedRows+=live.length;
+        for(const m of st.members) m.ocD = m.ps || m.oc;
+        const a=live[0].tStart||live[0].tEnd, b=live[live.length-1].tEnd;
+        if(!mixedFirst || (a&&a<mixedFirst)) mixedFirst=a;
+        if(!mixedLast  || (b&&b>mixedLast))  mixedLast=b;
+      }
+    }
+    /* ================= end temporary V1 per-stay extension ================= */
+
     for(const st of stays){
       const M=st.members;
+      /* TEMPORARY V1 (2026-08-02d): the two file-wide V1 switches, re-asked for THIS stay. On a
+         wholly-V1 file `v1NoActivity` / `v1PocAuth` are already true and these are no-ops; on a
+         wholly-V3 file `st.v1` is never set and these are no-ops. They differ only on a mixed
+         file, where the V1-shaped stay needs the V1 cargo signal (CARGO_OP, because
+         ASSOCIATED_ACTIVITY is blank there — that is condition 3 above) and the V1 POC rule (the
+         file's own tag, because OUTSIDE_PORT_LIMIT is blank there and can demote nothing — that
+         is condition 4). Same reasoning as the file-wide flags, asked per stay. */
+      const stayV1 = st.v1===true;
+      const useCargoOp = v1NoActivity || stayV1;
+      const usePocTag  = v1PocAuth || (stayV1 && ("POC" in col) &&
+                                       st.members.some(m=> m.pocFile==="YES" || m.pocFile==="NO"));
       /* chain helpers — transparent rows are skipped, never break a chain */
       /* `ocD` (not `oc`) throughout the ladder — see the temporary V1 block above. For V3 files
          ocD === oc, so this is a rename with no behavioural change. */
@@ -961,7 +1064,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         return e; };
       /* TEMPORARY V1: cargo ops from the CARGO_OP boolean when ASSOCIATED_ACTIVITY is absent
          file-wide (v1NoActivity). V3 files keep the ASSOCIATED_ACTIVITY test unchanged. */
-      const ops=M.filter(m=> v1NoActivity ? m.cargoOp : MDA_CARGO_ACT[m.aa]);
+      const ops=M.filter(m=> useCargoOp ? m.cargoOp : MDA_CARGO_ACT[m.aa]);
       /* cargo-quantity fallback: EOSP vs SOSP CARGO_QTY — 0↔loaded or >5% of DWT
          (2026-07-20b: computed BEFORE the ladder — the DRIFTING rung now depends on it) */
       const qtyE = st.eosp? st.eosp.qty : (M.length? M[0].qty : 0);
@@ -990,7 +1093,18 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            The rung still fires when the cargo-quantity fallback shows cargo actually
            moved during the window (0↔loaded or >5% of DWT — e.g. an unrecorded STS
            transfer while drifting), so a real cargo call can never be silently lost. */
-        || (qtyTrig && firstLast("DRIFTING","DRIFTING"));
+        || (qtyTrig && firstLast("DRIFTING","DRIFTING"))
+        /* 2026-08-02 (Aurvin, owner instruction — TEMPORARY, to be REVERTED once vessels report
+           cargo calls with a proper condition/activity template): treat MANOEUVRING exactly like
+           the DRIFTING rung above — a port of call ONLY when the cargo-quantity fallback shows
+           cargo actually moved during the window. Some vessels misreport a genuine cargo call at
+           an anchorage / fair-buoy as MANOEUVRING with a BLANK ASSOCIATED_ACTIVITY (owner's POLLUX
+           file: Sulina Fair Buoy, 12,000 mt loaded across five MANOEUVRING reports, cargo 0→12,000
+           — previously no rung matched and the whole call was dropped to PURE TRANSIT at the 50%
+           voyage rate instead of a 100% EEA port of call). MANOEUVRING WITHOUT a cargo change stays
+           NOT a call (approach / waiting = sea passage), exactly as before. Revert = delete this one
+           rung and the DERIVE_RULE_TXT.MANOEUVRING entry. */
+        || (qtyTrig && firstLast("MANOEUVRING","MANOEUVRING"));
       }
       const cargoTest = ops.length>0 || qtyTrig;
       const incomplete = !st.eosp || !st.sosp;
@@ -1023,7 +1137,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            the ⚠ MISMATCH comparison are both suppressed: a recorded tag beats an inference, and there
            is nothing left to compare the tag against. The arrival/departure WINDOW is unaffected —
            it still comes from the ladder (via CARGO_OP for Case A). */
-        if(v1PocAuth){
+        if(usePocTag){
           poc = M.some(m=>m.pocFile==="YES");
           if(poc) nV1Poc++;
         } else {
@@ -1037,7 +1151,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            flag, so it renders as a clean port of call (owner decision 2026-07-24b). */
         /* TEMPORARY V1: with the POC tag authoritative the OPL demotion never applies, so a stay
            can never be flagged "cargo outside port limits" on a V1 file. */
-        const oplCargo = !v1PocAuth && oplHit && cargoTest && !poc;
+        const oplCargo = !usePocTag && oplHit && cargoTest && !poc;
         /* 2026-07-23 (Aurvin, owner instruction): record WHICH cargo operation was seen at
            this stay (ASSOCIATED_ACTIVITY), for the breakdown's 📦 tooltip. Read-only — it
            does not take part in the arrival/departure ladder or the POC decision above.
@@ -1098,7 +1212,14 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            stay's departure time — feed the file-wide Voyage_From/Voyage_To pass below; it is
            no longer written directly onto firstPort/lastPortRec here. */
         if(firstPort){
-          const resolvedPort = firstPort.cur || (st.sosp && st.sosp.org) || "";
+          /* 2026-08-02 (Aurvin, owner instruction): when neither the arrival's CURRENT_PORT
+             UN/LOCODE nor the bounding SOSP origin gives a code, resolve the stay's CURRENT_PORT
+             NAME to a real LOCODE (resolvePortByName) — a stay reported by name only then shows its
+             true port and keeps the correct zone/coverage, instead of carrying the previous port's
+             code forward (owner's POLLUX file: a Sulina Fair Buoy cargo call had been labelled
+             "Tarragona"). An unresolvable name keeps the previous carry-forward behaviour. */
+          const resolvedPort = firstPort.cur || (st.sosp && st.sosp.org)
+            || resolvePortByName(firstPort.portN || (M.find(m=>m.portN)||{}).portN) || "";
           if(resolvedPort){
             resolvedStays.push({ dep, resolvedPort });
             /* unified branches (2026-07-19b): stamp the stay's single resolved port on every
@@ -1218,7 +1339,19 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     for(const b of c.before)
       lines.push([b.dtIso.slice(0,10),b.dtIso.slice(11,16),bvf(b),bvt(b),b.ev,"",qtyCell(b.src?b.src.qty:null),"","","","",""].concat(blank).join(","));
     const meta=c.meta||{};
-    lines.push([c.dt[0],c.dt[1],vf(c),vt(c),c.ev,c.dist||"",qtyCell(c.qty),c.poc||"",meta.arr||"",meta.dep||"",meta.rule||"",meta.flags||""]
+    /* 2026-08-02 (Aurvin, owner instruction): mark a loose (un-derived) AT-ANCHOR waiting report
+       that the file itself flags POC=NO with an OPENANCH tag in the POC_Flag column. parseOVD's
+       mid-voyage "fix 1" reads ONLY this tag to route a file that opens on such an anchorage into
+       the VOYAGE instead of a phantom EEA berth-of-call (see the note there). Deliberately in
+       POC_Flag, NOT the POC column: POC_Flag is display-only and never sets a berth's POC, so this
+       cannot flip a real stay whose approach (MANOEUVRING) report is also POC=NO. Restricted to
+       reports with no derived POC (c.poc blank), an anchor/waiting OPERATING_CONDITION (or the
+       INITIAL_EVENT opening snapshot), and the file's own POC=NO — a berth report (AT_BERTH) or a
+       manoeuvring approach never qualifies. Purely a routing hint; changes no calculation itself. */
+    const openAnch = !c.poc && c.pocFile==="NO"
+        && (c.oc==="ANCHORED" || c.oc==="AT_ANCHOR" || c.oc==="DRIFTING" || c.rt==="INITIAL_EVENT");
+    const flagsOut = (meta.flags||"") + (openAnch ? (meta.flags?"+":"")+"OPENANCH" : "");
+    lines.push([c.dt[0],c.dt[1],vf(c),vt(c),c.ev,c.dist||"",qtyCell(c.qty),c.poc||"",meta.arr||"",meta.dep||"",meta.rule||"",flagsOut]
       .concat(fuelCells(c)).join(","));
   }
   /* raw per-report retention (2026-07-16): foundation for the future OVD-format download.
@@ -1249,6 +1382,17 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
       if(v1NoActivity) notes.push("V1 format: ASSOCIATED_ACTIVITY is empty throughout, so cargo operations were taken from the CARGO_OP column instead. Load vs discharge cannot be distinguished, so the 📦 tooltip does not name the operation.");
       if(v1PocAuth) notes.push("V1 format: Port of Call was taken from the file's POC column, which is authoritative for this format (owner rule) — the cargo-quantity ❗ fallback and the ⚠ POC-mismatch check are both switched off. "+nV1Poc+" stay(s) tagged as a Port of Call."+(("OUTSIDE_PORT_LIMIT" in col) && !recs.some(c=>!c.skip&&c.opl) ? " OUTSIDE_PORT_LIMIT is empty in this file, so the outside-port-limits transit check could not run.":""));
     }
+    /* 2026-08-02d TEMPORARY (V1 per-stay extension — delete on revert). The owner asked for this
+       to be LOUD and unconditional: the Ust-Luga case was completely silent, and nothing on screen
+       suggested that ten days and a whole port of call had been swallowed. The note fires whenever
+       a mixed file is detected, whether or not the affected stays were then recovered. */
+    if(nMixedStays) notes.push("⚠ MIXED MDA FORMAT — this file contains BOTH report vocabularies. "
+      +nMixedStays+" port stay(s) covering "+nMixedRows+" report(s)"
+      +((mixedFirst&&mixedLast)? " between "+String(mixedFirst).replace("T"," ")+" and "+String(mixedLast).replace("T"," ") : "")
+      +" are in the older \"V1\" style (port state only in PORT_STATE, ASSOCIATED_ACTIVITY and OUTSIDE_PORT_LIMIT empty), while the rest of the file is current-format. "
+      +"Those stays were read with the V1 rules — cargo from CARGO_OP and Port of Call from the file's POC tag — so their ARRIVAL/DEPARTURE derive normally. "
+      +"Before 2026-08-02 the format was detected once for the WHOLE file, so these stays derived nothing at all and merged silently into the adjacent voyage. "
+      +"Current-format stays in this same file are unaffected. Worth asking the data provider to re-export the whole period in one format.");
     if(nDerived) notes.push(nDerived+" port stay(s): regulatory ARRIVAL/DEPARTURE derived from the report chain (EOSP/SOSP are sea-passage markers, not the arrival/departure) — consumption before arrival / after departure is attributed to the voyage."+(v1PocAuth? "":" The file's POC column was ignored; Port of Call was derived from cargo operations and port limits."));
     if(nTransit) notes.push(nTransit+" stay(s) had no berth / anchorage / drifting / bunkering period — pure transit, merged into the adjacent voyage (no port-stay row).");
     if(nOPL) notes.push(nOPL+" stay(s) with cargo operations OUTSIDE port limits (e.g. STS) — classified as transit, not a port of call.");
@@ -1602,7 +1746,8 @@ const DERIVE_RULE_TXT = {
   AT_BERTH: "first → last AT_BERTH report (no cargo operations recorded)",
   BUNKERING:"OPERATING_CONDITION chain containing the bunkering report (no cargo ops / berth)",
   AT_ANCHOR:"first → last AT_ANCHOR report (no cargo ops / berth / bunkering)",
-  DRIFTING: "first → last DRIFTING report — used only because the cargo quantity changed during this window (no cargo ops / berth / bunkering / anchorage recorded); drifting-only waiting without cargo evidence is treated as sea passage since 2026-07-20b"
+  DRIFTING: "first → last DRIFTING report — used only because the cargo quantity changed during this window (no cargo ops / berth / bunkering / anchorage recorded); drifting-only waiting without cargo evidence is treated as sea passage since 2026-07-20b",
+  MANOEUVRING: "first → last MANOEUVRING report — used only because the cargo quantity changed during this window (no cargo-op tag / berth / bunkering / anchorage recorded). TEMPORARY accommodation (2026-08-02) for vessels that report a cargo call at an anchorage/fair-buoy as MANOEUVRING with a blank activity tag; manoeuvring without a cargo change stays sea passage. To be reverted when reporting improves."
 };
 /* icon-only version (2026-07-19): the actual arrival/departure values are already shown
    once, in the compact timeframe line below the port fields — no need to repeat them here
@@ -3845,9 +3990,17 @@ function breakdownGrid(R, tips){
        jurisdiction badge and the → arrow sit OUTSIDE this capped wrapper (still flex:none on
        the outer row) so they are never clipped and never eat into the name's budget. */
     const ports = legPorts(d, row);
+    /* 2026-08-02 (Aurvin, owner instruction — DISPLAY ONLY, LEGS TAB ONLY): the jurisdiction
+       chip (EU / UK / EU OMR / UK OMR) no longer sits after the port name. It moved DOWN into
+       the badge lane and now sits immediately to the RIGHT of the AT-BERTH tag — see
+       legJurisBadge below. Nothing about WHEN a chip appears changed: it is still berth rows
+       only (SPEC §2 — never on a voyage), still driven by the same p.juris, and each chip keeps
+       its own colour from JURIS_PAL. Two knock-on benefits the owner was shown and accepted:
+       the port-name line gets the chip's ~30px back before its 25-character ellipsis kicks in,
+       and the chip now reads as part of the "what kind of period was this" caption (AT-BERTH
+       [EU]) rather than as part of the port's identity. Report-Wise and the Workspace were
+       deliberately left alone — they have no AT-BERTH tag to anchor a chip to. */
     const portHtml = ports.map((p,pi)=>{
-      const j = (isBerth && p.juris) ? JURIS_PAL[p.juris] : null;
-      const badge = j ? `<span style="flex:none;margin-left:5px;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:700;letter-spacing:0.03em;background:${j.bg};color:${j.fg}">${p.juris}</span>` : "";
       const arrow = pi < ports.length-1 ? `<span style="flex:none;color:#94a3b8;margin-left:6px">→</span>` : "";
       const nameSpan = p.name
         ? `<span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>`
@@ -3859,7 +4012,7 @@ function breakdownGrid(R, tips){
                   : `<span style="flex:none">${esc(p.code)}</span>`)
         : (p.name ? "" : `<span style="flex:none">${esc(p.label)}</span>`);
       const nameCodeCap = `<span style="display:flex;align-items:baseline;min-width:0;max-width:25ch;overflow:hidden;flex:0 1 auto">${nameSpan}${codeSpan}</span>`;
-      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameCodeCap}${badge}${arrow}</div>`;
+      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameCodeCap}${arrow}</div>`;
     }).join("");
     /* 2026-07-24 (Aurvin, owner instruction): a stay where cargo happened but a report was
        OUTSIDE_PORT_LIMIT is scored as transit (row.poc===false) — but the owner wants it to
@@ -3911,6 +4064,23 @@ function breakdownGrid(R, tips){
        THE LEGS TAG ONLY. Still display-only — isBerth (d.kind!=="voyage") is untouched, and so are
        the frozen derivation ladder, the AT_BERTH data field, every tooltip and every export. */
     const legTag = isBerth ? "AT-BERTH" : "VOYAGE";
+    /* 2026-08-02 (Aurvin, owner instruction): the jurisdiction chip relocated here, from after
+       the port name (see the note at `ports` above). Order confirmed with the owner: TAG FIRST,
+       CHIP SECOND — "AT-BERTH [EU]" — with the pair still flush to the right edge, so the tag
+       shifts left by the chip's width rather than the chip hanging off the edge. Berth rows only
+       (a voyage still shows a bare "VOYAGE" and no chip, SPEC §2), and a berth stay outside both
+       schemes still shows a bare "AT-BERTH". A leg has ONE juris chip, so the value is taken from
+       the first port that carries one — for a berth row `ports` holds exactly one port anyway.
+       The pill styling is byte-for-byte the old one apart from margin-left 5px → 6px (it now
+       follows letter-spaced caps rather than a ")" and needed the extra pixel to not look glued
+       on) and the removal of `flex:none` (the lane is a column flexbox here, not the row flexbox
+       it came from, where flex:none would have squashed it). Sized to the 1.45em lane so the
+       chip cannot make the row taller than the 📦 line above it. */
+    const legJuris = isBerth ? (ports.find(p=>p.juris)||{}).juris : null;
+    const legJurisPal = legJuris ? JURIS_PAL[legJuris] : null;
+    const legJurisBadge = legJurisPal
+      ? `<span style="margin-left:6px;padding:1px 5px;border-radius:4px;font-size:9.5px;font-weight:700;letter-spacing:0.03em;background:${legJurisPal.bg};color:${legJurisPal.fg}">${esc(legJuris)}</span>`
+      : "";
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
     const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
     const voyNo = brVoyNos(segs, d);        // 2026-07-23f: canonical voyage number(s) for this leg
@@ -4088,7 +4258,7 @@ function breakdownGrid(R, tips){
               </div>
               <div style="flex:none;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end">
                 ${cargoIcon}
-                <div style="height:1.45em;display:flex;align-items:center;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}</div>
+                <div style="height:1.45em;display:flex;align-items:center;font-size:8.5px;font-weight:700;letter-spacing:0.07em;color:#94a3b8">${legTag}${legJurisBadge}</div>
               </div>
             </div>
           </div>
@@ -6978,6 +7148,56 @@ function runSelfTests(){
         rA.arrGmt==="2026-04-05T06:00" && rA.depGmt==="2026-04-06T06:00");
     ck("DRIFT fuel conservation VLSFO", xr.rows.reduce((s,r)=>s+fT(r,"HFO"),0), 18, 0.001);
     ck("DRIFT fuel conservation MGO", xr.rows.reduce((s,r)=>s+fT(r,"MDO"),0), 2.5, 0.001);
+
+    /* ---- 2026-08-02 (owner instruction, TEMPORARY): MANOEUVRING is treated like DRIFTING —
+       a port of call ONLY when the cargo quantity changed (accommodates vessels that report a
+       cargo call at an anchorage / fair-buoy as MANOEUVRING with a blank activity tag; owner's
+       POLLUX file, Sulina Fair Buoy). Manoeuvring WITHOUT a cargo change stays sea passage. ---- */
+    const MANV_FIX=[DH,
+      /* manoeuvring-only waiting off OMDQM, cargo unchanged → pure transit (no port stay) */
+      ["2026-05-01 00:00","2026-04-30 12:00","2026-05-01 00:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","0","SGSIN","","OMDQM"],
+      ["2026-05-02 00:00","2026-05-01 00:00","2026-05-02 00:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"200","0","SGSIN","","OMDQM"],
+      ["2026-05-02 06:00","2026-05-02 00:00","2026-05-02 06:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","0","SGSIN","OMDQM","OMDQM"],
+      ["2026-05-03 06:00","2026-05-02 06:00","2026-05-03 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 0.8}',"0","0","","OMDQM",""],
+      ["2026-05-04 06:00","2026-05-03 06:00","2026-05-04 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 0.9}',"0","0","","OMDQM",""],
+      ["2026-05-04 12:00","2026-05-04 06:00","2026-05-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.1}',"2","0","OMDQM","","AEJEA"],
+      /* manoeuvring window WITH a 0→12000 cargo load and a BLANK activity tag → derives the stay */
+      ["2026-05-05 00:00","2026-05-04 12:00","2026-05-05 00:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 6}',"100","0","OMDQM","","AEJEA"],
+      ["2026-05-05 06:00","2026-05-05 00:00","2026-05-05 06:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 0.5}',"5","0","OMDQM","AEJEA","AEJEA"],
+      ["2026-05-06 06:00","2026-05-05 06:00","2026-05-06 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 0.6}',"0","0","","AEJEA",""],
+      ["2026-05-07 06:00","2026-05-06 06:00","2026-05-07 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 0.6}',"0","12000","","AEJEA",""],
+      ["2026-05-07 12:00","2026-05-07 06:00","2026-05-07 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.1}',"1","12000","AEJEA","","SGSIN"]
+    ];
+    const mmv=mdaToOVD(MANV_FIX, 20000), xmv=parseOVD(mmv.csv);
+    const mvAt=c=>xmv.rows.filter(r=>r.kind==="port").find(p=>p.port&&p.port.c===c);
+    ckT("MANV: manoeuvring-only waiting (no cargo change) → NO port stay at OMDQM (still pure transit)", !mvAt("OMDQM"));
+    const mvA=mvAt("AEJEA");
+    ckT("MANV: manoeuvring + cargo 0→12000 (blank activity tag) → stay derived, rule MANOEUVRING, POC on, qty flag",
+        !!mvA && mvA.deriveRule==="MANOEUVRING" && mvA.poc===true && mvA.pocQty===true && !!mvA.arrGmt && !!mvA.depGmt);
+    ckT("MANV: the reinstated manoeuvring call is a POC (in EEA/other scope per its zone), not dropped to the voyage",
+        !!mvA && mvA.poc===true);
+
+    /* ---- 2026-08-02 (owner instruction): a port stay reported by NAME only (blank UN/LOCODE)
+       resolves to its true LOCODE via resolvePortByName, instead of carrying the previous port's
+       code forward. Owner's POLLUX file: a Sulina Fair Buoy cargo call had been labelled Tarragona. ---- */
+    const NAMEONLY=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE","CURRENT_PORT"],
+      ["2025-03-01 06:00","2025-02-28 18:00","2025-03-01 06:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","0","DZBJA","","",""],
+      ["2025-03-02 06:00","2025-03-01 06:00","2025-03-02 06:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"200","0","DZBJA","","",""],
+      ["2025-03-02 18:00","2025-03-02 06:00","2025-03-02 18:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","0","DZBJA","","","Off Somewhere"],
+      ["2025-03-03 06:00","2025-03-02 18:00","2025-03-03 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 1}',"0","0","","","","Sulina Fair Buoy"],
+      ["2025-03-04 06:00","2025-03-03 06:00","2025-03-04 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 1}',"0","12000","","","","Sulina Fair Buoy"],
+      ["2025-03-04 12:00","2025-03-04 06:00","2025-03-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.2}',"2","12000","","","TRIST",""]];
+    {
+      const rno=parseOVD(mdaToOVD(NAMEONLY, 20000).csv);
+      annotateVoyageContinuity(rno.rows);
+      const sp=rno.rows.find(r=>r.kind==="port" && r.deriveRule==="MANOEUVRING");   // the Sulina cargo stay
+      ckT("NAME-ONLY: a stay with a blank UN/LOCODE but CURRENT_PORT 'Sulina Fair Buoy' resolves to ROSUL (not carried-forward)",
+          !!sp && sp.port.c==="ROSUL");
+      ckT("NAME-ONLY: the resolved Sulina call is a POC at 100% EU ETS (ROSUL = EEA), cargo-change derived",
+          !!sp && sp.poc===true && Math.abs(euCoverage(sp)-1)<0.001);
+      ckT("NAME-ONLY: resolvePortByName strips the 'Fair Buoy' descriptor; confident single match only",
+          resolvePortByName("Sulina Fair Buoy")==="ROSUL" && resolvePortByName("Off Piraeus")==="GRPIR" && resolvePortByName("zzzz nowhere port")===null);
+    }
     /* DATETIME_GMT header variant + incomplete stay at file end */
     const INC_FIX=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
       ["2026-06-01 00:00","2026-05-31 12:00","2026-06-01 00:00","AT_SEA","NORMAL SAILING","","",'{"VLSFO": 5}',"60","9000","SGSIN","","AEJEA"],
@@ -7218,6 +7438,32 @@ function runSelfTests(){
       const rAb=parseOVD(mdaToOVD(ATBERTH, 20000).csv);
       ckT("DERIVE no-EOSP fallback: file opening AT BERTH still yields one berth row, no phantom leg",
           rAb.rows.filter(r=>r.kind==="port").length===1);
+    }
+    /* 2026-08-02 (Aurvin, owner instruction): a file that opens MID-VOYAGE on an AT-ANCHOR
+       waiting stretch marked POC=NO must be treated as NOT a port of call — its fuel rides the
+       voyage, never a phantom "at berth <destination>" call (which had scored a month of anchor
+       waiting at 100% EU ETS at an EEA port; owner's POLLUX file). Non-EEA→EEA voyage so the
+       anchor fuel should be 50%, not 100%. */
+    const OANC=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
+      ["2025-03-01 06:00","2025-03-01 00:00","2025-03-01 06:00","AT_SEA","ANCHORED","","","NO",'{"MDO": 1}',"0","0","DZBJA","","ESTAR"],
+      ["2025-03-02 06:00","2025-03-01 06:00","2025-03-02 06:00","AT_SEA","ANCHORED","","","NO",'{"MDO": 1}',"0","0","DZBJA","","ESTAR"],
+      ["2025-03-03 06:00","2025-03-02 06:00","2025-03-03 06:00","AT_SEA","NORMAL SAILING","","","NO",'{"VLSFO": 10}',"120","0","DZBJA","","ESTAR"],
+      ["2025-03-03 18:00","2025-03-03 06:00","2025-03-03 18:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","0","DZBJA","ESTAR","ESTAR"],
+      ["2025-03-04 06:00","2025-03-03 18:00","2025-03-04 06:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE","YES",'{"MGO": 2}',"0","5000","","ESTAR",""],
+      ["2025-03-04 12:00","2025-03-04 06:00","2025-03-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.2}',"2","5000","ESTAR","","FRMTX"]];
+    {
+      const roa=parseOVD(mdaToOVD(OANC, 20000).csv);
+      annotateVoyageContinuity(roa.rows);
+      const first=roa.rows[0], berth=roa.rows.find(r=>r.kind==="port");
+      const mdoOf=r=>((r&&r.fuels||[]).find(f=>f.fuelId==="MDO")||{tonnes:0}).tonnes;
+      ckT("OPEN-ANCHOR: opening at-anchor stretch (POC=NO) is NOT a port of call — first row is the voyage, no phantom berth",
+          !!first && first.kind==="voyage" && first.fromPort.c==="DZBJA" && first.toPort.c==="ESTAR");
+      ckT("OPEN-ANCHOR: the opening anchor fuel rides the voyage (MDO 2 t on the leg)",
+          !!first && first.kind==="voyage" && Math.abs(mdoOf(first)-2)<0.001);
+      ckT("OPEN-ANCHOR: opening voyage scoped at the voyage rate (DZBJA→ESTAR = 50%), not 100% at berth",
+          !!first && Math.abs(euCoverage(first)-0.5)<0.001);
+      ckT("OPEN-ANCHOR: the real destination call is still derived (ESTAR berth, POC on, cargo at berth 2 t)",
+          !!berth && berth.port.c==="ESTAR" && berth.poc===true && Math.abs(mdoOf(berth)-2)<0.001);
     }
     /* Report-Wise tab UK ETS badge judges each report WHOLE by its own date (2026-07-25, Aurvin,
        owner instruction): a report dated before 1 Jul 2026 is out of scope (dash), a report dated

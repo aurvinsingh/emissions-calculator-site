@@ -1150,8 +1150,18 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
      .zng-btip  top:100%     → downward, over the 34px date axis, which holds no data values
    .zng-ptip below is the SHARED look; the two rules after it are the only difference. If a card
    ever grows a second row, re-measure that clearance — see the note above zngEligTip() in graph.js. */
+/* 2026-08-01t (Aurvin, owner instruction): THE TWO STRIP CARDS SHRINK TO FIT THEIR TEXT. Owner:
+   "Both scope and Operation strip popup card can be reduced in the width so that less area is
+   hidden by them in the background" → chose "No minimum — fit the text".
+   min-width:150px is GONE and max-width drops 250 → 200. Combined with 08-01t deleting the noun
+   from each card, the Operation card is now about a third of its old width ("▪ At Sea" ≈ 62px
+   against a 150px floor). The width is set by the widest row, and .r is white-space:nowrap, so a
+   card is never taller than its rows — the occasional long line ("no matched voyage/port entry")
+   simply widens that one card, which the owner chose to leave in full.
+   This rule is the two PINNED cards only (.zng-etip / .zng-btip). The per-panel cards are .zng-tip
+   further down and keep their own 132/220 sizing — do not merge the two rules. */
 .zng-ptip{position:absolute;display:none;pointer-events:none;z-index:6;
-  min-width:150px;max-width:250px;background:#fff;color:#0e2c40;
+  width:max-content;max-width:200px;background:#fff;color:#0e2c40;
   border:1px solid #d3dde3;border-radius:5px;padding:5px 8px;font-size:10.5px;line-height:1.55;
   box-shadow:0 5px 16px rgba(14,44,64,.16)}
 .zng-etip{bottom:100%;margin-bottom:5px}
