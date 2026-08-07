@@ -132,7 +132,60 @@ var ZNFS_YEARS = [2024,2025,2026,2027,2028,2029,2030];
    and up into the vessel-particulars row (znfsRenderHeader) — see znfsYearHtml() below. From/To
    and the ✕ Clear button stay here, on the tab row, exactly where 2026-07-28b/c put them; only
    Year relocates (owner's explicit choice when asked). */
+/* 2026-08-06 (Aurvin, owner instruction) — SINGLE VOYAGE VIEW on the full-screen tab row.
+   The panel's own date-filter bar is hidden in full screen (`#znfs-slot .dfbar{display:none}`,
+   css/styles.css), so svBarHtml()'s banner never reaches the screen here — this is the
+   full-screen half of the same change, and the two must say the same things. The Year selector
+   lives up in the header, handled in znfsYearHtml() below.
+
+   2026-08-06c (Aurvin, owner instruction), three changes, all mirrored from js/ui.js's svBarHtml
+   — these two bars are the same control drawn twice and must never read or behave differently:
+     1. the three placeholder download buttons (⬇ FuelEU / ⬇ EU ETS / ⬇ UK ETS) are REMOVED
+        ("I will make this part of the top download itself"). svDownloadsHtml() no longer exists.
+     2. the button reads "✕ Reset", not "✕ Exit". It briefly read "✕ Reset View"; the owner
+        overruled that on 2026-08-06d — "let this be named as 'Reset' only." The full label
+        history and the one risk he knowingly accepted are recorded in svBarHtml (js/ui.js);
+        do not re-litigate it here. This button is always enabled: in this view there is always
+        a view to leave.
+     3. From/To are disabled ONLY when the voyage crosses a year end. For a voyage wholly inside
+        one calendar year they are live and bounded to that year, and editing one leaves the view
+        (svDateSet, js/ui.js) — the owner's rule that a single-year voyage "merely works like a
+        date filter, which we already were doing". */
+function znfsSvFilterHtml(){
+  var v = SVIEW;
+  var y = (typeof svSoleYear === "function") ? svSoleYear() : null;
+  var flds;
+  if(y == null){
+    flds =
+      '<span class="znfs-fld" title="The voyage\'s own start. View only, because this voyage crosses a year end and the year-locked filter cannot express that window."><span class="lb">From</span>' +
+        '<input type="datetime-local" lang="en-GB" disabled value="' + esc(v.tStart || "") + '"></span>' +
+      '<span class="znfs-fld" title="The voyage\'s own end. View only, because this voyage crosses a year end and the year-locked filter cannot express that window."><span class="lb">To</span>' +
+        '<input type="datetime-local" lang="en-GB" disabled value="' + esc(v.tEnd || "") + '"></span>';
+  }else{
+    var lo = y + '-01-01T00:00', hi = y + '-12-31T23:59';
+    var tip = esc("The voyage's own start/end. This voyage is wholly inside " + y + ", so you may edit these — doing so leaves single voyage view and continues as an ordinary " + y + " date filter starting from this voyage's window.");
+    flds =
+      '<span class="znfs-fld" title="' + tip + '"><span class="lb">From</span>' +
+        '<input type="datetime-local" lang="en-GB" min="' + lo + '" max="' + hi + '" value="' + esc(v.tStart || lo) + '" onchange="svDateSet(\'fromISO\',this.value)"></span>' +
+      '<span class="znfs-fld" title="' + tip + '"><span class="lb">To</span>' +
+        '<input type="datetime-local" lang="en-GB" min="' + lo + '" max="' + hi + '" value="' + esc(v.tEnd || hi) + '" onchange="svDateSet(\'toISO\',this.value)"></span>';
+  }
+  /* 2026-08-06c-ii (Aurvin, owner instruction): the cross-year flag sits here too, in the same
+     place relative to the SINGLE VOYAGE VIEW chip. Built by svCrossFlagHtml() in js/ui.js rather
+     than copied, so the badge and its tooltip can never drift between the two bars — the whole
+     reason this file keeps failing to stay in step is hand-copied markup. Returns "" on a
+     single-year voyage. */
+  return '<span class="znfs-filters">' +
+    '<span style="display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:6px;background:#0f3d4c;color:#fff;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap">SINGLE VOYAGE VIEW</span>' +
+    '<b style="font-size:13px;color:#0f172a;margin:0 4px">' + esc(v.voy || "(no number)") + '</b>' +
+    ((typeof svCrossFlagHtml === "function") ? svCrossFlagHtml() : "") +
+    flds +
+    '<button class="znfs-clear" title="Leave single voyage view and go back to the Year and From/To window you had before." onclick="svExitAndRepaint()">✕ Reset</button>' +
+    ((typeof emcolsButtonHtml === "function") ? emcolsButtonHtml() : "") +
+    '</span>';
+}
 function znfsFilterHtml(){
+  if((typeof svActive === "function") && svActive()) return znfsSvFilterHtml();
   var y = Number(S.year) || 2026;
   var df = S.dateFilter || {};
   var lo = y + "-01-01T00:00", hi = y + "-12-31T23:59";
@@ -142,7 +195,19 @@ function znfsFilterHtml(){
       '<span class="lb">From</span><input type="datetime-local" lang="en-GB" min="' + lo + '" max="' + hi + '" value="' + esc(df.fromISO || lo) + '" onchange="znfsDate(\'fromISO\',this.value)"></span>' +
     '<span class="znfs-fld" title="Window end within ' + y + ' (UTC). Filters the KPI cards and all three tables.">' +
       '<span class="lb">To</span><input type="datetime-local" lang="en-GB" min="' + lo + '" max="' + hi + '" value="' + esc(df.toISO || hi) + '" onchange="znfsDate(\'toISO\',this.value)"></span>' +
-    (narrowed ? '<button class="znfs-clear" title="Reset From/To to the whole of ' + y + '" onclick="znfsClearRange()">✕ Clear</button>' : "") +
+    /* 2026-08-06 (Aurvin, owner instruction): label "✕ Clear" → "✕ Reset". Visible text only —
+       the class (.znfs-clear), the handler (znfsClearRange -> dfClearRange) and the behaviour are
+       unchanged. Kept in step with renderDateFilterBar() in js/ui.js; the two bars are the same
+       control drawn twice and must never read differently. */
+    /* 2026-08-06d (Aurvin, owner instruction): always drawn, greyed when there is nothing to
+       reset — "it should always be permanently visible so that the date doesn't shift here and
+       there… so that the user always remembers its presence." Built by dfResetBtnHtml() in
+       js/ui.js so this copy cannot drift from the other two; the `.znfs-clear` class keeps the
+       full-screen styling. The handler stays znfsClearRange -> dfClearRange, so behaviour is
+       identical to the panel's bar, which is the whole point of sharing the builder. */
+    ((typeof dfResetBtnHtml === "function")
+      ? dfResetBtnHtml(narrowed, y, "znfs-clear")
+      : (narrowed ? '<button class="znfs-clear" title="Reset From/To to the whole of ' + y + '" onclick="znfsClearRange()">✕ Reset</button>' : "")) +
     /* 2026-07-30i (Aurvin, owner instruction): the "▦ Edit columns" button sits at the RIGHT-hand
        end of this filter group, per the owner's screenshot. The markup is built by
        emcolsButtonHtml() in js/columns.js so the whole picker lives in one file; the guard means
@@ -155,6 +220,40 @@ function znfsFilterHtml(){
    (znfsYear -> the app's own dfYear), so it is still the one S.year the whole app reads — moving
    WHERE it renders changes nothing about what it drives. */
 function znfsYearHtml(){
+  /* 2026-08-06 (Aurvin, owner instruction): "the year button will not display Year in the
+     dropdown as voyage can extend into two years." In SINGLE VOYAGE VIEW this renders a BLANK,
+     DISABLED select rather than a year that would be a lie for a voyage spanning two of them.
+
+     2026-08-06c (Aurvin, owner instruction) NARROWED THAT to the case it was written for. The
+     rule is "only change the behaviour when a single voyage is spanning two different years" —
+     so the blank disabled select now appears ONLY for a cross-year voyage. A voyage wholly inside
+     one calendar year gets the ordinary dropdown with that year selected, because that year IS
+     true of the whole voyage. Changing it still leaves the view (dfYear calls svExit first —
+     owner confirmed he wants that kept), so the control is never a dead end either way. The
+     cross-year test is svSoleYear(), which reads the per-year BUCKETS, not the date span. */
+  if((typeof svActive === "function") && svActive()){
+    var sy = (typeof svSoleYear === "function") ? svSoleYear() : null;
+    /* 2026-08-06c-ii (Aurvin, owner instruction): "when multi year — allow year to change in the
+       Single voyage view, that will also reset the view." So on a cross-year voyage this select is
+       LIVE with a BLANK selected option: it shows no year (none is true of the voyage) but offers
+       every year, and picking one leaves the view via svYearPick → dfYear → svExit. Mirrors
+       svYearHtml() in js/ui.js — see the fuller note there, including why picking 2026 on a
+       2025→2026 voyage gives you the whole of 2026 rather than the voyage's 2026 half. */
+    if(sy == null){
+      var vy = (SVIEW.years || []).join(" · ");
+      var xTip = esc("This voyage runs across " + vy + ", so no single year is true of it and none is selected. Picking a year here LEAVES single voyage view and shows the whole of that year — it cannot show you just one year's half of the voyage. Press ✕ Reset on the tab row to go back without changing the year.");
+      var xOpts = '<option value="" selected></option>' + ZNFS_YEARS.map(function(yy){
+        return '<option>' + yy + '</option>';
+      }).join("");
+      return '<span class="znfs-fld" title="' + xTip + '">' +
+        '<span class="lb">Year</span><select onchange="svYearPick(this.value)">' + xOpts + '</select></span>';
+    }
+    var syOpts = ZNFS_YEARS.map(function(yy){
+      return '<option ' + (yy === sy ? "selected" : "") + '>' + yy + '</option>';
+    }).join("");
+    return '<span class="znfs-fld" title="This voyage sits wholly inside ' + sy + ', so the ordinary Year selector still applies. Changing it leaves single voyage view and shows the whole of the year you pick.">' +
+      '<span class="lb">Year</span><select onchange="znfsYear(this.value)">' + syOpts + '</select></span>';
+  }
   var y = Number(S.year) || 2026;
   var years = ZNFS_YEARS.map(function(yy){
     return '<option ' + (yy === y ? "selected" : "") + '>' + yy + '</option>';
@@ -273,7 +372,16 @@ function znkOpen(reg, what){
 }
 function znfsRenderKpis(){
   var el = document.getElementById("znfs-kpis"); if(!el) return;
-  var R; try{ R = computeAll(S); }catch(e){
+  /* 2026-08-06 (Aurvin, owner instruction): in SINGLE VOYAGE VIEW the cards report the ONE
+     voyage, not the year — "the top KPI will change as per those dates". svKpiR() (js/ui.js)
+     returns an object of exactly this shape, built from the voyage's own per-year computeAll
+     buckets, so every card below is unchanged. On a voyage that crosses a year boundary it
+     returns the additive figures SUMMED across the two years and the year-specific ratios
+     (CII rating/attained/required, FuelEU GHGIE vs target, EU ETS phase-in) set to null, which
+     is how these cards already render a withheld figure — owner's instruction, because no single
+     year's parameters describe both halves. It returns null when the view is off, so the normal
+     path is the same computeAll(S) it always was. */
+  var R; try{ R = ((typeof svKpiR === "function") && svKpiR()) || computeAll(S); }catch(e){
     el.innerHTML = '<div class="znk"><div class="body"><p class="note">The calculation could not be run: ' + esc(String(e && e.message || e)) + '</p></div></div>';
     return;
   }
@@ -306,8 +414,26 @@ function znfsRenderKpis(){
   var _dfd  = S.dateFilter || {};
   var _dfLo = _dfy + '-01-01T00:00', _dfHi = _dfy + '-12-31T23:59';
   var _dfNarrowed = (_dfd.fromISO || _dfLo) !== _dfLo || (_dfd.toISO || _dfHi) !== _dfHi;
-  var yr = _dfNarrowed
-    ? '<span class="yr" title="These figures cover the From/To window set in the date filter above, not the whole of ' + R.year + '. Press ✕ Clear in that bar to go back to the full year.">Date Filter</span>'
+  /* 2026-08-06: in single voyage view the stamp names the VOYAGE, not the year or the filter —
+     the cards are no longer reporting either. Same one `yr` variable, so all four cards change
+     together exactly as 2026-08-01n intended. */
+  var _sv = (typeof svActive === "function") && svActive() ? SVIEW : null;
+  /* 2026-08-06c: the stamp STAYS "Voyage N" for a single-year voyage too, and this is a deliberate
+     departure from the owner's "everything" answer — stated to him in the same breath so he can
+     overrule it in one line. 2026-08-01n's rule, his own, is that this stamp must stop claiming a
+     whole year it is not reporting: a single-voyage view is a narrowed window, so putting "2026"
+     on cards that cover one voyage would break that rule in the other direction. Naming the
+     voyage is true in both cases. Only the TOOLTIP branches on crossYear. To flip it, replace the
+     `'Voyage ' + esc(_sv.voy)` label below with R.year when _sv.crossYear is false. */
+  var yr = _sv
+    ? '<span class="yr" title="These figures cover voyage ' + esc(_sv.voy) + ' only (' +
+        esc(_sv.tStart || '') + ' to ' + esc(_sv.tEnd || '') + ' UTC)' +
+        (_sv.crossYear ? ', which runs across ' + _sv.years.join(' and ') +
+          '. The year-specific figures — the CII rating, the FuelEU intensity against its target and the EU ETS phase-in % — are withheld on these cards because no single year\'s rules describe both halves. The leg rows in the table below are split at year end and each part IS shown under its own year.'
+          : ', which sits wholly inside ' + _sv.years.join(' ') + '. Every figure is calculated under that year\'s rules exactly as it is on the ordinary tabs — nothing is withheld.') +
+        ' Press ✕ Reset in the bar below to go back to the whole year.">Voyage ' + esc(_sv.voy) + '</span>'
+    : _dfNarrowed
+    ? '<span class="yr" title="These figures cover the From/To window set in the date filter above, not the whole of ' + R.year + '. Press ✕ Reset in that bar to go back to the full year.">Date Filter</span>'
     : '<span class="yr">' + R.year + '</span>';
   var rowsIn = (S.rows || []).length;
 

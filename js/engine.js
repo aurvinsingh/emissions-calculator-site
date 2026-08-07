@@ -217,15 +217,29 @@ function annotateVoyageContinuity(rows){
   rows = rows||[];
   for(const r of rows){ delete r._covFrom; delete r._covTo; }   // poc flags may have changed
   const isNC = r => r && r.kind==="port" && r.poc===false;      // non-call stay
+  /* 2026-08-03 (Aurvin, owner-reported bug — METRO LIVAS): a sea leg that straddles the
+     31 Dec / 1 Jan calendar-year boundary is split by parseOVD (2026-07-16 feature) into
+     TWO consecutive "voyage" rows for the SAME physical leg (front part yearPart 2025,
+     back part yearPart 2026). Neither `isNC` above nor the "voyage row followed by
+     another voyage row = real port call" assumption in the two comments below knew about
+     this — a genuine non-POC stop (Skagen, bunkering only) immediately before such a pair
+     bridged correctly into the 2025 half (0% EU ETS, São Sebastião→Primorsk, correct) but
+     the bridge was then DROPPED before the 2026 half, which fell back to scoring from
+     Skagen itself (50%, wrong — same physical voyage, same non-EU→non-EU endpoints).
+     `isSplitCont(a,b)` recognises the pair (both voyage, both splitYear, same from/to) so
+     the bridge — and the "real call" reset — treat them as ONE leg, not two. */
+  const isSplitCont = (a,b) => !!a && !!b && a.kind==="voyage" && b.kind==="voyage"
+    && a.splitYear && b.splitYear && a.from===b.from && a.to===b.to;
   /* forward: effective origin flows ACROSS non-call stays only (a voyage row followed
      directly by another voyage row means the shared port had no stay row => it is a
-     call by default, so the chain must NOT survive past it) */
+     call by default, so the chain must NOT survive past it) — UNLESS that next voyage
+     row is just the other calendar-year part of this same leg (isSplitCont above). */
   let openFrom=null;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
     if(r.kind==="voyage"){
       r._covFrom = openFrom || r.from;
-      openFrom = isNC(rows[i+1]) ? r._covFrom : null;
+      openFrom = (isNC(rows[i+1]) || isSplitCont(r, rows[i+1])) ? r._covFrom : null;
     } else if(r.kind==="port"){
       if(r.poc===false){ if(openFrom) r._covFrom = openFrom; }
       else openFrom=null;
@@ -237,7 +251,7 @@ function annotateVoyageContinuity(rows){
     const r=rows[i];
     if(r.kind==="voyage"){
       r._covTo = openTo || r.to;
-      openTo = isNC(rows[i-1]) ? r._covTo : null;
+      openTo = (isNC(rows[i-1]) || isSplitCont(rows[i-1], r)) ? r._covTo : null;
     } else if(r.kind==="port"){
       if(r.poc===false){ if(openTo) r._covTo = openTo; }
       else openTo=null;

@@ -18,16 +18,24 @@
         column headers. The list is rebuilt for whichever view is active
         (REPORTS / LEGS / VOYAGES), because the three tables do not have the
         same groups: REPORTS and LEGS have an Eligibility group, VOYAGES does
-        not; VOYAGES has a Sea Cargo Charter group, LEGS does not.
+        not. Both LEGS and VOYAGES have a Sea Cargo Charter group, but they are
+        NOT the same group: VOYAGES' has 5 columns and is on by default; LEGS'
+        has 4 (no Cargo — that table has its own pinned Cargo column) and is OFF
+        by default, added 2026-08-06. See EMCOLS_DEFAULT_OFF below.
 
    THE FIVE RULES THIS FILE OBEYS
-   1. NOTHING is hidden unless the user unticks it. When every box is ticked the
-      rendered HTML is BYTE-IDENTICAL to what the app produced before this file
-      existed. That is deliberate: tools/verify_*.js and the ~504 in-app
-      self-tests assert literal substrings of that HTML, so an untouched default
-      state means not one test expectation had to be weakened. If you change
-      this file, keep that property — see the SHA check in
-      tools/verify_edit_columns.js.
+   1. THE DEFAULT STATE RENDERS BYTE-IDENTICAL HTML to what the app produced
+      before this file existed. tools/verify_*.js and the ~529 in-app self-tests
+      assert literal substrings of that HTML, so an untouched default state means
+      not one test expectation had to be weakened. If you change this file, keep
+      that property — see the SHA check in tools/verify_edit_columns.js.
+      Until 2026-08-06 this rule was stated as "nothing is hidden unless the user
+      unticks it", which was the same thing because every column started visible.
+      It is no longer the same thing: LEGS' Sea Cargo Charter group starts HIDDEN
+      (EMCOLS_DEFAULT_OFF below), precisely BECAUSE the Legs table has not rendered
+      those columns since 2026-07-26c — hiding them by default is what keeps the
+      byte-identical guarantee, and showing them by default would have broken it.
+      The invariant is byte-identity with the historical output, not "all ticked".
    2. It applies ONLY while the full-screen overlay is open (owner's choice when
       asked). colVis()/kpiVis() below both return true whenever ZNFS.open is
       false, so the ordinary REPORTS / LEGS / VOYAGES tabs, the Workspace and
@@ -162,6 +170,27 @@ var EMCOLS_DEFS = {
           { key:"calcs.feu.eelig",  label:"Elig. energy" },
           { key:"calcs.feu.cb",     label:"CB"           },
           { key:"calcs.feu.pen",    label:"Penalty"      }
+      ]},
+      /* 2026-08-06 (Aurvin, owner instruction) — SEA CARGO CHARTER RETURNS TO LEGS, OFF BY
+         DEFAULT. This group was DELETED from the Legs table on 2026-07-26c at the owner's own
+         instruction (its Cargo column became the standalone column 4 that is still there). The
+         owner has now asked for it back, but on three explicit conditions given this session:
+           (1) it is NOT shown by default — the user must tick it on in this panel;
+           (2) it sits at the FAR RIGHT of the table, after FuelEU (physical columns 21-24) —
+               hence last in this list too, so the panel reads in the table's own order;
+           (3) Cargo is NOT one of its columns. Legs already has a standalone Cargo column
+               (physical 4, "pinned" above) and two identical Cargo columns on one row is
+               exactly the duplication 2026-07-26c removed. Voyages keeps its 5-column SCC
+               group (voy.scc, with Cargo) because that table has no standalone Cargo column.
+         The four keys below are ALL listed in EMCOLS_DEFAULT_OFF and must stay in step with
+         EMC_LEGS_SCC_COLS in js/ui.js — key, order and physical column number. Three lists,
+         one contract, same as EMC_LEGS_COLS / EMC_VOY_COLS.
+         Not `phase2` — this group is fully wired (renderer: emcPlan()'s `optional` argument). */
+      { key:"calcs.scc", label:"Sea Cargo Charter", cols:[
+          { key:"calcs.scc.wtw",     label:"WtW CO₂e"   },
+          { key:"calcs.scc.tw",      label:"T-Work"     },
+          { key:"calcs.scc.eeoi",    label:"EEOI (WtW)" },
+          { key:"calcs.scc.eeoiImo", label:"EEOI (IMO)" }
       ]}
     ]
   },
@@ -225,6 +254,38 @@ var EMCOLS_DEFS = {
   }
 };
 
+/* --------------------------------------------------- DEFAULT-OFF COLUMNS
+   2026-08-06 (Aurvin, owner instruction) — the FIRST columns in this app that
+   start HIDDEN. Every other column in EMCOLS_DEFS starts visible and an absent
+   preference means "show it" (rule 1 at the top of this file). For a key listed
+   here the polarity is inverted: an absent preference means "hide it", and only
+   an explicit `true` turns it on.
+
+   WHY THIS DOES NOT BREAK RULE 1 (byte-identical default output). Rule 1 says
+   the default state must render exactly what the app rendered before this file
+   existed. The Legs table has had NO Sea Cargo Charter columns since 2026-07-26c,
+   so "hidden by default" IS the historical output — byte for byte. If these
+   columns had been added visible-by-default instead, every one of the ~529
+   self-tests and both verify_grid_columns.js baseline checks would have had to be
+   re-baselined. This is the safer polarity, not just the owner's preference.
+
+   WHY colVis() CHECKS THIS BEFORE THE ZNFS.open EARLY-RETURN. Rule 2 makes column
+   hiding a full-screen-only feature: colVis() returns true on the ordinary tabs no
+   matter what. A default-off column that inherited that would be permanently
+   VISIBLE on the ordinary Legs tab — the exact opposite of the instruction. The
+   owner's answer this session was "full-screen only, default off there; never on
+   the normal Legs tab", so these keys return FALSE when the overlay is closed.
+   Net effect on the ordinary tabs, the Workspace and every download: unchanged —
+   they never showed these columns and still never do.
+
+   Keys must match EMC_LEGS_SCC_COLS in js/ui.js exactly. */
+var EMCOLS_DEFAULT_OFF = {
+  "calcs.scc.wtw":     true,
+  "calcs.scc.tw":      true,
+  "calcs.scc.eeoi":    true,
+  "calcs.scc.eeoiImo": true
+};
+
 /* The saved state. Only entries that are explicitly FALSE mean anything —
    an absent key is "visible", so a preferences blob written by an older build
    (or a future one that adds columns) degrades to "show everything", never to
@@ -258,7 +319,22 @@ function kpiVis(key){
   if(typeof ZNFS === "undefined" || !ZNFS || !ZNFS.open) return true;
   return EMCOLS.kpi[key] !== false;
 }
+/* 2026-08-06: is this column ticked in the PANEL? Default-off keys need an explicit
+   `true`; every other key is on unless explicitly `false`. This is the checkbox
+   state only — it says nothing about the full-screen scope rule, which is colVis()'s
+   job. Used by the panel, the tally and the hidden-count badge so all three agree. */
+function emcolsColOn(key){
+  return EMCOLS_DEFAULT_OFF[key] ? (EMCOLS.cols[key] === true)
+                                 : (EMCOLS.cols[key] !== false);
+}
 function colVis(key){
+  /* 2026-08-06 (Aurvin, owner instruction): default-off columns are checked BEFORE the
+     full-screen early-return below, so they stay hidden on the ordinary tabs instead of
+     inheriting rule 2's unconditional `true`. See EMCOLS_DEFAULT_OFF for the reasoning. */
+  if(EMCOLS_DEFAULT_OFF[key]){
+    if(typeof ZNFS === "undefined" || !ZNFS || !ZNFS.open) return false;
+    return EMCOLS.cols[key] === true;
+  }
   if(typeof ZNFS === "undefined" || !ZNFS || !ZNFS.open) return true;
   return EMCOLS.cols[key] !== false;
 }
@@ -267,8 +343,19 @@ function colVis(key){
 /* Rendered into the full-screen tab row by znfsFilterHtml(). Kept here rather
    than inline in fullscreen.js so the whole feature is in one file. */
 function emcolsButtonHtml(){
-  var n = emcolsHiddenCount();
-  /* 2026-07-30k: the "on" class is baked in here rather than added to the live node, because
+  /* 2026-08-06e (Aurvin, owner instruction): the numeric badge is REMOVED. "No need to show the
+     number in the edit column. People will get used to it if they don't see the KPI column."
+
+     WHAT THE BADGE WAS FOR, so the trade-off is on the record rather than rediscovered: it was
+     the only cue that a column was hidden. The owner's reasoning holds for the normal case — the
+     picker applies to the FULL-SCREEN view only, so the missing card or column is right there in
+     front of you and the count is redundant. The case it covered is the slow one: EMCOLS persists
+     to localStorage under `emcalc_cols`, so a choice made weeks ago survives, and someone opening
+     full screen much later now has nothing on the button telling them why a KPI card is absent.
+     The picker itself still shows every unticked box, so the information is one click away, and
+     emcolsHiddenCount() is KEPT (unused by this function) if the cue is ever wanted back.
+
+     2026-07-30k: the "on" class is baked in here rather than added to the live node, because
      znfsRenderTabbar() rewrites this whole row on every repaint — a class set on the old node
      would vanish with it, and the button would stop looking pressed while its panel was open. */
   return '<button class="emcols-btn' + (EMCOLS.open ? " on" : "") + '" type="button" ' +
@@ -276,17 +363,24 @@ function emcolsButtonHtml(){
     'Applies to the full-screen view only — the ordinary tabs and every download keep all columns." ' +
     'aria-haspopup="dialog" onclick="emcolsToggle()">' +
     '<span class="ic" aria-hidden="true">▦</span>Edit columns' +
-    (n ? '<span class="badge">' + n + '</span>' : "") +
     '</button>';
 }
-/* how many things the user has currently turned off — shown as a small count on
-   the button so a hidden column can never be silently forgotten about. */
+/* how many things the user has currently turned off. 2026-08-06e: NO LONGER RENDERED — the owner
+   removed the count badge from the button (see emcolsButtonHtml). Kept, and kept correct, because
+   it is the only implementation of "what has the user turned off" and reinstating the cue should
+   not mean rewriting it. Do not delete it as dead code without reading that note first. */
 function emcolsHiddenCount(){
   var n = 0, i;
   for(i=0;i<EMCOLS_KPIS.length;i++){
     if(!EMCOLS_KPIS[i].locked && EMCOLS.kpi[EMCOLS_KPIS[i].key] === false) n++;
   }
   var def = EMCOLS_DEFS[(typeof ZNFS !== "undefined" && ZNFS && ZNFS.tab) || "trace"];
+  /* 2026-08-06: default-off columns are deliberately NOT counted here. This badge means
+     "N things YOU turned off"; a column that starts off and was never touched is the
+     default, not a user choice, and counting it would put a permanent "4" on the button
+     on LEGS and train the owner to ignore the badge. `=== false` (not !emcolsColOn) is
+     therefore kept on purpose — a default-off column only counts once it has been ticked
+     on and then off again, which IS a user choice. */
   if(def) def.groups.forEach(function(g){
     g.cols.forEach(function(c){ if(EMCOLS.cols[c.key] === false) n++; });
   });
@@ -375,13 +469,17 @@ function emcolsRender(){
      groups are wired and interactive while Eligibility / IMO / Fuel metrics stay greyed.
      `def.phase2` is still ORed in so that if a whole view is ever parked again, one flag at
      the view level still disables all of its groups. */
+  /* 2026-08-06: both tick states go through emcolsColOn() so a default-off column renders
+     UNTICKED on first open (its key is absent from EMCOLS.cols, which for every other
+     column means "shown"). Without this the Legs Sea Cargo Charter boxes would look ticked
+     while the columns were not actually on screen. */
   h += def.groups.map(function(g){
-    var vis = g.cols.filter(function(c){ return EMCOLS.cols[c.key] !== false; }).length;
+    var vis = g.cols.filter(function(c){ return emcolsColOn(c.key); }).length;
     var off = !!(def.phase2 || g.phase2);
     return '<div class="emc-grpwrap">' +
       emcolsRow(g.key, g.label, vis > 0, false, off, "emc-grp") +
       g.cols.map(function(c){
-        return emcolsRow(c.key, c.label, EMCOLS.cols[c.key] !== false, false, off, "emc-col");
+        return emcolsRow(c.key, c.label, emcolsColOn(c.key), false, off, "emc-col");
       }).join("") +
       '</div>';
   }).join("");
@@ -405,7 +503,7 @@ function emcolsTally(){
   def.groups.forEach(function(g){
     g.cols.forEach(function(c){
       total++;
-      if(EMCOLS.cols[c.key] !== false) shown++;
+      if(emcolsColOn(c.key)) shown++;   /* 2026-08-06: default-off aware, see emcolsColOn */
     });
   });
   return { total:total, shown:shown };
@@ -421,9 +519,14 @@ function emcolsRenderFoot(){
     '<button class="emc-link" type="button" title="Back to the starting selection: all four cards and every column"' +
       ' onclick="emcolsReset()">Reset</button>';
 }
-/* "Show all" and "Reset" do the same thing today, because the default IS everything visible.
-   They are kept separate on purpose: if a future default ever hides something, Show all must
-   still mean "show me everything" and Reset must still mean "back to the default". */
+/* "Show all" and "Reset" NO LONGER do the same thing (2026-08-06) — the future the previous
+   note anticipated has arrived. LEGS' Sea Cargo Charter group is default-OFF, so:
+     • Show all writes `true` for every key, INCLUDING the default-off ones → they appear;
+     • Reset empties EMCOLS.cols entirely → the default-off ones go back to hidden, every
+       other column goes back to shown.
+   Both were already written correctly for this (Show all sets true explicitly; Reset clears
+   the object rather than writing trues), so neither function needed changing — only this
+   note, which used to claim they were equivalent. */
 function emcolsShowAll(){
   var view = (typeof ZNFS !== "undefined" && ZNFS && ZNFS.tab) || "trace";
   var def  = EMCOLS_DEFS[view] || EMCOLS_DEFS.trace;

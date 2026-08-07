@@ -1877,8 +1877,8 @@ function renderWorkspace(){
       <span class="dfld">To</span>
       <input type="datetime-local" lang="en-GB" min="${lo}" max="${hi}" value="${esc(d.toISO||hi)}" onchange="dfSet('toISO',this.value)" title="Window end within ${y} (UTC)">
       <span class="dfutc">UTC</span>
-      ${narrowed?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the narrowed window — reset From/To to the whole of ${y}" onclick="dfClearRange()">✕ Clear</button>`:''}
-      <span style="margin-left:4px">${info("<b>Quick edits (2026-07-22g):</b> ship type, capacity and reporting year can be changed right here — they are the <i>same</i> settings as on the 🚢 Settings tab, not a copy, so a change in either place shows in both and recalculates everything immediately. Everything else about the vessel still lives on the Settings tab.<br><br><b>Capacity unit:</b> cargo ships (bulk carrier, tanker, container, general cargo…) are measured in <b>DWT</b> (deadweight — how much weight the ship can carry); passenger and ro-ro ships in <b>GT</b> (gross tonnage — enclosed volume). If you change the ship type and the unit flips, the number you typed is <b>kept as-is</b> and only the label changes — check it still makes sense for the new unit.<br><br><b>Date window:</b> picking a Year fills From/To to that whole year; rows outside the window are greyed and excluded from every KPI. ✕ Clear resets to the whole year.")}</span>
+      ${dfResetBtnHtml(narrowed, y)}
+      <span style="margin-left:4px">${info("<b>Quick edits (2026-07-22g):</b> ship type, capacity and reporting year can be changed right here — they are the <i>same</i> settings as on the 🚢 Settings tab, not a copy, so a change in either place shows in both and recalculates everything immediately. Everything else about the vessel still lives on the Settings tab.<br><br><b>Capacity unit:</b> cargo ships (bulk carrier, tanker, container, general cargo…) are measured in <b>DWT</b> (deadweight — how much weight the ship can carry); passenger and ro-ro ships in <b>GT</b> (gross tonnage — enclosed volume). If you change the ship type and the unit flips, the number you typed is <b>kept as-is</b> and only the label changes — check it still makes sense for the new unit.<br><br><b>Date window:</b> picking a Year fills From/To to that whole year; rows outside the window are greyed and excluded from every KPI. ✕ Reset puts the whole year back.")}</span>
     </span>
   </div>`;
   el.innerHTML = `
@@ -3023,7 +3023,11 @@ function reportTraceTable(reps){
       <!-- 2026-07-25b (Aurvin, owner instruction): Voyage No capped at 8 chars; truncated from the LEFT
            (start) so the distinguishing tail (end) stays visible — direction:rtl+unicode-bidi:plaintext
            keeps the value reading left-to-right while the ellipsis lands on the left. Full value in title. -->
-      <td style="padding:${pad};vertical-align:top;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.voy?`<span style="display:inline-block;max-width:8ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;unicode-bidi:plaintext;vertical-align:bottom" title="${esc(r.voy)}">${esc(r.voy)}</span>`:"—"}</td>
+      <td style="padding:${pad};vertical-align:top;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${/* 2026-08-06 (Aurvin, owner instruction): REPORTS' voyage number is clickable too — the owner's
+     instruction names all three views ("once voyage number is clicked in Reports, Legs or Voyage
+     view"). r.t is the report's own timestamp and is passed as the anchor so a number reused by a
+     later segment resolves correctly (see svFindGroup). The 8ch ellipsis wrapper is kept exactly
+     as it was — only its inner text became a link. */""}${r.voy?`<span style="display:inline-block;max-width:8ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;unicode-bidi:plaintext;vertical-align:bottom" title="${esc(r.voy)}">${svVoyLink(r.voy, r.t||r.te||r.ts)}</span>`:"—"}</td>
       <!-- 2026-07-25 (Aurvin, owner instruction): Cargo mt moved to sit right of Voyage No and left of Dist nm. -->
       <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.qtyHas?fmtI(r.qty):'<span style="color:#cbd5e1" title="No cargo quantity reported in this MDA report">—</span>'}</td><!-- a reported 0 shows 0; a BLANK cargo cell shows a dash -->
       <td style="padding:${pad};vertical-align:top;text-align:right;font-family:${TR_FONT};font-size:12px;color:#334155;font-variant-numeric:tabular-nums;border-right:1px solid #f1f5f9">${r.dist?fmtF(r.dist,0):"—"}</td>
@@ -3256,7 +3260,11 @@ const JURIS_PAL = {
    frozen rigid. NOTE: this 280px figure is a calculation, not a live screen measurement — this
    session's sandbox has no browser available to render and screenshot the page, so the owner
    should eyeball the actual result and say if it needs a further nudge either way. */
-const BR_GRID = "minmax(34px,34px) minmax(280px,0.5fr) minmax(84px,0.6fr) minmax(76px,0.6fr) minmax(84px,0.7fr) minmax(55px,55px) minmax(48px,48px) minmax(55px,55px) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+/* 2026-08-06 (Aurvin, owner instruction): track 2 changed from minmax(280px,0.5fr) to a FIXED
+   minmax(280px,280px) so the new frozen "Voyage No" column (track 3) has a real pixel offset to
+   pin against — see the long note on BR_FREEZE3. The 280px minimum itself is unchanged, so on
+   every screen narrower than this table's own min-width nothing moves. */
+const BR_GRID = "minmax(34px,34px) minmax(280px,280px) minmax(84px,0.6fr) minmax(76px,0.6fr) minmax(84px,0.7fr) minmax(55px,55px) minmax(48px,48px) minmax(55px,55px) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const BR_BOX = gridBox(BR_GRID);          // every Leg-Wise row resolves to this same width
 /* clean generic fuel name — strip the ISO 8217 / engine-cycle parenthetical (SPEC §1) */
 function cleanFuelName(f){ return String(f.name||f.id||"").split(" (")[0].trim() || (f.id||""); }
@@ -3402,6 +3410,16 @@ function _utcms(s){
 }
 /* report-level range test (Report-Wise tab works off S.mdaReports, which use ts/te/t) */
 function repInRange(rep){
+  /* 2026-08-06 (Aurvin, owner instruction): SINGLE VOYAGE VIEW narrows REPORTS to the voyage's
+     own span as well, so all three tabs are showing the same voyage while the view is on — a
+     REPORTS table still listing the whole year under a bar that says SINGLE VOYAGE VIEW would be
+     the exact "two tabs disagree" trap the shared filter exists to prevent. The report is placed
+     by its own listed time, the same rule the year window uses below. */
+  if(svActive()){
+    const tv = rep.t!=null ? _utcms(rep.t) : (rep.te!=null ? _utcms(rep.te) : (rep.ts!=null ? _utcms(rep.ts) : null));
+    if(tv==null || !isFinite(tv)) return true;                       // undated → never filtered out
+    return tv>=_utcms(SVIEW.tStart) && tv<=_utcms(SVIEW.tEnd);
+  }
   if(!dateFilterActive()) return true;
   /* 2026-07-25 (Aurvin, owner instruction): a report is placed by its OWN listed time
      (DATE_TIME_GMT = rep.t) and counted WHOLE in whichever window that instant falls in — so a
@@ -3436,6 +3454,12 @@ function rowIsEdge(row){
 function edgeRowCount(){ return dateFilterActive()? (S.rows||[]).filter(r=>rowInRange(r)&&rowIsEdge(r)).length : 0; }
 
 function inYearRows(){
+  /* 2026-08-06 (Aurvin, owner instruction): SINGLE VOYAGE VIEW wins over both the range and the
+     year — it carries its own span, which may cross a year boundary that the ordinary filter is
+     not allowed to express. Hooked here (rather than in breakdownGrid) because `src[i]` in that
+     function must stay 1:1 with R.rowDetails, and svLegR() builds rowDetails from exactly these
+     rows in exactly this order. svActive() is false in normal use, so nothing below changes. */
+  if(svActive()){ const sv = svRows(); if(sv) return sv; }
   if(dateFilterActive()) return (S.rows||[]).filter(rowInRange);   // range wins when active
   const y = Number(S.year)||2026;
   return (S.rows||[]).filter(row=>{
@@ -3500,6 +3524,11 @@ function dfSet(field, val){
 }
 /* pick the reporting year → fill the picker to that whole year */
 function dfYear(v){
+  /* 2026-08-06 (Aurvin, owner instruction): "few actions will revert to normal like changing
+     Year, clicking Filter Reset". Both dfYear and dfClearRange therefore LEAVE single voyage
+     view first and then do their ordinary job, so the user lands back on the normal year-locked
+     view. svExit() is a no-op when the view is off, so the normal path is unchanged. */
+  svExit();
   const y=Number(v)||2026; S.year=y; S.dateFilter=_fullYearRange(y);
   _mirrorVoyFilter();                                     // 2026-07-28h
   try{ renderVessel(); }catch(e){} dfRepaint();
@@ -3508,9 +3537,37 @@ function dfYear(v){
    within-year — so it resets From/To back to that year's full range, same as picking the Year
    dropdown but without touching S.year itself. */
 function dfClearRange(){
+  svExit();                                               // 2026-08-06 — see the note on dfYear
   const y=Number(S.year)||2026; S.dateFilter=_fullYearRange(y);
   _mirrorVoyFilter();                                     // 2026-07-28h
   dfRepaint();
+}
+/* ---- the one ✕ Reset button, drawn in three places ----------------------------------------
+   2026-08-06d (Aurvin, owner instruction): "It should always be permanently visible so that the
+   date doesn't shift here and there. When it is not needed, it can be grayed out, but it is
+   enabled when it is needed. This is done so that the user always remembers its presence."
+
+   BEFORE: the button was rendered ONLY when the window was narrowed (`${narrowed?`…`:''}`), so it
+   appeared and vanished as the user typed a date, and everything to its right moved. That is the
+   shifting the owner is describing. NOW: always in the DOM, `disabled` and grey when there is
+   nothing to reset, live when there is. The bar's width therefore never changes.
+
+   Factored into one function because this markup was pasted in THREE places — the Workspace blue
+   band, the shared date-filter bar and the full-screen tab row — and 2026-08-06's rename had to be
+   applied to all three by hand. One function means the next change cannot miss a copy. The
+   full-screen row draws its own (different class, `.znfs-clear`) and passes `cls`.
+
+   WHAT MUST NOT CHANGE: `dfClearRange` itself, and the fact that this button is the SAME control
+   in all three places. tools/verify_kpi_datefilter_badge.js reads "is the window narrowed?" off
+   this button's ENABLED state (it used to read it off the button's presence) and asserts it agrees
+   with the KPI cards' "Date Filter" stamp — the two must keep appearing and greying together. */
+function dfResetBtnHtml(narrowed, y, cls){
+  const on  = !!narrowed;
+  const tip = on
+    ? `Reset the narrowed window — put From/To back to the whole of ${y}`
+    : `Nothing to reset: From/To already cover the whole of ${y}. This button stays in view, greyed, so its place on the bar never moves.`;
+  const style = cls ? "" : ` style="${on ? "color:var(--red);border-color:#e3b7b3" : ""}"`;
+  return `<button class="${cls || "dfbtn"}"${style}${on ? "" : " disabled"} title="${esc(tip)}" onclick="dfClearRange()">✕ Reset</button>`;
 }
 /* 2026-07-28h: voySet / voyClear / voyYear are kept ONLY as aliases, because ~a dozen call
    sites (the old bar's inline onchange handlers, js/fullscreen.js's znfsVoy* wrappers and the
@@ -3552,6 +3609,12 @@ function initDateFilters(){
    the same Year + min/max-bounded From/To, so a range crossing a year boundary cannot be typed
    in on any tab. Voyage-Wise still SELECTS voyages by END date (vwGroups), unchanged. */
 function renderDateFilterBar(mode, extraHtml){
+  /* 2026-08-06 (Aurvin, owner instruction): SINGLE VOYAGE VIEW replaces this bar wholesale with
+     its own banner + view-only date boxes (svBarHtml, see the SINGLE VOYAGE VIEW section further
+     down this file). Intercepting here rather than in each of the three render* functions means
+     all four data tabs pick the change up from one place, and the ordinary bar below is left
+     completely untouched for the normal case. */
+  if(svActive()) return svBarHtml(extraHtml);
   const y=Number(S.year)||2026;
   const extra = extraHtml? `<span class="dfextra" style="margin-left:auto;display:flex;align-items:center;gap:8px">${extraHtml}</span>` : "";
   /* 2026-07-25 (Aurvin, owner instruction): show the vessel name at the start of the bar on the
@@ -3570,7 +3633,18 @@ function renderDateFilterBar(mode, extraHtml){
     <span class="dfld">To</span>
     <input type="datetime-local" lang="en-GB" min="${y}-01-01T00:00" max="${y}-12-31T23:59" value="${esc(d.toISO||`${y}-12-31T23:59`)}" onchange="dfSet('toISO',this.value)" title="Window end within ${y} (UTC)">
     <span class="dfutc">UTC</span>
-    ${narrowed?`<button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Clear the narrowed window — reset From/To to the whole of ${y}" onclick="dfClearRange()">✕ Clear</button>`:''}
+    ${/* 2026-08-06 (Aurvin, owner instruction): button label "✕ Clear" → "✕ Reset". VISIBLE TEXT
+         ONLY — the handler is still dfClearRange() and still does exactly what it did (put
+         From/To back to the whole of S.year without touching S.year itself). "Reset" is the
+         honest word: since 2026-07-24 the window is ALWAYS active, so there was never an "off"
+         state to clear to. The same rename is applied to the Workspace blue band above and to
+         the full-screen copy in js/fullscreen.js (znfsFilterHtml) — all three are the same
+         control drawn three times and must never read differently.
+         tools/verify_kpi_datefilter_badge.js finds this button BY ITS TEXT and was updated in
+         the same change; nothing else in the app keys off the word.
+         2026-08-06d: the markup moved into dfResetBtnHtml() and the button is now drawn ALWAYS,
+         greyed when there is nothing to reset — see the note on that function. */""}
+    ${dfResetBtnHtml(narrowed, y)}
     ${extra}
   </div>`;
 }
@@ -3669,6 +3743,26 @@ const BR_FREEZE = "position:sticky;left:0;";
    at left:BR_SELCOL_W via BR_FREEZE2, so both stay put while the regulation columns scroll. */
 const BR_SELCOL_W = 34;
 const BR_FREEZE2 = "position:sticky;left:"+BR_SELCOL_W+"px;";
+/* 2026-08-06 (Aurvin, owner instruction): a THIRD frozen column — "Voyage No" (track 3) on both
+   the Leg-Wise and Voyage-Wise tables, so the number a row belongs to is never scrolled off the
+   left edge. Owner's instruction: "Make Voyage No to be sticky in Leg and Voyage so that user can
+   always see that."
+
+   WHY THE ACTIVITY TRACK HAD TO BECOME A FIXED WIDTH. `position:sticky;left:` needs a REAL
+   LENGTH. Tracks 1 and 2 sit to the left of this column, so this column's offset is
+   (checkbox + activity). The checkbox track was always fixed (BR_SELCOL_W). The activity track
+   was `minmax(280px,0.5fr)` / `minmax(300px,0.5fr)` — elastic, so it has no length to pin
+   against and the frozen column would land in the wrong place on any window wide enough for the
+   fr share to kick in. Both are now `minmax(N,N)` (see BR_GRID / VW_GRID), which is what makes
+   BR_FREEZE3 / VW_FREEZE3 below correct at EVERY window width.
+
+   WHAT THIS COSTS, stated plainly for whoever reads this next: on screens NARROWER than the
+   table's own minimum width (~1958px Leg-Wise) nothing changes at all — the grid was already
+   sitting at its track minimums there, which is the normal case on a laptop. On a screen WIDER
+   than that, the activity column no longer stretches with the others; the spare pixels go to the
+   regulation columns instead. Confirmed with the owner before making the change. */
+const BR_ACTCOL_W = 280;
+const BR_FREEZE3  = "position:sticky;left:"+(BR_SELCOL_W+BR_ACTCOL_W)+"px;";
 /* 2026-07-23e (Aurvin, owner instruction — DISPLAY ONLY) ---------------------------------
    Every row of these tables is its own CSS grid, and each one is a block-level child of the
    scrolling container. A block box takes the width of its PARENT (the ~1500px visible area),
@@ -3766,6 +3860,34 @@ const EMC_VOY_COLS = [                        /* VW_GRID, 21 tracks */
   { key:"voy.feu.pen",       col:21 }         /*          — Penalty                 */
 ];
 
+/* 2026-08-06 (Aurvin, owner instruction) — the LEGS-only SEA CARGO CHARTER columns.
+   These are OPTIONAL, not hideable: unlike every entry in EMC_LEGS_COLS / EMC_VOY_COLS
+   above, they are NOT part of BR_GRID and are NOT rendered by default. BR_GRID itself is
+   deliberately left at its historical 20 tracks — emcPlan() APPENDS these four tracks
+   only when the user ticks them on in "▦ Edit columns", so with nothing ticked the Legs
+   table emits exactly the characters it emitted before this existed and the ~529 self-tests
+   plus verify_grid_columns.js's baseline comparison need no re-baselining at all.
+
+   Physical columns 21-24 — i.e. after FuelEU's Penalty (20), at the FAR RIGHT of the table.
+   The owner chose this position explicitly over the Voyages-matching position (between Fuel
+   metrics and EU ETS) because appending renumbers NOTHING: every existing grid-column in
+   breakdownGrid and brTotalsHtml keeps the number it has today.
+
+   `track` is that column's minmax() width. Widths are copied from the VOYAGES twins in
+   VW_GRID so the same figure is the same width on both tabs: WtW 100px/0.8fr (VW col 10),
+   T-Work 96px/0.9fr (VW col 12), EEOI (WtW) 84px/0.85fr (VW col 13), EEOI (IMO) 78px/0.6fr
+   (VW col 14). Cargo is NOT here — Legs already has a standalone Cargo column at physical 4;
+   see the calcs.scc note in js/columns.js.
+
+   The four keys MUST match js/columns.js's calcs.scc group AND its EMCOLS_DEFAULT_OFF list
+   exactly, or the picker checkbox controls nothing. Three lists, one contract. */
+const EMC_LEGS_SCC_COLS = [
+  { key:"calcs.scc.wtw",     col:21, track:"minmax(100px,0.8fr)"  },  /* WtW CO₂e  mt (AR6)    */
+  { key:"calcs.scc.tw",      col:22, track:"minmax(96px,0.9fr)"   },  /* T-Work    10⁶ t·nm    */
+  { key:"calcs.scc.eeoi",    col:23, track:"minmax(84px,0.85fr)"  },  /* EEOI(WtW) gCO₂e/t·nm  */
+  { key:"calcs.scc.eeoiImo", col:24, track:"minmax(78px,0.6fr)"   }   /* EEOI(IMO) gCO₂/t·nm   */
+];
+
 /* Build the plan for one render pass. `hideable` is one of the two lists above.
    Returned object:
      .any        did anything actually get hidden? (false ⇒ everything below is a no-op)
@@ -3775,16 +3897,36 @@ const EMC_VOY_COLS = [                        /* VW_GRID, 21 tracks */
      .span(s,n)  a group header covering physical columns s..s+n-1 → {start,span} in rendered
                  coordinates, or null if the whole group is gone
    Splitting BR_GRID/VW_GRID on a plain space is safe: every track is `minmax(a,b)` and there
-   is no space inside the parentheses (see the two const definitions). */
-function emcPlan(GRID, hideable){
+   is no space inside the parentheses (see the two const definitions).
+
+   2026-08-06: third argument `optional` (EMC_LEGS_SCC_COLS, or omitted). Its entries sit at
+   physical columns PAST the end of GRID and their tracks are appended only when colVis() says
+   they are on; the ones that are off are simply folded into the same `hidden` map the
+   hideable list uses, so ONE renumbering path serves both mechanisms. Two consequences worth
+   knowing: (a) the fast path now also requires that no optional column is on, and (b) the
+   identity plan it returns must report optional columns as ABSENT — hence optOff below,
+   instead of the old unconditional `on:()=>true`. Callers that pass no `optional` (voyageGrid,
+   vwTotalsHtml) get exactly the object they got before. */
+function emcPlan(GRID, hideable, optional){
+  const opts = optional || [];
+  /* physical columns that exist only when ticked on — absent from the identity plan */
+  const optOff = {};
+  for(const o of opts) optOff[o.col] = true;
   const idn = { any:false, grid:GRID, box:gridBox(GRID),
-                on:()=>true, m:c=>c, span:(s,n)=>({start:s,span:n}) };
+                on:c=>!optOff[c], m:c=>optOff[c]?0:c,
+                span:(s,n)=>{ const live=[]; for(let c=s;c<s+n;c++) if(!optOff[c]) live.push(c);
+                              return live.length? {start:live[0],span:live.length} : null; } };
   if(typeof colVis !== "function") return idn;         // columns.js absent (standalone smoke tests)
   const hidden = {};
   let any = false;
   for(const h of hideable){ if(!colVis(h.key)){ hidden[h.col] = true; any = true; } }
-  if(!any) return idn;                                  // ← the byte-identical fast path
-  const tracks = GRID.split(" ");
+  /* an optional column that is OFF is treated exactly like a hidden one; but `any` is only
+     raised by an optional column that is ON, because an all-off optional list must still take
+     the byte-identical fast path below. */
+  let optOn = false;
+  for(const o of opts){ if(colVis(o.key)) optOn = true; else hidden[o.col] = true; }
+  if(!any && !optOn) return idn;                        // ← the byte-identical fast path
+  const tracks = GRID.split(" ").concat(opts.map(o=>o.track));
   const keep = [], m = {};
   let next = 0;
   for(let c=1;c<=tracks.length;c++){
@@ -3853,6 +3995,48 @@ function colHdr(name, unit){
          (unit ? `<div style="font-weight:400;font-size:9px;color:#94a3b8;line-height:1.25;margin-top:1px;text-transform:none">${unit}</div>` : "");
 }
 
+/* =========================================================================================
+   2026-08-06 (Aurvin, owner instruction) — WHY MOST LEGS SHOW A DASH IN THE SEA CARGO
+   CHARTER COLUMNS, and what the tooltip has to say.
+
+   A Sea Cargo Charter EEOI exists only for a LADEN leg. js/engine.js (the loop at "PORT
+   CONSUMPTION IS INCLUDED") walks the year's rows once and, per SCC 2025 Technical Guidance
+   Appendix 3, moves emissions ONTO the laden leg they belong to:
+     • a ballast leg (no cargo)   → its WtW CO₂e is carried into the NEXT leg that loads;
+     • a port stay                → its WtW CO₂e is folded into the laden leg it serves
+                                    (loading stay → the leg that follows; final discharge
+                                    stay → the leg that preceded), recorded on d.sccGoesTo;
+     • a laden leg                → gets d.sccNumerator (own + carried-in + port) and d.eeoi.
+   Roughly half the rows of a Leg-Wise table are port stays, so about half of this group's
+   cells are legitimately empty. Printing each row's raw d.sccWtW instead would show the SAME
+   tonnes twice — once on the berth row and once inside the laden leg that absorbed it — which
+   is why the TOTAL row deliberately carries no WtW sum either (see brTotalsHtml).
+
+   The owner's instruction was that this must never look like missing data: every dash carries
+   a tooltip naming exactly where that row's emissions went. d.sccGoesTo is what engine.js
+   records for precisely this purpose ("so the attribution is auditable in the UI instead of
+   being invisible arithmetic") and is already exported to the Leg-Wise Excel download as
+   "SCC port-stay attribution" — this function just reads it back for the screen.
+   ========================================================================================= */
+function brSccWhere(d){
+  if(!d) return "";
+  const t = (Number(d.sccWtW)||0);
+  const amt = t>0 ? fmtF(t,2)+" t WtW CO₂e" : "This row's WtW CO₂e";
+  if(d.kind!=="voyage"){
+    const g = d.sccGoesTo;
+    if(g && g.idx>=0) return "Port stay — no cargo moves, so there is no transport work to divide by. Its "+amt+
+      " is counted as the "+g.role+(g.label? " of "+g.label : "")+", inside THAT leg's Sea Cargo Charter figures (SCC 2025 Technical Guidance Appendix 3). It is not shown again here, because that would count it twice.";
+    return "Port stay inside a ballast stream — no cargo either side. Its "+amt+
+      " rides with the ballast and is carried into the next leg that loads (SCC 2025 Technical Guidance Appendix 3).";
+  }
+  return "Ballast leg — no cargo, so no transport work to divide by and no EEOI. Its "+amt+
+    " is carried into the next leg that loads, where it appears inside that leg's EEOI (WtW) numerator (marked ⊕). See SCC 2025 Technical Guidance Appendix 3.";
+}
+/* a dashed SCC cell that explains itself — used for every port stay and ballast leg */
+function brSccDash(d){
+  return `<span style="color:#94a3b8;cursor:help" title="${esc(brSccWhere(d))}">—</span>`;
+}
+
 /* full inner grid: header rows + one grid per leg + totals + footnote */
 let BR_LAST = null;                       // {R, cellPad} — for re-rendering totals on tick
 function breakdownGrid(R, tips){
@@ -3873,10 +4057,47 @@ function breakdownGrid(R, tips){
   /* 2026-08-01c: the hideable-regulation-column plan for this render pass — see emcPlan().
      P.any is false (and everything below is a no-op emitting the original characters) unless
      the full-screen picker has actually unticked something in EU ETS / UK ETS / FuelEU. */
-  const P = emcPlan(BR_GRID, EMC_LEGS_COLS);
+  const P = emcPlan(BR_GRID, EMC_LEGS_COLS, EMC_LEGS_SCC_COLS);
   const BR_G = P.grid, BR_B = P.box;
   /* FuelEU's right-hand wall normally rides on Penalty (col 20); move it if Penalty is hidden */
   const feuWallAt = emcWall(P, 16, 20);
+  /* 2026-08-06: the optional Sea Cargo Charter group (physical 21-24, see EMC_LEGS_SCC_COLS).
+     sccOn is false in the default state, so every `${sccOn?…:""}` below emits nothing and this
+     table's HTML is unchanged to the character. sccWallAt does for this group what feuWallAt
+     does for FuelEU — carries the right-hand wall to whichever of 21-24 survives. */
+  const sccOn = P.on(21) || P.on(22) || P.on(23) || P.on(24);
+  const sccWallAt = emcWall(P, 21, 24);
+  /* sub-header cell for the optional SCC columns — same shape as the P.on()/P.m() pattern the
+     hideable columns above use, factored out because there are four of them. */
+  const sth = (phys, inner, title) => !P.on(phys) ? "" :
+    `<div style="grid-column:${P.m(phys)};grid-row:2;padding:6px 10px;background:#f8fafc;${sccWallAt===phys?EMC_WALL:(phys===24?EMC_WALL:"")}font-size:11px;font-weight:600;color:#475569;text-align:right"${title?` title="${title}"`:""}>${inner}</div>`;
+  /* 2026-08-06 — WHY THESE TWO ARE BUILT HERE AND APPENDED TO EXISTING TEMPLATE LINES rather
+     than written as their own `${…}` lines inside the header template below. A new line in a
+     template literal contributes its newline and indentation to the OUTPUT even when the
+     expression on it evaluates to "". Adding four sub-header lines and a group-tag line this
+     way silently grew the default Legs HTML by 444 characters and broke
+     verify_grid_columns.js's byte-identity check against the pre-change build — caught by that
+     test, which is exactly what it is for. Concatenating onto the end of a line that already
+     exists adds nothing when the pieces are empty. Keep it that way.
+
+     The group tag: same tan #f2e8d9/#9a6b1f treatment as the Voyages tab's SCC tag, so the two
+     tables read as the same concept (it is the only tinted header tag on either table — every
+     other group went neutral #f1f5f9 on 2026-07-28j). P.span returns null when all four
+     columns are off, exactly as it does for a fully-hidden FuelEU, so the tag disappears with
+     its columns.
+
+     The four sub-headers: units and tooltips are the VOYAGES tab's, reworded from "voyage" to
+     "leg". These are the same quantities at a different level — js/engine.js computes them PER
+     LEG in the first place (it sets d.sccWtW / d.tw / d.eeoi on each rowDetails entry) and the
+     Voyages tab sums those up. Nothing here is a new calculation. Both EEOI columns are
+     present for the same reason they are on Voyages: the two are easy to confuse and sit
+     better side by side than apart. */
+  const sccHdrTag = (sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>`:"")(P.span(21,4));
+  const sccHdrCells =
+    sth(21,colHdr("WtW","mt (AR6)"),"Well-to-wake CO₂e (tonnes) burned on THIS leg — Sea Cargo Charter basis, AR6 GWP. This is the leg&#39;s own figure only: emissions carried in from preceding ballast legs are NOT added here, they are added inside the EEOI (WtW) numerator two columns to the right (look for the ⊕). Port stays and ballast legs show a dash — their tonnes belong to a neighbouring laden leg, and showing them here as well would count them twice.")+
+    sth(22,colHdr("T-Work","10⁶ t·nm"),"Transport work for this leg = cargo × laden distance, in millions of tonne-miles. The denominator of both EEOI columns beside it. A leg with no cargo has none, so it shows a dash.")+
+    sth(23,colHdr("EEOI","gCO₂e/t·nm"),"Sea Cargo Charter EEOI for this leg: WELL-TO-WAKE CO₂e (AR6) INCLUDING emissions carried in from preceding ballast legs and from the port stays attributed to this leg (SCC 2025 Technical Guidance Appendix 3). A ⊕ marks a leg that absorbed a carry-in, and its tooltip shows the arithmetic. NOT the EEOI (IMO) column beside it — that one is tank-to-wake, CO₂ only, with nothing carried in.")+
+    sth(24,colHdr("EEOI","gCO₂/t·nm"),"IMO EEOI (MEPC.1/Circ.684) for this leg: TANK-TO-WAKE, CO₂ only, the leg&#39;s own CO₂ over its own transport work — nothing carried in. Shown beside the Sea Cargo Charter EEOI for easy comparison, exactly as the Voyages tab does. This is legEEOI(), the same function that has always computed it.");
   const header = `
     <div style="display:grid;${BR_B}grid-template-columns:${BR_G};grid-template-rows:auto auto;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;grid-row:1 / span 2;${BR_FREEZE}z-index:4;display:flex;align-items:flex-end;justify-content:center;padding:7px 0 9px;background:#f1f5f9;border-right:1px solid #e2e8f0">${selAllBox("br")}</div>
@@ -3887,8 +4108,10 @@ function breakdownGrid(R, tips){
            look). Voyage No specifically moved from right- to LEFT-aligned per the owner's
            instruction; Cargo/Dist stay right-aligned like their Report-Wise counterparts.
            colHdr()'s unit line now carries text-transform:none (see colHdr) so "mt"/"nm" stay
-           lowercase under this uppercase parent, same as Report-Wise. -->
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
+           lowercase under this uppercase parent, same as Report-Wise.
+           2026-08-06 (Aurvin, owner instruction): BR_FREEZE3 added — this header is frozen with
+           its column, see the long note on BR_FREEZE3. -->
+      <div style="grid-column:3;grid-row:1 / span 2;${BR_FREEZE3}z-index:3;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
       <div style="grid-column:4;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right" title="Cargo carried on this leg, from the leg's DEPARTURE (SOSP) report. Voyages only — a berth stay and a voyage with no cargo on its SOSP report both show a dash. No TOTAL is shown: the same parcel is reported on every leg it is carried over, so adding the column up would count it several times.">${colHdr("Cargo","mt")}</div>
       <!-- 2026-07-26h (Aurvin, owner instruction): "nm" now shown the SAME way as Cargo's "mt"
            — its own smaller, muted line under "DIST" (via colHdr), not squeezed onto the same
@@ -3918,7 +4141,7 @@ function breakdownGrid(R, tips){
       <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
       ${P.on(14)?`<div style="grid-column:${P.m(14)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>`:""}
       ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>`:""}
-      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(16,5))}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;${sccOn?EMC_WALL:""}border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(16,5))}${sccHdrTag}
       <!-- sub-header row (row 2): same three eligibility labels/styling as Report-Wise's thSub
            cells (10px, #94a3b8, centered, asymmetric 8/1/1/8 padding so the gap between the
            three badges is smaller than the gap to the group's own outer wall). -->
@@ -3949,7 +4172,7 @@ function breakdownGrid(R, tips){
       ${P.on(17)?`<div style="grid-column:${P.m(17)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===17?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>`:""}
       ${P.on(18)?`<div style="grid-column:${P.m(18)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===18?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>`:""}
       ${P.on(19)?`<div style="grid-column:${P.m(19)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===19?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>`:""}
-      ${P.on(20)?`<div style="grid-column:${P.m(20)};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>`:""}
+      ${P.on(20)?`<div style="grid-column:${P.m(20)};grid-row:2;padding:6px 10px;background:#f8fafc;${sccOn?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>`:""}${sccHdrCells}
     </div>`;
 
   let zi=0;
@@ -4218,6 +4441,46 @@ function breakdownGrid(R, tips){
         <div style="grid-column:10;grid-row:1 / span ${span};padding:${cellPad};${imoCellStyle}border-right:1px solid #e2e8f0;font-weight:600;color:#1e293b">${
           hfoEqPerNmValueHtml(legHfoEqNm)}</div>`;
 
+    /* ---------------------------------------------------------------------------------
+       2026-08-06 (Aurvin, owner instruction): the OPTIONAL Sea Cargo Charter cells,
+       physical columns 21-24. Emits "" for every column the user has not ticked on, so the
+       default state adds nothing to this row's HTML.
+
+       ALL FOUR ARE LEG-LEVEL — one value per leg, spanning its fuel sub-rows, exactly like
+       the IMO block immediately above and exactly like the SCC block that stood here before
+       2026-07-26c removed it ("a CII or an EEOI belongs to the leg, not to one of its
+       fuels"). The Voyages tab does break its WtW down per fuel; this one deliberately does
+       not, because a port stay's cell is a leg-level STATEMENT ("counted as the loading stay
+       of …"), not a number, and repeating that sentence on every fuel line would be noise.
+       If the owner later wants per-fuel WtW here, fu.sccWtW is already on every line from
+       brFuelLines() — it is a one-cell change, not a calculation change.
+
+       NO NEW ARITHMETIC HAPPENS HERE. d.sccWtW, d.tw, d.sccNumerator, d.sccBallast and
+       d.eeoi are all set by js/engine.js's Appendix 3 pass; legEEOI(d) is the untouched
+       function that has computed the IMO EEOI since long before this. d.sccNumerator != null
+       is the engine's own marker for "this row is a laden leg that earned an EEOI" — using
+       it (rather than re-deriving "laden" here) is what guarantees this column and the
+       Voyages tab and the SCC KPI card can never disagree about which legs count. */
+    const sccLaden = (!isBerth) && d.sccNumerator != null;
+    const sccCell = (phys, extra, val) => !P.on(phys) ? "" :
+      `<div style="grid-column:${P.m(phys)};grid-row:1 / span ${span};padding:${cellPad};${imoCellStyle}${sccWallAt===phys||phys===24?EMC_WALL:""}${extra||""}">${val}</div>`;
+    /* the ⊕ marker and its arithmetic tooltip are copied from the Voyages tab's eeoiCell so
+       the same event is explained the same way on both tabs — only "voyage" becomes "leg". */
+    const sccEeoiHtml = !sccLaden ? brSccDash(d)
+      : d.sccNoFactor ? brNoFactor
+      : fmtF(d.eeoi,2) + (((d.sccBallast||0)+(d.sccPort||0))>0
+          ? `<span style="color:#94a3b8;font-weight:400;cursor:help" title="Numerator ${fmtF(d.sccNumerator,2)} t WtW CO₂e = this leg's own ${fmtF(d.sccWtW,2)}${(d.sccBallast||0)>0?" + "+fmtF(d.sccBallast,2)+" carried in from preceding ballast leg(s)":""}${(d.sccPort||0)>0?" + "+fmtF(d.sccPort,2)+" from the port stay(s) attributed to this leg":""} (SCC 2025 Technical Guidance Appendix 3)."> ⊕</span>`
+          : "");
+    /* Concatenated, NOT written as its own `${…}` lines in the row template below — an empty
+       expression on its own template line still contributes a newline and indentation to the
+       output, which grows the default Legs HTML and breaks verify_grid_columns.js's
+       byte-identity check. See the matching note above sccHdrTag. */
+    const sccLeg = !sccOn ? "" :
+        sccCell(21,"color:#9a6b1f;", sccLaden ? (d.sccNoFactor? brNoFactor : brNum(d.sccWtW,2)) : brSccDash(d))+
+        sccCell(22,"color:#475569;", sccLaden ? fmtF(d.tw/1e6,2) : brSccDash(d))+
+        sccCell(23,"color:#9a6b1f;font-weight:600;", sccEeoiHtml)+
+        sccCell(24,"color:#1d7a5f;font-weight:600;", sccLaden ? eeoiCellHtml(legEEOI(d)) : brSccDash(d));
+
     return `
       <div class="hirow" style="display:grid;${BR_B}grid-template-columns:${BR_G};background:${bg};border-bottom:1px solid #e2e8f0">
         <div class="hicell" style="grid-column:1;grid-row:1 / span ${span};${BR_FREEZE}z-index:2;background:${bg};display:flex;align-items:center;justify-content:center;border-right:1px solid #e2e8f0">${selBox("br",i)}</div>
@@ -4263,7 +4526,18 @@ function breakdownGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? esc(voyNo) : brDash}</div>
+        ${/* 2026-08-06 (Aurvin, owner instruction), two changes to this cell:
+             CLICKABLE — each voyage number is now a link that opens SINGLE VOYAGE VIEW
+             (svVoyLink, see the SINGLE VOYAGE VIEW section). brVoyNos() can return more than one
+             number for a leg that straddles an abrupt mid-sea change ("5, 6"), so the string is
+             split and each part linked on its own; d.tStart is passed as the anchor so a number
+             used by two non-adjacent segments resolves to the right one (see svFindGroup).
+             Inside the view svVoyLink() returns plain text — there is nothing left to click.
+             FROZEN — this column is now pinned open at BR_FREEZE3 (left: checkbox + activity),
+             so the voyage number stays on screen while the regulation columns scroll sideways.
+             That is why track 2 became a fixed 280px in BR_GRID: a sticky offset has to be a
+             real length, and an elastic 0.5fr track has no length to pin against. */""}
+        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${BR_FREEZE3}z-index:2;background:${bg};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? String(voyNo).split(",").map(v=>svVoyLink(v.trim(), d.tStart)).join(", ") : brDash}</div>
         <!-- 2026-07-26c (Aurvin, owner instruction): Cargo now has its own column between
              Voyage No and Dist., matching where it sits in the Workspace / Report-Wise
              tables. Owner chose PLAIN NUMBERS here — the old grey "ballast" word that the
@@ -4275,7 +4549,7 @@ function breakdownGrid(R, tips){
         <div style="grid-column:5;grid-row:1 / span ${span};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;color:#475569">${dist}</div>
         ${eligLeg}
         ${fuelCells}
-        ${imoLeg}
+        ${imoLeg}${sccLeg}
       </div>`;
   }).join("");
   /* the timeline rule now lives INSIDE each frozen first cell (see the gutter above) — as a
@@ -4331,11 +4605,15 @@ function brTotalsHtml(){
      sum or the mean of the per-leg EEOIs. Legs whose fuel has no Appendix 6 factor are left
      out of both sides rather than counted as zero (2026-07-22c).
      2026-07-26c: the SCC columns no longer appear in this table, so eeoiTot is no longer
-     rendered — kept here (unused) only because removing it would be an unrelated change. */
+     rendered — kept here (unused) only because removing it would be an unrelated change.
+     2026-08-06 (Aurvin, owner instruction): eeoiTot IS RENDERED AGAIN — the optional SCC
+     group (physical 21-24) is back on this table, off by default. Nothing about how it is
+     built changed in three sessions of it sitting unused, so the figure this row now shows
+     is the one this code has been computing all along. `void eeoiTot` removed. */
   const sccDets = dets.filter(d=>d.kind==="voyage" && d.tw>0 && !d.sccNoFactor);
   const twTot = sccDets.reduce((a,d)=>a+d.tw,0);
   const numTot = sccDets.reduce((a,d)=>a+(Number(d.sccNumerator)||0),0);
-  const eeoiTot = twTot>0? numTot*1e6/twTot : null; void eeoiTot;
+  const eeoiTot = twTot>0? numTot*1e6/twTot : null;
   /* 2026-07-26i (Aurvin, EXPLICIT owner instruction, this session, after a clarifying-question
      round): the TOTAL row's CII/EEOI numerator now sums CO₂ from EVERY ticked row — voyage
      LEGS AND BERTH STAYS — matching the real annual attained CII engine.js computes for the
@@ -4367,8 +4645,13 @@ function brTotalsHtml(){
      IMO EEOI total — it shows a TOTAL-row kg/nm figure instead (below). eeoiImoTot is kept
      (unused) only because removing it would be an unrelated change, same precedent as the
      eeoiTot sccDets figure a few lines above. The displaced figure lives on in the
-     window-level "IMO — CII" KPI card on the full-screen dashboard. */
-  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null; void eeoiImoTot;
+     window-level "IMO — CII" KPI card on the full-screen dashboard.
+     2026-08-06 (Aurvin, owner instruction): eeoiImoTot IS RENDERED AGAIN, at the optional
+     "EEOI (IMO)" column (physical 24) — column 10 still shows kg/nm and is untouched. Same
+     formula as before, unchanged: Σ ALL ticked rows' CO₂ ÷ Σ ticked voyage-leg transport
+     work (the 2026-07-26i rule that berth CO₂ counts in TOTALS but not in a single row's own
+     figure). `void eeoiImoTot` removed. */
+  const eeoiImoTot = twImoTot>0 ? co2AllTot*1e6/twImoTot : null;
   /* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm — sums the SAME HFO-equivalent-KG
      core (legHfoEqTonnes(d)*1000) the per-leg figure uses, over imoDets (the same
      dist>0 voyage-leg set already built above for the CII total), divided by imoDist (also
@@ -4382,18 +4665,69 @@ function brTotalsHtml(){
      re-reads the column plan itself rather than inheriting breakdownGrid()'s — that also means
      it stays correct if the picker is changed while rows are ticked. The SUMS are untouched:
      hiding a column removes its cell, never a row from `dets`. */
-  const P = emcPlan(BR_GRID, EMC_LEGS_COLS);
+  const P = emcPlan(BR_GRID, EMC_LEGS_COLS, EMC_LEGS_SCC_COLS);
   const feuWallAt = emcWall(P, 16, 20);
   const rcell=(col,extra,val)=>{
     const phys = col+1;
     if(!P.on(phys)) return "";
     return `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${feuWallAt===phys?EMC_WALL:""}">${val}</div>`;
   };
+  /* 2026-08-06: TOTAL-row cells for the optional Sea Cargo Charter columns (physical 21-24).
+     Emits "" for anything not ticked on, so the default TOTAL row is unchanged. */
+  const sccWallAt = emcWall(P, 21, 24);
+  const scell=(phys,extra,val)=> !P.on(phys) ? "" :
+    `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${sccWallAt===phys||phys===24?EMC_WALL:""}${extra||""}">${val}</div>`;
+  /* 2026-08-06 (Aurvin, owner instruction, after a clarifying-question round) — the SCC
+     TOTALS. Built here and CONCATENATED onto an existing template line below rather than
+     written as four new `${…}` lines, because an empty expression on its own template line
+     still emits a newline and indentation and would grow the default TOTAL row (see the
+     matching note above sccHdrTag in breakdownGrid). Three deliberate choices, all of them
+     about NOT printing a wrong number:
+
+     WtW → a DASH, never a sum. Same reasoning the Cargo column already uses (2026-07-26d):
+     the tonnes on a port-stay row are ALSO inside the laden leg that absorbed them, so
+     Σ d.sccWtW over the visible rows would count a large part of the year twice. The owner
+     chose the dash over a laden-legs-only sum, which would look like it ought to add the
+     column up and would not.
+
+     T-Work → a REAL SUM, over sccDets (laden legs that have an Appendix 6 factor). Transport
+     work does NOT double count — a berth stay has none, and each laden leg's tonne-miles are
+     its own — and this is literally the denominator of the EEOI printed beside it, so the two
+     totals can be checked against each other by hand. This is the one figure the owner's
+     answer did not name explicitly ("weighted EEOI only"); a dash was the alternative, and it
+     is flagged in HANDOFF_LOG.md 2026-08-06 for confirmation.
+
+     EEOI (WtW) → the WEIGHTED average Σ numerators ÷ Σ transport work, NOT the mean of the
+     per-leg EEOIs, with no-factor legs left out of BOTH sides rather than counted as zero.
+     Same eeoiTot this function has computed since 2026-07-22c, same weighting the SCC KPI
+     card uses. EEOI (IMO) → eeoiImoTot, unchanged from its 2026-07-26i definition. */
+  const sccTotCells = !(P.on(21)||P.on(22)||P.on(23)||P.on(24)) ? "" :
+    scell(21,"color:#9a6b1f;", `<span style="color:#94a3b8;font-weight:400;cursor:help" title="No total. A port stay's well-to-wake CO₂e is also counted inside the laden leg that absorbed it (SCC 2025 Technical Guidance Appendix 3), so adding this column up would count a large part of the year twice. The correctly-weighted year figure is the EEOI two columns to the right, and every tonne is still in the Total CO₂e column.">—</span>`)+
+    scell(22,"color:#475569;", twTot>0? fmtF(twTot/1e6,2) : brDash)+
+    scell(23,"color:#9a6b1f;", eeoiTot!=null
+        ? `<span title="Weighted Sea Cargo Charter EEOI for the ticked rows: Σ numerators (${fmtF(numTot,2)} t WtW CO₂e — each leg's own emissions plus what it absorbed from ballast legs and port stays) ÷ Σ transport work (${fmtF(twTot/1e6,2)} ×10⁶ t·nm). NOT the average of the per-leg EEOIs. Legs burning a fuel with no Appendix 6 factor are excluded from both sides.">${fmtF(eeoiTot,2)}</span>`
+        : brDash)+
+    scell(24,"color:#1d7a5f;", eeoiCellHtml(eeoiImoTot));
   return `
     <div style="display:grid;${P.box}grid-template-columns:${P.grid};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(rowselLabel("br",R.rowDetails.length,R.year))}</div>
-      <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      ${/* 2026-08-06e (Aurvin, owner instruction — reported as "freezing is not working for a
+           blank cell"). THIS IS THE BUG. When 2026-08-06b froze the Voyage No column it added
+           BR_FREEZE3 to the header (grid-column:3, ~line 4114) and to the body cell (~line 4540)
+           but NOT to this one, the TOTAL row's cell — which also had no z-index and no background.
+           So the column was pinned on every row EXCEPT the sticky TOTAL row: scroll right and this
+           cell slid away with the rest, and whichever far-right cell arrived under it (in the
+           owner's screenshot, the CII pill) showed through the gap, because a cell with no
+           background is transparent and the frozen columns beside it are not.
+           It looked like "freezing fails on a blank cell". The cell being a dash is a coincidence
+           — a value would have scrolled away just the same. The three properties below are copied
+           from columns 1 and 2 of this same row, which always had them and always worked.
+           KEEP `""}` AND THE <div> ON ONE LINE. A `${…""}` comment block sitting on its own line
+           emits a newline + six spaces into the HTML — invisible on screen, but it moved this
+           grid's byte-identity baseline in tools/verify_grid_columns.js by exactly 7 characters
+           and cost a debugging round. Every other comment block in these grids is followed by a
+           real element for the same reason. */""}<div style="grid-column:3;${BR_FREEZE3}z-index:3;background:#eef2f7;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${/* 2026-07-26d (Aurvin, owner instruction): no cargo TOTAL. Beyond saving width, a sum
            here was misleading — the same parcel is reported on every leg it is carried over,
            so the column does not add up to a meaningful tonnage. Dash instead. */""}
@@ -4423,7 +4757,7 @@ function brTotalsHtml(){
       ${rcell(16,"", fmtF(sumEnergy,2))}
       ${rcell(17,"", fmtF(sum("E")/1e6,2))}
       ${rcell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
-      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}
+      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}${sccTotCells}
     </div>`;
 }
 
@@ -4831,8 +5165,14 @@ function vwGroups(state){
    (minmax(78px,0.6fr)) reuses the SAME track width as column 6 (the original IMO EEOI, now
    kg/nm) — a known-good width for this exact figure. Every other track's width/order is
    UNCHANGED; only this one new token was added, and the physical column count went 20 → 21. */
-const VW_GRID = "minmax(34px,34px) minmax(300px,3.0fr) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(78px,0.6fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
+/* 2026-08-06 (Aurvin, owner instruction): track 2 fixed at 300px (was minmax(300px,3.0fr)) for
+   the same reason as BR_GRID's — the frozen "Voyage No" column (track 3) needs a real offset to
+   pin against. See the note on BR_FREEZE3 / VW_FREEZE3. The 300px minimum is unchanged. */
+const VW_GRID = "minmax(34px,34px) minmax(300px,300px) minmax(84px,0.6fr) minmax(84px,0.7fr) minmax(150px,0.85fr) minmax(78px,0.6fr) minmax(76px,0.6fr) minmax(88px,0.55fr) minmax(96px,0.7fr) minmax(100px,0.8fr) minmax(104px,1fr) minmax(96px,0.9fr) minmax(84px,0.85fr) minmax(78px,0.6fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(84px,0.7fr) minmax(92px,0.8fr) minmax(96px,0.8fr) minmax(84px,0.75fr) minmax(92px,0.9fr)";
 const VW_BOX = gridBox(VW_GRID);          // every Voyage-Wise row resolves to this same width
+/* 2026-08-06: the Voyage-Wise twin of BR_FREEZE3 — its activity track is 300px, not 280px */
+const VW_ACTCOL_W = 300;
+const VW_FREEZE3  = "position:sticky;left:"+(BR_SELCOL_W+VW_ACTCOL_W)+"px;";
 let VW_LAST = null;
 
 /* 2026-07-26d (Task 3, Aurvin): the Voyage-Wise IMO figures. Same formulas and the same
@@ -4904,8 +5244,12 @@ function vwTimeSpan(a,b){
 function vwVoyCell(g){
   const raws=(g.raws||[]).filter(Boolean);
   const variants=raws.filter((v,i,a)=>a.indexOf(v)===i);
-  if(variants.length<=1) return esc(g.voy);
-  return esc(g.voy)+`<span style="color:#9a6b1f;font-weight:400;cursor:help;margin-left:3px" title="Written ${variants.length} different ways in the MDA file — ${variants.map(esc).join(" · ")} — all treated as voyage ${esc(g.voy)}. Leading zeros and a leading V/VOY are ignored when they are next to each other in time; a different voyage number in between would keep them apart.">✎</span>`;
+  /* 2026-08-06 (Aurvin, owner instruction): the number is now a link into SINGLE VOYAGE VIEW.
+     g.tStart is the anchor so a number reused by a later, non-adjacent segment still opens the
+     RIGHT one (see svFindGroup). svVoyLink() returns plain text when the view is already on. */
+  const lnk = svVoyLink(g.voy, g.tStart);
+  if(variants.length<=1) return lnk;
+  return lnk+`<span style="color:#9a6b1f;font-weight:400;cursor:help;margin-left:3px" title="Written ${variants.length} different ways in the MDA file — ${variants.map(esc).join(" · ")} — all treated as voyage ${esc(g.voy)}. Leading zeros and a leading V/VOY are ignored when they are next to each other in time; a different voyage number in between would keep them apart.">✎</span>`;
 }
 function voyageGrid(R, tips){
   const cellPad="7px 10px";
@@ -4946,8 +5290,10 @@ function voyageGrid(R, tips){
            Leg-Wise (see breakdownGrid) — Voyage No left-aligned, uppercase/grey/10.5px, flat
            #f8fafc background. Voyage-Wise has no standalone Cargo column at this position
            (its "Cargo" lives inside the Sea Cargo Charter group further right) so only Voyage
-           No and Dist. are touched here. -->
-      <div style="grid-column:3;grid-row:1 / span 2;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
+           No and Dist. are touched here.
+           2026-08-06 (Aurvin, owner instruction): VW_FREEZE3 added — this header is frozen with
+           its column, see the long note on BR_FREEZE3. -->
+      <div style="grid-column:3;grid-row:1 / span 2;${VW_FREEZE3}z-index:3;display:flex;align-items:flex-end;justify-content:flex-start;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:left">Voyage No ${tips.voy}</div>
       <!-- 2026-07-26h (Aurvin, owner instruction): "nm" shown the same way as Leg-Wise's Cargo
            "mt" — its own smaller, muted line under "DIST" (via colHdr). -->
       <div style="grid-column:4;grid-row:1 / span 2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:7px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;text-align:right">${colHdr("Dist","nm")}</div>
@@ -5103,7 +5449,11 @@ function voyageGrid(R, tips){
             </div>
           </div>
         </div>
-        <div style="grid-column:3;grid-row:1 / span ${span};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
+        ${/* 2026-08-06 (Aurvin, owner instruction): FROZEN (VW_FREEZE3) and CLICKABLE — same two
+             changes as the Leg-Wise Voyage No cell, see the long notes on BR_FREEZE3 and on that
+             cell. The link is built inside vwVoyCell() so the "written N different ways" ✎ marker
+             stays attached to it. */""}
+        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${VW_FREEZE3}z-index:2;background:${bg};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
         ${cell(3,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#475569;",brNum(g.dist,0))}
         ${fl(6,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
         ${fl(7,f=>brNum(f.tonnes,1),"padding-left:4px;color:#334155;")}
@@ -5250,7 +5600,8 @@ function vwTotalsHtml(){
     <div style="display:grid;${P.box}grid-template-columns:${P.grid};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
       <div style="grid-column:2;${BR_FREEZE2}z-index:3;background:#eef2f7;padding:${cellPad};border-right:1px solid #e2e8f0;font-weight:700;color:#0f172a;display:flex;align-items:center">${esc(label)}</div>
-      <div style="grid-column:3;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
+      ${/* 2026-08-06e — the VOYAGES twin of the Leg-Wise TOTAL-row freeze bug; see the long note
+           on the breakdownGrid total row, including why `""}` and the <div> share a line. */""}<div style="grid-column:3;${VW_FREEZE3}z-index:3;background:#eef2f7;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
       <div style="grid-column:5;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTotCell}</div>
       ${/* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm, not the IMO EEOI total any
@@ -5351,9 +5702,430 @@ function downloadVoyageXlsx(){
 }
 function round2(v){ return (v==null||isNaN(v))? "" : Math.round(Number(v)*100)/100; }
 
+/* ============================================================================================
+   SINGLE VOYAGE VIEW — 2026-08-06 (Aurvin, owner instruction)
+   --------------------------------------------------------------------------------------------
+   WHAT IT IS. Clicking a voyage number anywhere (REPORTS, LEGS or VOYAGES, in the ordinary tabs
+   or in full screen) jumps to LEGS showing ONE voyage: its own legs and port stays, its own KPI
+   cards, its own date span. Leaving the view puts everything back exactly as it was.
+
+   THE ONE RULE THAT SHAPED EVERY DECISION BELOW — THIS VIEW DOES NOT TOUCH S.year OR
+   S.dateFilter. On 2026-07-28h the owner instructed that the date filter is YEAR-LOCKED: dfSet()
+   clamps every value inside S.year and the multi-year Voyage-Wise range was deleted. A voyage
+   can start in December and end in March, so a single-voyage window is EXACTLY the multi-year
+   range that instruction forbids. Rather than reopen it, this view keeps its own state in the
+   module-level `SVIEW` below, leaves S.year / S.dateFilter frozen underneath at whatever the
+   user had, and renders the From/To boxes DISABLED (owner's explicit choice when asked: "the
+   dates can simply be view-only, as it is a special view. User will have to come out of this
+   view to have the dates enabled again"). Nothing here is written to S, so nothing reaches
+   localStorage (`emcalc_state`) and the view never survives a reload — deliberate.
+
+   NOTHING NEW IS CALCULATED. The voyage's rows come from vwGroups() — the SAME grouping the
+   VOYAGES tab uses, keyed by voyage SEGMENT (not by the number: two non-adjacent segments can
+   carry the same number, e.g. 5 → 6 → 5). Its per-end-year `computeAll` bucketing is reused
+   verbatim. This is what guarantees the single-voyage LEGS table can never disagree with the
+   VOYAGES row it was opened from.
+
+   CROSS-YEAR VOYAGES (owner instruction, answered over two rounds of questions):
+     • The LEG ROWS split at year end (splitRowAcrossYears, js/engine.js) and each part is
+       computed under ITS OWN year's rules — so a 2025 part is rated on 2025 bands, targets and
+       phase-in, and a 2026 part on 2026's. Those per-row figures are legitimate and ARE shown.
+     • The TOTAL row and the KPI cards do NOT show CII rating/attained/required, the FuelEU GHG
+       intensity vs target, or the EU ETS phase-in % — one set of year parameters cannot fairly
+       describe two years. They show a dash with a tooltip naming both years.
+     • Additive figures (fuel tonnes, CO₂/CO₂e, EUAs, UKAs, FuelEU compliance balance, penalty,
+       distance) ARE summed across the per-year buckets, because summing them is correct.
+   ============================================================================================ */
+let SVIEW = null;   /* { voy, tStart, tEnd, years:[…], crossYear } — NOT in S, NOT persisted */
+
+function svActive(){ return !!(SVIEW && SVIEW.voy != null); }
+/* every voyage group in the workspace, ignoring the date window entirely — a single-voyage view
+   must be able to open a voyage that ends outside the currently selected year. */
+function svAllGroups(){
+  try{ return (vwGroups(Object.assign({}, S, { voyDateFilter:{ active:false } })).groups) || []; }
+  catch(e){ return []; }
+}
+/* resolve a clicked voyage number to ONE group. `anchorISO` is the timestamp of the row that was
+   clicked; it is what separates two segments that share a number — the group whose own window
+   contains the click wins, else the nearest one. */
+function svFindGroup(voy, anchorISO){
+  const want = String(voy==null ? "" : voy).trim();
+  const gs = svAllGroups().filter(g => String(g.voy==null?"":g.voy).trim() === want);
+  if(!gs.length) return null;
+  if(gs.length === 1) return gs[0];
+  const t = anchorISO ? _utcms(anchorISO) : NaN;
+  if(!isFinite(t)) return gs[0];
+  let best = gs[0], bestD = Infinity;
+  for(const g of gs){
+    const a = _utcms(g.tStart), b = _utcms(g.tEnd);
+    if(isFinite(a) && isFinite(b) && t >= a && t <= b) return g;
+    const d = Math.min(Math.abs(t - a) || Infinity, Math.abs(t - b) || Infinity);
+    if(d < bestD){ bestD = d; best = g; }
+  }
+  return best;
+}
+/* the calendar years a voyage touches, in order */
+function svYearsOf(tStart, tEnd){
+  const a = Number(String(tStart||"").slice(0,4)), b = Number(String(tEnd||tStart||"").slice(0,4));
+  if(!isFinite(a) || !isFinite(b) || b < a) return [Number(S.year)||2026];
+  const out=[]; for(let y=a; y<=b; y++) out.push(y);
+  return out.length ? out : [Number(S.year)||2026];
+}
+/* ---- enter / exit ------------------------------------------------------------------------ */
+function svEnter(voy, anchorISO){
+  const g = svFindGroup(voy, anchorISO);
+  if(!g){ try{ alert("Voyage "+voy+" is not in this workspace."); }catch(e){} return; }
+  const years = svYearsOf(g.tStart, g.tEnd);
+  SVIEW = { voy: String(g.voy==null?"":g.voy), tStart: g.tStart, tEnd: g.tEnd,
+            years, crossYear: years.length > 1 };
+  /* 2026-08-06c (Aurvin, owner instruction — the mismatch found while scoping this session):
+     the two lines above derive the year list from the voyage's DATE SPAN, but everything that
+     actually withholds a figure (svKpiR / svLegR) branches on the number of per-year BUCKETS.
+     Those can disagree: a voyage whose span brushes 31 Dec but whose rows all land on one side
+     of it produces ONE bucket and a two-entry span. The banner would then say "figures are
+     withheld" while the cards happily showed a CII rating — or, now that Year and From/To come
+     back to life for a single-year voyage, the controls would stay dead for a voyage that is
+     in fact single-year. So the buckets win: svBuckets() is built here, once, and SVIEW.years /
+     SVIEW.crossYear are rewritten from it. From this line on there is ONE source of truth.
+     If the buckets cannot be built (no rows, computeAll threw) the span-derived values stand,
+     which is the same behaviour this had before. */
+  try{
+    const bk = svBuckets();
+    if(bk && bk.length){
+      SVIEW.years     = bk.map(b => b.year);
+      SVIEW.crossYear = bk.length > 1;
+    }
+  }catch(e){}
+  svGoToLegs();
+}
+/* the voyage's ONE calendar year, or null when it really does straddle two. Everything that asks
+   "can the ordinary year-locked controls express this voyage?" must ask this, not the date span. */
+function svSoleYear(){
+  if(!svActive() || SVIEW.crossYear) return null;
+  const y = Number((SVIEW.years || [])[0]);
+  return isFinite(y) ? y : null;
+}
+/* the owner's "few actions revert to normal" list — changing Year and pressing the filter's
+   ✕ Reset both leave the view. Both call this FIRST, then do their normal job (see dfYear /
+   dfClearRange), so the user lands back on the ordinary year-locked view they came from. */
+function svExit(){
+  if(!SVIEW) return false;
+  SVIEW = null;
+  return true;
+}
+/* jump to LEGS in whichever shell is on screen — the full-screen overlay if it is open, the
+   ordinary tab bar otherwise — then repaint. */
+function svGoToLegs(){
+  const fs = (typeof ZNFS !== "undefined") && ZNFS && ZNFS.open;
+  if(fs){ try{ znfsTab("calcs"); }catch(e){} try{ znfsRefresh(true); }catch(e){} }
+  else  { try{ showTab("calcs"); }catch(e){} }
+  dfRepaint();
+  if(fs){ try{ znfsRefresh(true); }catch(e){} }
+}
+/* ---- the voyage's rows, split at year end, bucketed by year ------------------------------- */
+/* Returns [{ year, rows, R }] oldest year first, or null when the view is off. Each bucket's R
+   is a full computeAll() run under THAT year's rules with ignoreYearFilter — exactly the call
+   vwGroups() makes for its own per-end-year buckets, so no new regulatory logic exists here. */
+function svBuckets(){
+  if(!svActive()) return null;
+  if(SVIEW._buckets) return SVIEW._buckets;                     // memo — rebuilt on every enter
+  const g = svFindGroup(SVIEW.voy, SVIEW.tStart);
+  if(!g) return null;
+  /* g.srcs are the voyage's OWN rows, already split at its segment boundaries by vwSplitRows —
+     using them (rather than re-filtering S.rows by time) is what stops a neighbouring voyage's
+     row being pulled in at the boundary instant. */
+  const parts = [];
+  for(const r of (g.srcs||[])){
+    if(!r) continue;
+    let ps; try{ ps = splitRowAcrossYears(r); }catch(e){ ps = [r]; }
+    for(const p of (ps||[r])) parts.push(p);
+  }
+  const byYear = new Map();
+  for(const p of parts){
+    let y = p.yearPart ? Number(p.yearPart) : Number(String(p.tEnd || p.tStart || "").slice(0,4));
+    if(!isFinite(y)) y = Number(S.year)||2026;
+    if(!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(p);
+  }
+  const out = [];
+  for(const y of Array.from(byYear.keys()).sort((a,b)=>a-b)){
+    const rows = byYear.get(y);
+    let R = null;
+    try{
+      R = computeAll(Object.assign({}, S, { rows, year:y, ignoreYearFilter:true,
+                                            dateFilter:{active:false}, voyDateFilter:{active:false} }));
+    }catch(e){ R = null; }
+    if(R) out.push({ year:y, rows, R });
+  }
+  SVIEW._buckets = out;
+  return out;
+}
+/* ---- the KPI-card result for the voyage --------------------------------------------------- */
+/* Returns an R-SHAPED object js/fullscreen.js can drop straight into znfsRenderKpis() in place
+   of computeAll(S), or null when the view is off.
+
+   SINGLE-YEAR VOYAGE — there is exactly one bucket, so its R is handed back untouched and every
+   card behaves exactly as it always has.
+
+   CROSS-YEAR VOYAGE — the additive figures are summed across buckets and every YEAR-SPECIFIC
+   ratio is set to null, which is how the cards already render a "withheld" figure. `R.svCross`
+   carries the year list so fullscreen.js can put the reason in the tooltip. */
+function svKpiR(){
+  const bk = svBuckets();
+  if(!bk || !bk.length) return null;
+  if(bk.length === 1) return bk[0].R;
+  const Rs = bk.map(b => b.R);
+  const last = Rs[Rs.length-1];
+  const add = (path, key) => Rs.reduce((s,R)=> s + (Number(((R||{})[path]||{})[key]) || 0), 0);
+  const R = Object.assign({}, last);
+  R.svCross = bk.map(b=>b.year);
+  /* CII — every part of it is year-specific (the required line and the A–E band edges tighten
+     each year via the Z factor), so the whole card is withheld. Owner instruction. */
+  R.cii = Object.assign({}, last.cii, { attained:null, rating:null, ciiReq:null, ciiRef:null });
+  /* EU ETS — allowances and cost are additive and each bucket already applied ITS OWN year's
+     phase-in before this sum, so the total is right. `phase` itself is withheld: there is no
+     single phase-in % for two years. */
+  R.ets = Object.assign({}, last.ets, {
+    covered_t_co2:  add("ets","covered_t_co2"),
+    covered_t_co2e: add("ets","covered_t_co2e"),
+    basis_t:        add("ets","basis_t"),
+    euas:           add("ets","euas"),
+    cost:           add("ets","cost"),
+    phase:          null });
+  R.ukets = Object.assign({}, last.ukets, {
+    covered_t_co2e: add("ukets","covered_t_co2e"),
+    ukas:           add("ukets","ukas"),
+    cost:           add("ukets","cost") });
+  /* FuelEU — the compliance balance and the penalty are additive (each bucket computed its own
+     against its own year's target). GHGIE and target are intensities against a year-specific
+     line, so both are withheld. */
+  R.fueleu = Object.assign({}, last.fueleu, {
+    cb:      add("fueleu","cb"),
+    penalty: add("fueleu","penalty"),
+    E_total: add("fueleu","E_total"),
+    E_pool:  add("fueleu","E_pool"),
+    ghgie:   null, target:null, ghgieAlt:null, cbAlt:null });
+  R.summary = Object.assign({}, last.summary, {
+    distTotal: add("summary","distTotal"),
+    distIce:   add("summary","distIce"),
+    co2Total:  add("summary","co2Total"),
+    tw:        add("summary","tw"),
+    co2PerTW:  null });
+  return R;
+}
+/* ---- what the LEGS table renders --------------------------------------------------------- */
+/* the voyage's rows in table order — every bucket's rows, oldest year first. This is what makes
+   "the data in Leg view will split at year end" true: a leg that straddles 31 Dec is already two
+   rows here (splitRowAcrossYears did it in svBuckets), one in each year's bucket. */
+function svRows(){
+  const bk = svBuckets(); if(!bk || !bk.length) return null;
+  const out = [];
+  for(const b of bk) for(const r of b.rows) out.push(r);
+  return out;
+}
+/* the R the LEGS table renders from. Its rowDetails are the buckets' own rowDetails concatenated
+   in the same order as svRows(), so breakdownGrid's `src[i]` mapping still lines up 1:1 — and
+   each row keeps the figures its OWN year's computeAll produced. The aggregate members (cii,
+   ets, ukets, fueleu, summary) come from svKpiR(), so the TOTAL row and the KPI cards above it
+   are guaranteed to be the same numbers, and both withhold the same year-specific ratios. */
+function svLegR(){
+  const bk = svBuckets(); if(!bk || !bk.length) return null;
+  if(bk.length === 1) return bk[0].R;
+  const R = svKpiR(); if(!R) return null;
+  R.rowDetails = [];
+  for(const b of bk) for(const d of (b.R.rowDetails||[])){ d.svYear = b.year; R.rowDetails.push(d); }
+  return R;
+}
+/* ---- chrome ------------------------------------------------------------------------------- */
+/* the dash a withheld cross-year figure shows, with the reason in its tooltip */
+function svDash(what){
+  const ys = (SVIEW && SVIEW.years) ? SVIEW.years.join(" and ") : "two years";
+  return `<span style="color:#94a3b8;cursor:help" title="${esc(what+" is a year-specific figure — the required line, the band edges and the target all change every year. This voyage runs across "+ys+", so no single year's rules can describe the whole of it. The individual leg rows below are split at year end and each part IS shown under its own year's rules.")}">—</span>`;
+}
+/* 2026-08-06c (Aurvin, owner instruction): the three placeholder per-regulation download buttons
+   (⬇ FuelEU / ⬇ EU ETS / ⬇ UK ETS) that 2026-08-06b put on this bar and on the full-screen tab
+   row are REMOVED from both. Owner: "remove the download buttons of FuelEU, ETS and UK ETS, as I
+   will make this part of the top download itself." `svDownloadsHtml()` and `svDownloadStub()` are
+   deleted rather than left unreferenced, so nothing has to guess later whether they were still
+   wanted. NOTE FOR WHOEVER WIRES THE HEADER DOWNLOAD UP: the header export is year-scoped today.
+   For a voyage inside ONE year that is a straight narrowing; for a CROSS-YEAR voyage a single
+   EU ETS or FuelEU file spanning two years is not a valid regulatory document, so that case needs
+   an explicit decision from the owner (one file per year, or refuse). */
+/* ---- the year-locked controls, live or dead depending on the voyage ------------------------ */
+/* 2026-08-06c (Aurvin, owner instruction): "Only change the behaviour of KPI cards and the totals
+   when a single voyage is spanning two different years. If the full voyage is falling in just one
+   year, then it merely works like a date filter, which we already were doing."
+
+   The FIGURES already worked that way — svKpiR()/svLegR() hand a single-bucket voyage its own R
+   untouched, so its CII rating, required CII and FuelEU target have always been shown. What did
+   NOT follow the rule was the CHROME: Year and From/To were switched off for every voyage, cross-
+   year or not. They are now dead only when the voyage really does straddle a year end, which is
+   the only case the year-locked filter genuinely cannot express (2026-07-28h).
+
+   FROM/TO ON A SINGLE-YEAR VOYAGE **LEAVE THE VIEW** — owner's explicit choice when asked, in
+   preference to narrowing within the voyage. Editing either box drops you back to the ordinary
+   year-locked filter, pre-loaded with the voyage's own span and your edit applied on top, so the
+   window on screen after the edit is the window you asked for. It is the same "few actions revert
+   to normal" list dfYear() and dfClearRange() are already on. Stated plainly because it is a real
+   cost: after such an edit ✕ Reset is gone and the Year/From-To you had BEFORE entering the
+   view is not restored — the voyage's window is. Press the voyage number again to come back. */
+function svDateSet(field, val){
+  const y = svSoleYear();
+  if(y == null) return;                       // cross-year — the boxes are disabled, nothing to do
+  const lo = `${y}-01-01T00:00`, hi = `${y}-12-31T23:59`;
+  const clamp = (v, dflt) => { v = v || dflt; if(v < lo) v = lo; if(v > hi) v = hi; return v; };
+  const from = clamp(SVIEW.tStart, lo), to = clamp(SVIEW.tEnd, hi);
+  svExit();                                   // owner: editing a date LEAVES single voyage view
+  S.year = y;
+  S.dateFilter = { fromISO:from, toISO:to, active:true };
+  _mirrorVoyFilter();
+  try{ renderVessel(); }catch(e){}
+  dfSet(field, val);                          // applies the edit, clamps, mirrors and repaints
+}
+/* picking a year from the single-voyage bar. 2026-08-06c-ii (Aurvin, owner instruction): "when
+   multi year — allow year to change in the Single voyage view, that will also reset the view."
+   The blank option is SELECTED and is not a year, so guard against it: a change event carrying an
+   empty value must do nothing rather than fall through dfYear's `Number(v)||2026` and silently
+   jump the user to 2026. Any real year hands straight to dfYear(), which calls svExit() first —
+   so the one thing this control can do on a cross-year voyage is leave the view, which is exactly
+   what the owner asked for and the same outcome it already had on a single-year one. */
+function svYearPick(v){
+  if(v === "" || v == null) return;
+  dfYear(v);
+}
+/* the Year <select>.
+   SINGLE-YEAR voyage → the real dropdown with that year selected.
+   CROSS-YEAR voyage → the dropdown is LIVE but its SELECTED option is BLANK. Both halves of that
+   sentence are owner instructions and they do not contradict each other: 2026-08-06b's "the year
+   button will not display Year in the dropdown as voyage can extend into two years" is about what
+   it SHOWS (no year is true of the whole voyage, so it must not claim one), and 2026-08-06c-ii's
+   "allow year to change… that will also reset the view" is about what it DOES. So it shows nothing
+   and offers every year; picking one leaves the view and shows the whole of that year.
+   Say plainly what that means, because the tooltip has to: on a 2025→2026 voyage, picking 2026
+   gives you the WHOLE of 2026, not the 2026 half of the voyage. It cannot narrow — the year-locked
+   filter has no way to express half a voyage (2026-07-28h). It is an exit, and it says so. */
+function svYearHtml(){
+  const y = svSoleYear();
+  if(y == null){
+    const yrs = SVIEW.years.join(" · ");
+    const tip = `This voyage runs across ${yrs}, so no single year is true of it and none is selected. Picking a year here LEAVES single voyage view and shows the whole of that year — it cannot show you just one year's half of the voyage. Press ✕ Reset to go back without changing the year.`;
+    const opts = `<option value="" selected></option>` +
+      [2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option>${yy}</option>`).join("");
+    return `<select title="${esc(tip)}" onchange="svYearPick(this.value)">${opts}</select>`;
+  }
+  const opts = [2024,2025,2026,2027,2028,2029,2030].map(yy=>`<option ${yy===y?"selected":""}>${yy}</option>`).join("");
+  return `<select title="This voyage sits wholly inside ${y}, so the ordinary Year selector still applies. Changing it leaves single voyage view and shows the whole of the year you pick." onchange="dfYear(this.value)">${opts}</select>`;
+}
+/* the From/To pair. Single-year → enabled, bounded to that year, editing leaves the view (see
+   svDateSet). Cross-year → disabled and view-only, as before. */
+function svDatesHtml(){
+  const y = svSoleYear();
+  if(y == null){
+    return `<span class="dfld" style="margin-left:6px">📅 From</span>
+    <input type="datetime-local" lang="en-GB" disabled value="${esc(SVIEW.tStart||"")}" title="The voyage's own start. View only, because this voyage crosses a year end and the year-locked filter cannot express that window.">
+    <span class="dfld">To</span>
+    <input type="datetime-local" lang="en-GB" disabled value="${esc(SVIEW.tEnd||"")}" title="The voyage's own end. View only, because this voyage crosses a year end and the year-locked filter cannot express that window.">`;
+  }
+  const lo = `${y}-01-01T00:00`, hi = `${y}-12-31T23:59`;
+  const tip = `The voyage's own start/end. This voyage is wholly inside ${y}, so you may edit these — doing so leaves single voyage view and continues as an ordinary ${y} date filter starting from this voyage's window.`;
+  return `<span class="dfld" style="margin-left:6px">📅 From</span>
+    <input type="datetime-local" lang="en-GB" min="${lo}" max="${hi}" value="${esc(SVIEW.tStart||lo)}" onchange="svDateSet('fromISO',this.value)" title="${esc(tip)}">
+    <span class="dfld">To</span>
+    <input type="datetime-local" lang="en-GB" min="${lo}" max="${hi}" value="${esc(SVIEW.tEnd||hi)}" onchange="svDateSet('toISO',this.value)" title="${esc(tip)}">`;
+}
+/* ---- the cross-year flag ------------------------------------------------------------------ */
+/* 2026-08-06c-ii (Aurvin, owner instruction): "if any voyage is multi year — flag it near the
+   table header 'Single voyage view' so that user will know why some KPI is missing."
+
+   WHY IT WAS NEEDED, stated so nobody removes it as decoration: the TOTAL row's withheld cells
+   already explain themselves — svDash() puts the reason in each one's tooltip. The KPI CARDS do
+   not: a withheld rating there renders as a blank or a dash with nothing beside it, and the only
+   explanation was buried in the card stamp's hover text. This badge sits where the eye already is
+   (immediately after the dark SINGLE VOYAGE VIEW chip, so it reads as part of that label) and
+   NAMES THE MISSING FIGURES in its tooltip.
+
+   Returns "" for a single-year voyage — nothing is withheld there, so a warning would be a lie.
+   The cross-year test is svSoleYear(), the same one the Year and From/To controls use, so the
+   badge and the switched-off boxes can never disagree about whether this voyage crosses a year. */
+function svCrossFlagHtml(){
+  if(!svActive() || svSoleYear() != null) return "";
+  const yrs = SVIEW.years.join(" – ");
+  const tip = `This voyage runs across ${SVIEW.years.join(" and ")}, and the rules change at each year end — the CII required line and its A–E band edges, the FuelEU target intensity and the EU ETS phase-in percentage are all set per calendar year.\n\nSO THESE ARE LEFT BLANK on the KPI cards and the TOTAL row: the CII rating, the attained and required CII, the FuelEU GHG intensity and its target, and the EU ETS phase-in %. No single year's parameters describe both halves of this voyage, so any one figure would be wrong for one of them.\n\nEVERYTHING ELSE IS SHOWN AND IS CORRECT: fuel, CO₂ and CO₂e, EUAs, UKAs, the FuelEU compliance balance, the penalty and distance are all summed across the two years, and each year's part was calculated under its own year's rules before being added.\n\nThe leg rows in the table below ARE split at year end, and each part DOES show its own year's rating and target.`;
+  return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:6px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-size:11px;font-weight:700;letter-spacing:0.03em;white-space:nowrap;cursor:help" title="${esc(tip)}">⚠ SPANS ${esc(yrs)} — SOME KPIs WITHHELD</span>`;
+}
+/* the banner + date boxes that REPLACE the ordinary date-filter bar while the view is on.
+   ✕ Reset is the documented way out; changing Year and the ordinary bar's ✕ Reset also work. */
+function svBarHtml(extraHtml){
+  const span  = `${esc(fmtTs(SVIEW.tStart)||"…")} → ${esc(fmtTs(SVIEW.tEnd)||"…")}`;
+  const yrs   = SVIEW.years.join(" · ");
+  const cross = !!SVIEW.crossYear;
+  const iSV   = info(`<b>Single voyage view.</b> Everything on screen — the KPI cards, this table and its TOTAL row — covers voyage <b>${esc(SVIEW.voy)}</b> only, from ${span} UTC.<br><br>${cross
+    ? `<b>This voyage runs across ${yrs}</b> — the amber flag beside the view's name says so, and its tooltip lists exactly which figures are affected. The leg rows below are <b>split at year end</b> and each part is calculated under its own year's rules. The <b>TOTAL row and the KPI cards withhold</b> the CII rating, the FuelEU intensity vs target and the EU ETS phase-in %, because no single year's parameters describe both halves. Everything additive — fuel, CO₂/CO₂e, EUAs, UKAs, compliance balance, penalty, distance — is summed across the two years and is correct.<br><br><b>The From/To boxes are switched off for this voyage.</b> A window that starts in one calendar year and finishes in the next is one the ordinary year-locked filter is not allowed to express (owner instruction, 2026-07-28h). Rather than bend that rule, this view carries its own span and leaves your Year and From/To exactly as you left them — press <b>✕ Reset</b> and they come straight back.<br><br><b>The Year dropdown is live but shows nothing</b>, because no single year is true of this voyage. Picking one <b>leaves this view</b> and shows you the whole of that year — it cannot show you just one year's half of the voyage.`
+    : `<b>This voyage sits wholly inside ${yrs}</b>, so every figure — the CII rating and required line, the FuelEU intensity against its target, the EU ETS phase-in — is calculated under that year's rules exactly as it is on the ordinary tabs. Nothing is withheld. In this case the view is simply a date filter narrowed to the voyage, and the <b>Year and From/To boxes stay live</b>: change any of them and you leave the view, continuing as an ordinary ${yrs} filter starting from this voyage's window. <b>✕ Reset</b> goes back to the Year and From/To you had before.`}`,"right");
+  const extra = extraHtml ? `<span class="dfextra" style="margin-left:auto;display:flex;align-items:center;gap:8px">${extraHtml}</span>` : "";
+  return `<div class="dfbar noprint">
+    <b class="bandvessel" style="font-size:13px">${esc((S.ship&&S.ship.name)||"Vessel")}</b><span class="bsep">·</span>
+    <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:6px;background:#0f3d4c;color:#fff;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap">SINGLE VOYAGE VIEW</span>
+    <b style="font-size:13px;color:#0f172a">${esc(SVIEW.voy)||"(no number)"}</b>
+    ${svCrossFlagHtml()}
+    <span class="dfld">Year</span>
+    ${svYearHtml()}
+    ${svDatesHtml()}
+    <span class="dfutc">UTC</span>
+    ${/* LABEL HISTORY, recorded because it went back and forth in one session and the next person
+         will otherwise "fix" it again:
+           2026-08-06b  "✕ Clear" → "✕ Reset" on the ORDINARY date-filter bar; the single-voyage
+                        exit button was "✕ Exit".
+           2026-08-06c  I proposed "✕ Reset View" for the exit button and the owner took it.
+           2026-08-06d  THE OWNER OVERRULED THAT: "Let this be named as 'Reset' only." So the exit
+                        button and the date filter's reset now read the SAME WORD.
+         The risk I raised and he accepted, stated once here so it is on the record and not
+         re-argued: the app has a THIRD control called Reset — the one in the header, which WIPES
+         the whole workspace to empty. His reasoning is sound though, and it is why this is not a
+         mistake: in every bar the word means the same thing, "undo whatever narrowing is active",
+         and this button occupies the same slot as the date filter's reset, which the user never
+         sees at the same time (svBarHtml REPLACES the ordinary bar). Behaviour is untouched
+         throughout — still svExitAndRepaint(). Kept in step with znfsSvFilterHtml() in
+         js/fullscreen.js: the two bars are the same control drawn twice and must never read
+         differently. This button is ALWAYS enabled — in this view there is always a view to
+         leave, which is the "enabled when it is needed" half of 2026-08-06d. */""}
+    <button class="dfbtn" style="color:var(--red);border-color:#e3b7b3" title="Leave single voyage view and go back to the Year and From/To window you had before." onclick="svExitAndRepaint()">✕ Reset</button>
+    <span style="margin-left:4px">${iSV}</span>
+    ${extra}
+  </div>`;
+}
+function svExitAndRepaint(){
+  if(!svExit()) return;
+  dfRepaint();
+  try{ if(typeof ZNFS !== "undefined" && ZNFS && ZNFS.open) znfsRefresh(true); }catch(e){}
+}
+/* a voyage number rendered as a button that opens the view. Used by all three tables, so the
+   affordance and the tooltip can never drift between them. `anchorISO` disambiguates two
+   segments sharing one number (see svFindGroup). */
+function svVoyLink(voy, anchorISO){
+  const v = String(voy==null?"":voy).trim();
+  if(!v) return "";
+  if(svActive()) return esc(v);                      // already inside the view — nothing to click
+  /* the two arguments are written as SINGLE-quoted JS strings inside a DOUBLE-quoted HTML
+     attribute. JSON.stringify() was used here first and was wrong: it emits double quotes, which
+     close the onclick attribute at the first one and silently truncate the handler. Caught by
+     tools/verify_edit_columns.js's byte-identity check, which is exactly what it is for.
+     _q() escapes a backslash, a single quote and the HTML-significant characters, so a voyage
+     number containing any of them still produces valid markup and a valid call. */
+  const _q = s => String(s==null?"":s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return `<a href="javascript:void(0)" onclick="event.stopPropagation();svEnter('${_q(v)}','${_q(anchorISO||"")}')" title="Open voyage ${esc(v)} on its own — jumps to LEGS showing only this voyage, with the KPI cards and the date span following it. Press ✕ Reset to come back." style="color:#0e7490;font-weight:700;text-decoration:none;border-bottom:1px dotted #0e7490;cursor:pointer">${esc(v)}</a>`;
+}
+
 function renderVoyage(){
   const el=document.getElementById("tab-voy"); if(!el) return;
-  const vg=vwGroups(S);
+  /* 2026-08-06 (Aurvin, owner instruction): in SINGLE VOYAGE VIEW this tab shows the ONE voyage,
+     so it agrees with LEGS and REPORTS. The grouping itself is untouched — vwGroups() is called
+     with the date window switched OFF (a voyage may end outside the selected year) and the result
+     is then filtered down to the one group, rather than teaching vwGroups a new mode. */
+  const vg=svActive()
+    ? (g=>({ ...g, groups:g.groups.filter(x=>String(x.voy==null?"":x.voy).trim()===String(SVIEW.voy).trim()
+                                              && x.tStart===SVIEW.tStart) }))(vwGroups(Object.assign({},S,{voyDateFilter:{active:false}})))
+    : vwGroups(S);
   /* 2026-07-27 (Aurvin, owner instruction): this R never carried R.ets (unlike Leg-Wise's own
      R, which is the full computeAll(S) result) — so the "Total CO2/CO2e" header's unit line
      (euEUAsUnit, in voyageGrid) always fell back to "tCO2 (CO2 only)" no matter the year, while
@@ -5429,7 +6201,12 @@ function renderVoyage(){
 }
 function renderCalcs(){
   const el=document.getElementById("tab-calcs"); if(!el) return;
-  const R=computeAll(S);
+  /* 2026-08-06 (Aurvin, owner instruction): in SINGLE VOYAGE VIEW this tab renders the one
+     voyage instead of the year — svLegR() (see the SINGLE VOYAGE VIEW section above) returns an
+     R of exactly the same shape, built from the voyage's own per-year computeAll buckets, so
+     everything below this line is unchanged. It falls back to the ordinary computeAll(S) if the
+     voyage cannot be resolved, so a stale link can never blank the tab. */
+  const R=(svActive() && svLegR()) || computeAll(S);
   const f=R.fueleu, e=R.ets, u=R.ukets;
   /* 2026-07-22e — Cov./CO₂/EUAs and Cov./UKAs tooltips merged up from the sticky
      header's 2nd row into one group-header icon per regime (owner request: keep the
@@ -7464,6 +8241,43 @@ function runSelfTests(){
           !!first && Math.abs(euCoverage(first)-0.5)<0.001);
       ckT("OPEN-ANCHOR: the real destination call is still derived (ESTAR berth, POC on, cargo at berth 2 t)",
           !!berth && berth.port.c==="ESTAR" && berth.poc===true && Math.abs(mdoOf(berth)-2)<0.001);
+    }
+    /* 2026-08-03 (Aurvin, owner-reported bug — METRO LIVAS voyage 3B): a non-POC bunkering
+       stop (Skagen, EEA) sitting between two non-EU ports (São Sebastião → Primorsk) landed
+       its DEPARTURE right at the calendar-year boundary, so parseOVD's year-split (2026-07-16)
+       cut the following sea leg into a 2025 stub and a 2026 continuation — TWO "voyage" rows
+       for the one physical leg. annotateVoyageContinuity's non-call bridge (2026-07-20) only
+       "saw through" a following PORT row, not a following VOYAGE row, so the bridge reached
+       the 2025 stub (0%, correct) but reset before the 2026 continuation, which fell back to
+       scoring from Skagen itself (50%, wrong — same physical non-EU→non-EU voyage). Fixed by
+       teaching annotateVoyageContinuity's isSplitCont() to recognise two consecutive "voyage"
+       rows that are the same leg's split-year halves (same splitYear flag, same from/to) as
+       one continuous leg, not a real port call in between. */
+    {
+      const SKG=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
+        ["2025-12-30 12:00","2025-12-30 00:00","2025-12-30 12:00","AT_SEA","NORMAL SAILING","","","",'{"MDO": 5}',"200","0","BRSSO","","DKSKA"],
+        ["2025-12-31 00:00","2025-12-30 12:00","2025-12-31 00:00","ARRIVAL-EOSP","","","","",'{"MDO": 1}',"10","0","BRSSO","DKSKA","DKSKA"],
+        ["2025-12-31 06:00","2025-12-31 00:00","2025-12-31 06:00","IN_PORT","AT_ANCHOR","BUNKERING","FALSE","NO",'{"MDO": 0.5}',"0","0","","DKSKA",""],
+        ["2025-12-31 12:00","2025-12-31 06:00","2025-12-31 12:00","IN_PORT","AT_ANCHOR","BUNKERING","FALSE","NO",'{"MDO": 0.5}',"0","0","","DKSKA",""],
+        ["2025-12-31 17:00","2025-12-31 12:00","2025-12-31 17:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MDO": 0.3}',"5","0","DKSKA","","RUPRI"],
+        ["2025-12-31 23:01","2025-12-31 17:00","2025-12-31 23:01","AT_SEA","NORMAL SAILING","","","",'{"MDO": 1}',"40","0","DKSKA","","RUPRI"],
+        ["2026-01-01 00:01","2025-12-31 23:01","2026-01-01 00:01","AT_SEA","NORMAL SAILING","","","",'{"MDO": 0.2}',"8","0","DKSKA","","RUPRI"],
+        ["2026-01-03 00:00","2026-01-01 00:01","2026-01-03 00:00","AT_SEA","NORMAL SAILING","","","",'{"MDO": 4}',"300","0","DKSKA","","RUPRI"],
+        ["2026-01-04 00:00","2026-01-03 00:00","2026-01-04 00:00","ARRIVAL-EOSP","","","","",'{"MDO": 1}',"10","0","DKSKA","RUPRI","RUPRI"],
+        ["2026-01-04 06:00","2026-01-04 00:00","2026-01-04 06:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE","YES",'{"MDO": 2}',"0","5000","","RUPRI",""],
+        ["2026-01-04 12:00","2026-01-04 06:00","2026-01-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MDO": 0.2}',"2","5000","RUPRI","","AEOFJ"]];
+      const rSkg=parseOVD(mdaToOVD(SKG, 20000).csv);
+      annotateVoyageContinuity(rSkg.rows);
+      const skgBerth=rSkg.rows.find(r=>r.kind==="port" && r.poc===false);
+      const skgLegs=rSkg.rows.filter(r=>r.kind==="voyage" && r.splitYear);
+      ckT("SPLIT-YEAR BRIDGE: Skagen bunkering stop derives as a stay but NOT a port of call (poc false)",
+          !!skgBerth);
+      ckT("SPLIT-YEAR BRIDGE: the following leg is split into a 2025 part and a 2026 part (same physical leg)",
+          skgLegs.length===2 && skgLegs[0].yearPart===2025 && skgLegs[1].yearPart===2026);
+      ckT("SPLIT-YEAR BRIDGE: 2025 part scores 0% EU ETS (bridged past Skagen to the true non-EU origin)",
+          skgLegs[0] && Math.abs(euCoverage(skgLegs[0]))<0.001);
+      ckT("SPLIT-YEAR BRIDGE: 2026 part ALSO scores 0% EU ETS — same leg, bridge must not reset at the year cut",
+          skgLegs[1] && Math.abs(euCoverage(skgLegs[1]))<0.001);
     }
     /* Report-Wise tab UK ETS badge judges each report WHOLE by its own date (2026-07-25, Aurvin,
        owner instruction): a report dated before 1 Jul 2026 is out of scope (dash), a report dated
