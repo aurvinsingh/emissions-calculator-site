@@ -61,7 +61,15 @@
    disappears again — that is the bug this structure exists to fix.
    ============================================================================================ */
 
-var ZNG = { open:false, fuels:null, zones:null, show:null, hi:-1, data:null, panels:null };
+/* 2026-08-09b: `zoom` is the horizontal zoom factor (1 = the width this chart has always drawn —
+   see the long note above ZNG_ZOOM_MAX). It deliberately lives on ZNG rather than in localStorage:
+   the owner's choice on 2026-08-09b was that the chart opens at 100% every time, so a zoom left
+   behind three days ago can never be mistaken for the chart's normal appearance. `anchor` is the
+   fraction of the whole timeline that was at the CENTRE of the viewport when the zoom changed, held
+   across the one re-render so the report you were looking at stays under your eyes (see
+   zngZoomApply / the restore block at the end of zngRender). */
+var ZNG = { open:false, fuels:null, zones:null, show:null, hi:-1, data:null, panels:null,
+            zoom:1, anchor:null };
 
 /* ---------------------------------------------------------------- scope buckets */
 /* Seven buckets, mutually exclusive, derived from the engine's own coverage numbers via the
@@ -192,6 +200,60 @@ var ZNG_CARGO_COL = "#64748b";
        neither of those ever appears on the Operation strip: UK red is drawn only as EUA/UKA panel
        bars and as Scope-ribbon cells, one row away. A dot on this strip has no red neighbour. */
 var ZNG_OPL_COL = "#e11d48";
+/* 2026-08-09c (Aurvin, owner instruction): the CARGO OPERATION marker on the Operation band —
+   "introduce a diamond shape with 4 corners whenever there is a cargo operation in the activity …
+   cargo can be shown as a blue diamond or rhombus."
+
+   COLOUR — WHITE with a deep-navy outline. ⚠ 2026-08-09e REPLACED the original indigo #4f46e5,
+   which was chosen to match the indigo js/ui.js's TR_TYPES paints cargo activities with in the
+   Reports tab. The owner rejected it on sight: "they should be of different color because the
+   contrast is not good", and the measurements agree — indigo scores a contrast ratio of just
+   **1.61 against the At-Berth navy #24455c**, which is precisely where cargo operations land. It
+   was nearly invisible exactly where it mattered.
+
+   THE FINDING THAT DECIDED THIS, worth keeping because it applies to any future marker on this
+   strip: NO FLAT COLOUR WORKS ON ALL THREE BANDS. They run from very pale (#bcd3e0) to very dark
+   (#24455c), so anything light dies on the pale band and anything dark dies on navy — every
+   candidate measured had a worst-case ratio of 1.55 or below. An OUTLINE is what actually solves
+   it: the stroke guarantees an edge on the pale bands while the fill carries the dark ones. That
+   is why ZNG_MK_STROKE exists and why all three markers now use it.
+
+   Given an outline, white was the owner's pick from a rendered comparison of five candidates. It
+   scores 10.09 on the navy — over six times indigo — and "white" is used nowhere else on this
+   chart, so it cannot be confused with a band colour, a zone bucket on the Eligibility ribbon
+   above, the amber bunker dot or the rose OPL dot.
+
+   WHAT WAS LOST, stated honestly: the colour link with the Reports tab's cargo indigo. Offered
+   "keep indigo, add a white outline" as one of the five options specifically to preserve it; the
+   owner chose contrast over consistency. If that link is ever wanted back, option 4 in the
+   2026-08-09e comparison is the one to revive.
+
+   SHAPE carries the meaning as much as the colour does, which is the point of the owner asking for
+   a diamond: three marker TYPES now share this strip (amber bunker circle, rose OPL circle, indigo
+   cargo diamond) and shape + position tell them apart even for a colour-blind reader, which colour
+   alone could not.
+
+   ⚠ NAMED `ZNG_CARGOMK_COL`, AND THE `MK` IS LOAD-BEARING. `ZNG_CARGO_COL` was already taken — it
+   is the Cargo PANEL's bar colour (#64748b slate, declared ~40 lines up and used by the panel
+   definition). The first draft of this feature declared a SECOND `var ZNG_CARGO_COL` here; `var`
+   lets a duplicate through in silence, the later declaration wins, and every Cargo bar in the chart
+   turned indigo. The owner spotted it from a screenshot; no test caught it, because nothing asserted
+   the panel's bar colour. One does now ("the Cargo PANEL's bars are still slate #64748b"). The two
+   are different things — the colour of a QUANTITY plotted as bars, and the colour of an EVENT
+   marked on the band — and they keep different names. */
+var ZNG_CARGOMK_COL = "#ffffff";
+/* the outline every marker on the Operation band wears (2026-08-09e). One deep navy, one width:
+   dark enough to separate a white or amber marker from the pale At-Sea band, thin enough not to
+   swallow a 5.6px dot. #1b3547 is a shade darker than the At-Berth band itself (#24455c) so the
+   outline still reads when a marker sits on that band. Applied to ALL THREE markers on the owner's
+   instruction — the amber bunker dot scored 1.24 and the rose OPL dot 1.70 on their worst band, so
+   they had the same problem as the diamond, just less visibly. */
+var ZNG_MK_STROKE = "#1b3547";
+var ZNG_MK_STROKE_W = 1;      // circles — a 5.6px dot cannot carry more
+var ZNG_MK_STROKE_WD = 1.5;   // the diamond, which is now big enough to take a heavier edge
+
+/* (the marker SIZES and HEIGHTS that go with this colour are ZNG_MK_* further down — they had to
+   wait until ZNG_BCELL, the band cell height they derive from, has been declared.) */
 var ZNG_ZONE_COL = {
   /* keyed BY ID, so the 2026-07-31i re-ordering and re-labelling of ZNG_ZONES did not touch this
      map at all — only the label words in these comments changed. */
@@ -339,11 +401,133 @@ var ZNG_XH    = 34;    // the pinned date-axis strip (its own SVG, see the layou
    owner accepted. Fractional pixels (22.5, 61.5, 7.5) are fine — these are SVG user units and CSS
    px, both of which take decimals; do not "tidy" them to integers, that would break the exact 2:1
    and 1:4 ratios above.
-   TO REVERT: set ZNG_BAND_SCALE back to 1. Nothing else needs touching. */
+   TO REVERT: set ZNG_BAND_SCALE back to 1. Nothing else needs touching.
+
+   2026-08-09 (PC, owner instruction): "Double the height of the Operation band" — asked directly
+   whether Eligibility should double too (since the note above ties them on purpose) or stay put,
+   and the owner chose OPERATION ONLY. That means the "ONE constant does all of it" property above
+   is DELIBERATELY GIVEN UP from here on: Operation now scales off its own constant, ZNG_OP_SCALE,
+   while Eligibility is FROZEN at the size it had immediately before this change (captured below as
+   ZNG_ELIG_BASIS_CELL, a literal snapshot of the OLD ZNG_BCELL, 22.5px). This also breaks the
+   2026-08-01d "Eligibility bars are exactly 2x the Operation cells" ratio as a LIVE relationship —
+   it is now 2x the Operation cells AS THEY WERE ON 2026-08-02, not as they are today. That is an
+   explicit, asked-for tradeoff, not an oversight; verify_graph_popup.js's "9h" block was updated
+   the same day to test the new, split arithmetic instead of the old shared one.
+   TO REVERT Operation's height only: set ZNG_OP_SCALE back to 1.5 (matches ZNG_BAND_SCALE, i.e.
+   the 2026-08-02 height). Eligibility is untouched by ZNG_OP_SCALE at any value. */
 var ZNG_BAND_SCALE = 1.5;
-var ZNG_BH    = 26 * ZNG_BAND_SCALE;          // 39 — the pinned operational-state band strip (2026-08-01b, see zngBandStrip)
-var ZNG_BCELL = ZNG_BH - 11 * ZNG_BAND_SCALE; // 22.5 — the Operation strip's visible coloured cells
+var ZNG_ELIG_BASIS_CELL = 26 * ZNG_BAND_SCALE - 11 * ZNG_BAND_SCALE; // 22.5 — FROZEN 2026-08-09: Eligibility's 2:1 ratio is measured against this snapshot, never against the live ZNG_BCELL below
+var ZNG_OP_SCALE = 3;   // 2026-08-09 (owner instruction): Operation band doubled — 26*1.5=39px (2026-08-02) -> 26*3=78px
+var ZNG_BH    = 26 * ZNG_OP_SCALE;          // 78 — the pinned operational-state band strip (2026-08-01b, see zngBandStrip; doubled 2026-08-09, Eligibility NOT affected — see note above)
+var ZNG_BCELL = ZNG_BH - 11 * ZNG_OP_SCALE; // 45 — the Operation strip's visible coloured cells; every circle radius on THIS strip still derives from ZNG_BCELL, so the bunker/OPL dots scale with the doubled band
+var ZNG_OP_PAD_T = 5 * ZNG_OP_SCALE;        // 15 — Operation's own top padding, doubled in step with ZNG_BH; split off from ZNG_EPAD_T (below) 2026-08-09 so resizing Operation can never move Eligibility's padding
 var ZNG_MINSLOT = 9;   // below this the bars stop shrinking and the chart scrolls sideways
+
+/* ---- Operation-band MARKER geometry (2026-08-09c, Aurvin, owner instruction) ------------------
+   Owner: "OPL is being shown by the red circle in the vertical center of this band … place this
+   circle at a LOWER height … OPL circle can be at a height of a quarter length of this bar …
+   [reduce] the diameter of the bunker and OPL circle by half [of the] present size."
+   Declared HERE, immediately after ZNG_BCELL, because they derive from it — `var` hoisting would
+   make them NaN if they sat further up the file beside ZNG_CARGOMK_COL, where they logically belong.
+
+   SIZE. Both circles were radius ZNG_BCELL / 8 (5.625px, 11.25px across). Halving the DIAMETER —
+   the owner's word — is halving the radius, hence / 16. Still derived from the band's HEIGHT and
+   never from the column width: that is the standing rule from 2026-08-01u, because columns get thin
+   on a long voyage and a width-derived marker would vanish exactly when the strip is busiest. Both
+   circles share ONE constant now, so they can never drift apart — they previously shared only an
+   expression that happened to be written twice.
+
+   THE DIAMOND IS DELIBERATELY NOT THE SAME NUMBER. A diamond of half-diagonal R covers 2R² of ink
+   against a circle's πr², so at equal R the diamond reads visibly SMALLER. R = r × 1.25 equalises
+   the two areas (1.25 ≈ √(π/2)); the marker matched the circles in visual WEIGHT rather than in
+   measurement, which is what "the same size" means to the eye.
+
+   ⚠ 2026-08-09e — THE DIAMOND IS NOW DOUBLE THAT, and no longer equal-ink with the circles.
+   Owner: "make them double the present size", asked in the same message that rejected the indigo.
+   `ZNG_MK_DIAG_X` is the factor; 2 means both dimensions double (7.03px across → 14.06px), which
+   is the reading the owner picked over "double the AREA" (×1.41). The equal-ink derivation above
+   still describes the BASE value it multiplies, so it is not dead comment — set the factor back to
+   1 and the diamond returns to matching the circles exactly.
+
+   ⚠ 2026-08-09f — THE COLUMN-WIDTH CAP (ZNG_MK_FIT) IS REMOVED. NO MARKER ON THIS STRIP SHRINKS.
+   08-09e capped the drawn half-diagonal at (slot / 2) × 0.9 so a 14px diamond could not spill into
+   its neighbours. That was sized against the ZNG_MINSLOT floor of 9px — where the capped diamond
+   still draws 8.1px, comfortably larger than the 5.63px circles — and it missed the case that
+   matters: ZOOMING OUT pushes `slot` BELOW that floor (the floor only applies at 100% zoom), the
+   cap kept shrinking the diamond, and the circles never shrank at all because they never had a cap.
+   Below a 6.25px column the diamond became the SMALLER marker. The owner reported exactly that:
+   "the OPL red circle is bigger in size than the cargo diamonds … the diamonds become hidden, but
+   the OPL circles remain big. I want the same feature for the cargo diamonds as well."
+
+   THE RULE NOW, for this strip and for any marker added to it later: a marker's size derives from
+   the BAND HEIGHT and never from the column width. One rule, no exceptions, nothing to keep in
+   step. Overlap is handled by MERGING (see the cargo pass in zngBandStrip), not by shrinking.
+
+   HEIGHTS, as fractions of the band cell:
+     • bunker circle  — 0.50, the centre, UNCHANGED. The owner was offered a move to the top quarter
+       (so all three markers would own a line) and declined: "They will never clash in the same
+       report. They can be safely at the center." A bunkering has no operational state of its own,
+       so it cannot also be a cargo operation on a port stay. See zngBandStrip for the one
+       theoretical case this leaves and why no shouldering code was written for it.
+     • cargo diamond  — 0.50, the centre: "placed at this level where we see this OPL circle right
+       now", i.e. where OPL sat before it moved down.
+     • OPL circle     — 0.75, a quarter of the bar's height up from the bottom edge. Confirmed with
+       the owner against a lower (0.875) and a shallower (0.625) alternative.
+   Fractions, not pixel literals, so all three follow ZNG_BCELL if the band is resized again — which
+   it was, only hours earlier, on 2026-08-09. */
+var ZNG_MK_R      = ZNG_BCELL / 16;              // 2.8125 — bunker & OPL circle radius
+var ZNG_MK_DIAG_X = 2;                           // 2026-08-09e owner: "double the present size"
+var ZNG_MK_DIAG   = ZNG_MK_R * 1.25 * ZNG_MK_DIAG_X;  // 7.03 — cargo diamond half-diagonal
+var ZNG_MK_Y_MID  = 0.50;                        // bunker circle and cargo diamond
+var ZNG_MK_Y_OPL  = 0.75;                        // OPL circle — a quarter-height up from the bottom
+
+/* ---------------------------------------------------------------- horizontal zoom (2026-08-09b)
+   2026-08-09b (Aurvin, owner instruction): "put a zoom-in/zoom-out slider which can zoom in and
+   zoom out the trend lines or the bars or the graph area HORIZONTALLY … zooming out should show
+   one year's worth of data on one screen … zooming in should not make the graph broader than
+   three times the present width."
+
+   WHAT ZOOM ACTUALLY DOES — one number, one multiplication. It multiplies the chart's DRAWN
+   WIDTH. Every x-position in this file already derives from `slot` (= W / n), so scaling W and
+   re-deriving slot moves the bars, the lines, the date axis, the Operation band and the
+   Eligibility ribbon together, by construction. Nothing vertical is touched: panel heights, the
+   two pinned strip heights and every Y axis are computed from the popup's height and are not in
+   this arithmetic at all. That is why this is a two-line change inside zngChart() plus a control.
+
+   THE TWO LIMITS THE OWNER SET, and how each is expressed:
+
+   • ZOOM IN — "not broader than three times the present width". `baseW` below is the width this
+     chart draws TODAY at 100% (fit-to-pane when there are few reports, 9px/report once there are
+     enough to overflow — the pre-existing ZNG_MINSLOT rule, untouched). ZNG_ZOOM_MAX = 3 is a
+     multiple OF THAT, which is the reading the owner chose on 2026-08-09b when offered the
+     alternative "3 × the visible pane width". The practical difference: with a lot of reports
+     baseW is already several pane-widths, so 3× here buys a genuinely useful 27px per report to
+     inspect a busy month, where 3 pane-widths would have squeezed 500 reports into ~7px each.
+
+   • ZOOM OUT — "one year's worth of data on one screen". Minimum zoom is whatever factor makes
+     the drawn width exactly equal the visible pane (`availW / baseW`), i.e. EVERY report in the
+     current filter lands on one screen with no sideways scrolling. When the reports already fit
+     (baseW === availW) that factor is 1 and the slider simply cannot go below 100% — there is no
+     "zoomed out past fitting", which would only add white space.
+
+   ZNG_ZOOM_YEAR_REPORTS = 500 is the owner's stated SIZE OF A YEAR ("one year's worth of data
+   let's limit to 500 reports"). It is deliberately NOT a hard clamp: asked directly on
+   2026-08-09b what should happen to a filter holding MORE than 500 reports, the owner chose
+   "always fit everything on screen" over "floor at 500 and scroll the rest". So 500 is the
+   design assumption this was sized against (at 500 reports on a ~1400px pane the minimum zoom
+   gives ≈2.8px per report, which is why ZNG_MINBAR exists) and it is quoted in the control's
+   tooltip — it is not arithmetic. If a future owner wants the hard 500 floor instead, the whole
+   change is one line in zngZoomBounds(): floor `min` at availW / (500 * baseSlot).
+
+   WHY LOGARITHMIC. The slider is linear in log(zoom) — equal travel is equal RATIO, so the drag
+   feels the same at either end. A linear-in-zoom slider spends most of its travel between 200%
+   and 300% (where little changes visually) and crams the whole zoomed-out half, where the useful
+   range is, into a few pixels. */
+var ZNG_ZOOM_MAX = 3;             // owner cap: never wider than 3 × the width drawn at 100%
+var ZNG_ZOOM_YEAR_REPORTS = 500;  // owner's "one year" size — documentation + tooltip, see above
+var ZNG_ZOOM_TICKS = 100;         // slider granularity (0..100), log-mapped onto [min, 3]
+var ZNG_ZOOM_STEP = 8;            // slider ticks moved by one − / + click or one ctrl+wheel notch
+var ZNG_MINBAR = 2;               // a bar is never drawn thinner than this, however far you zoom out
 
 /* 2026-08-01d (Aurvin, owner instruction — the LAST word on Eligibility's height, replacing both
    08-01b and 08-01c). Three instructions in one:
@@ -372,10 +556,14 @@ var ZNG_MINSLOT = 9;   // below this the bars stop shrinking and the chart scrol
    two strips are visually consistent blocks. */
 /* 2026-08-02: all three now carry ZNG_BAND_SCALE through the SAME arithmetic they always had, so
    the 2:1 bars-to-cells relationship and the 5px/6px padding split are unchanged in PROPORTION —
-   only the base unit grew. See the ZNG_BAND_SCALE note above. */
-var ZNG_ECELL = ZNG_BCELL * 2;               // 45 — Eligibility bars, twice the Operation cells
-var ZNG_EH    = ZNG_ECELL + 11 * ZNG_BAND_SCALE;  // 61.5 — the whole pinned Eligibility row
-var ZNG_EPAD_T = 5 * ZNG_BAND_SCALE;         // 7.5 — top padding inside both pinned strips
+   only the base unit grew. See the ZNG_BAND_SCALE note above.
+   2026-08-09: SUPERSEDED IN PART — see the ZNG_OP_SCALE note above ZNG_BH. ZNG_ECELL below no
+   longer derives from the live ZNG_BCELL; it derives from ZNG_ELIG_BASIS_CELL, a frozen snapshot
+   of what ZNG_BCELL was worth before Operation's own resize. Numerically ZNG_ECELL is unchanged
+   (still 45) — only its DERIVATION changed, so it stops moving if Operation is resized again. */
+var ZNG_ECELL = ZNG_ELIG_BASIS_CELL * 2;     // 45 — Eligibility bars, twice the Operation cells AS THEY WERE on 2026-08-02 (frozen; see ZNG_ELIG_BASIS_CELL)
+var ZNG_EH    = ZNG_ECELL + 11 * ZNG_BAND_SCALE;  // 61.5 — the whole pinned Eligibility row — unaffected by the 2026-08-09 Operation resize
+var ZNG_EPAD_T = 5 * ZNG_BAND_SCALE;         // 7.5 — Eligibility's own top padding (Operation now uses ZNG_OP_PAD_T, above — split 2026-08-09)
 
 /* 2026-08-01b (Aurvin, owner instruction — Task 1): "reduce the size of eligibility bars by half
    vertically, this will create more space for other graphs."
@@ -824,6 +1012,50 @@ function zngEtsIndex(){
 
 /* One point per report. Per-fuel figures follow trFuelLines() in js/ui.js EXACTLY, including
    Others = max(0, Total − (ME + AE + BLR)) — so the panels sum back to the table's columns. */
+/* ---------------------------------------------------------------- cargo-operation test
+   2026-08-09d (Aurvin, owner instruction — REPLACES the 2026-08-09c rule, same day).
+
+   WHAT CHANGED AND WHY. 08-09c tied the cargo diamond to the set the arrival/departure ladder
+   itself counted as cargo work, reading a tag js/ui.js wrote. That bought a provable agreement
+   between the marker and the port-of-call decision, and it cost two things the owner then hit:
+
+     1. NO DIAMONDS ON AN EXISTING WORKSPACE. `S.mdaReports` is saved into localStorage wholesale
+        and restored as-is (loadState → migrateState, which knows nothing about new fields), so a
+        workspace saved before 08-09c carried report records with no tag at all and drew nothing
+        until the MDA file was re-imported. The owner's requirement: it must work on reload.
+     2. EOSP / SOSP REPORTS COULD NEVER BE MARKED. The ladder only ever inspects a port stay's
+        MEMBER reports; `ARRIVAL-EOSP` and `DEPARTURE-SOSP` records are held separately (see the
+        stay assembly in js/ui.js) and are structurally excluded however their activity column
+        reads. On the test fixture the two sets are identical, so this was invisible to the tests.
+
+   THE RULE NOW, which is the literal reading of the owner's original instruction ("whenever there
+   is a cargo operation IN THE ACTIVITY"): believe the activity column. `aa` has been stored on
+   every report record since long before this feature, so an existing workspace lights up on reload
+   with no re-import — that is decision 1 above, solved by construction rather than by a migration.
+
+   THIS IS A DELIBERATE, OWNER-CHOSEN DIVERGENCE FROM THE LADDER, not a fork by accident. The
+   marker now answers "was cargo work reported here?" while the ladder answers "did cargo work make
+   this stay a port of call?", and those differ exactly on EOSP/SOSP rows. Both readings are honest;
+   the owner picked the first. What is NOT duplicated is the LIST: MDA_CARGO_ACT is js/ui.js's own
+   set of cargo activity tokens, read directly (classic scripts share one global lexical scope, and
+   graph.js loads after ui.js), so the four tokens still have exactly one definition in the project.
+
+   THE V1 FALLBACK. V1-format MDA exports leave ASSOCIATED_ACTIVITY blank throughout and signal
+   cargo through the CARGO_OP column instead. Where the column is blank there is nothing to believe,
+   so we fall back to `r.cargoOp` — the tag js/ui.js still writes, which resolves CARGO_OP through
+   the ladder's own `useCargoOp` gate (file-wide V1, or a mixed file's per-stay V1). The fallback
+   can never CONTRADICT a populated activity column, only fill for an absent one. One consequence,
+   accepted: a V1 workspace saved before 08-09c has neither signal stored and does need one
+   re-import. V3 workspaces — every normal case — do not. */
+function zngIsCargoOp(r){
+  if(!r) return false;
+  var aa = String(r.aa || "").trim().toUpperCase();
+  /* defensive: if ui.js ever stops exposing the list, fail CLOSED (no diamonds) rather than
+     silently substituting a private copy that could drift from it. */
+  if(aa) return !!(typeof MDA_CARGO_ACT === "object" && MDA_CARGO_ACT && MDA_CARGO_ACT[aa]);
+  return !!r.cargoOp;
+}
+
 function zngBuild(){
   try{ if(typeof trAnnotate === "function") trAnnotate(); }catch(e){}
   var reps = zngReports();
@@ -855,6 +1087,18 @@ function zngBuild(){
                  owner's file the two rules happen to select the same 7 reports — all At-Berth, all
                  on stays the engine scored as non-POC — so the distinction is about future files.) */
               opl:!!r.opl,
+              /* 2026-08-09c, rule replaced 2026-08-09d: "was cargo work reported here?" — see the
+                 long note above zngIsCargoOp() for the rule, why it reads the activity column
+                 rather than the ladder's verdict, and what the V1 fallback is for.
+
+                 NAMED `cargoOp`, NOT `cargo` — `cargo` a dozen lines up is the cargo QUANTITY on
+                 board (tonnes, or null when the report does not carry CARGO_QTY) that feeds the
+                 Cargo panel. The first draft of this used `cargo` and silently replaced every
+                 quantity with a boolean; verify_graph_popup.js's "every plotted cargo figure is the
+                 report's own CARGO_QTY" agreement check caught it on all 53 reports. The two are
+                 different facts — how much cargo is aboard vs whether cargo was being worked — and
+                 they keep different names. */
+              cargoOp:zngIsCargoOp(r),
               me:{}, ae:{}, blr:{}, oth:{}, tot:{}, rob:{},
               /* 2026-08-01: per-fuel allowances, filled below. etsRow stays false when this
                  report has no engine-computed row behind it — the panel then draws the same
@@ -1183,6 +1427,135 @@ function zngTotalsLayer(D){
   return out;
 }
 
+/* ---------------------------------------------------------------- horizontal zoom control
+   2026-08-09b (Aurvin, owner instruction). See the long note above ZNG_ZOOM_MAX for WHAT zoom
+   does and where the two limits come from; this block is only the control and the bookkeeping.
+
+   Every function here is safe to call before the chart has ever been drawn: they fall back to
+   ZNG.panels being null and behave as if zoom were pinned at 100%, so the header can be built in
+   the same pass that builds the chart without an ordering rule to remember. */
+
+/* the zoom range, live. min = "everything on one screen" (see the note above ZNG_ZOOM_MAX);
+   max = the owner's 3× cap. Called with explicit widths from zngChart() (which has just measured
+   them and has not yet published them), and with none from the control handlers (which read the
+   published ZNG.panels). */
+function zngZoomBounds(baseW, availW){
+  var P = ZNG.panels;
+  if(baseW  == null) baseW  = (P && P.baseW)  || 0;
+  if(availW == null) availW = (P && P.availW) || 0;
+  var min = (baseW > 0 && availW > 0) ? Math.min(1, availW / baseW) : 1;
+  if(!(min > 0) || !isFinite(min)) min = 1;   // un-measured pane — offer zoom IN only
+  return { min:min, max:ZNG_ZOOM_MAX };
+}
+function zngZoomClamp(z, b){
+  b = b || zngZoomBounds();
+  z = Number(z);
+  if(!isFinite(z) || z <= 0) z = 1;
+  return Math.max(b.min, Math.min(b.max, z));
+}
+/* slider position ⇄ zoom factor, linear in the LOGARITHM — equal travel is equal ratio, so the
+   drag feels the same at both ends (see "WHY LOGARITHMIC" above ZNG_ZOOM_MAX). */
+function zngZoomTick(z, b){
+  b = b || zngZoomBounds();
+  var span = Math.log(b.max / b.min);
+  if(!(span > 0)) return ZNG_ZOOM_TICKS;
+  return Math.round(ZNG_ZOOM_TICKS * Math.log(zngZoomClamp(z, b) / b.min) / span);
+}
+function zngZoomFromTick(t, b){
+  b = b || zngZoomBounds();
+  t = Math.max(0, Math.min(ZNG_ZOOM_TICKS, Number(t) || 0));
+  return zngZoomClamp(b.min * Math.pow(b.max / b.min, t / ZNG_ZOOM_TICKS), b);
+}
+function zngZoomLabel(z){ return Math.round(zngZoomClamp(z) * 100) + "%"; }
+
+/* APPLY — the only entry point that re-renders. Takes the centre of the current view first and
+   parks it on ZNG.anchor, because zngRender() rebuilds the popup's innerHTML wholesale and every
+   scroll position with it; zngZoomRestore() puts it back once the new geometry exists. Anchoring
+   on the CENTRE (rather than the left edge) is the owner's choice on 2026-08-09b: you zoom into
+   whatever you were already looking at. */
+function zngZoomApply(z){
+  var b = zngZoomBounds();
+  z = zngZoomClamp(z, b);
+  if(Math.abs(z - zngZoomClamp(ZNG.zoom, b)) < 1e-6){ zngZoomSync(); return; }
+  var xs = document.getElementById("zng-xscroll");
+  ZNG.anchor = (xs && xs.scrollWidth > 0)
+    ? (xs.scrollLeft + xs.clientWidth / 2) / xs.scrollWidth
+    : null;
+  ZNG._refocus = !!(document.activeElement && document.activeElement.id === "zng-zoomsl");
+  ZNG.zoom = z;
+  zngRender();
+}
+/* restore the anchored centre after a zoom re-render. Deliberately does NOTHING when ZNG.anchor is
+   null, so an ordinary repaint (ticking a panel, resizing the window) still lands at the left edge
+   exactly as it always has — this is a zoom feature, not a general scroll-memory change. */
+function zngZoomRestore(){
+  var f = ZNG.anchor; ZNG.anchor = null;
+  var refocus = ZNG._refocus; ZNG._refocus = false;
+  if(refocus){ var sl = document.getElementById("zng-zoomsl"); if(sl) try{ sl.focus(); }catch(e){} }
+  if(f == null) return;
+  var xs = document.getElementById("zng-xscroll"); if(!xs) return;
+  var max = xs.scrollWidth - xs.clientWidth;
+  var target = (max > 0) ? Math.max(0, Math.min(max, f * xs.scrollWidth - xs.clientWidth / 2)) : 0;
+  ["zng-xscroll", "zng-scroll", "zng-bscroll", "zng-escroll"].forEach(function(id){
+    var el = document.getElementById(id); if(el) el.scrollLeft = target;
+  });
+}
+/* refresh the control WITHOUT re-rendering — used while the slider is being dragged (see the
+   oninput/onchange split in zngZoomHtml) and whenever an apply turns out to be a no-op. */
+function zngZoomSync(){
+  var b = zngZoomBounds(), z = zngZoomClamp(ZNG.zoom, b);
+  var sl = document.getElementById("zng-zoomsl");
+  if(sl && document.activeElement !== sl) sl.value = zngZoomTick(z, b);
+  var pc = document.getElementById("zng-zoompc"); if(pc) pc.textContent = zngZoomLabel(z);
+  var wrap = document.getElementById("zng-zoom");
+  if(wrap) wrap.classList.toggle("nomin", b.min >= 0.999);   // greys the − when everything fits
+}
+/* dragging: preview the percentage only. Applying on every input event would call zngRender(),
+   which rebuilds the popup's innerHTML and therefore DESTROYS the very <input> under the user's
+   finger, ending the drag on the first pixel of movement. The range element fires `change` on
+   release (and on each keyboard arrow press), which is where the real work goes. */
+function zngZoomSlide(t){
+  var pc = document.getElementById("zng-zoompc");
+  if(pc) pc.textContent = zngZoomLabel(zngZoomFromTick(t));
+}
+function zngZoomCommit(t){ zngZoomApply(zngZoomFromTick(t)); }
+/* one notch from the − / + buttons or from ctrl+wheel over the chart. Stepping in TICKS rather
+   than in zoom units keeps every click the same visual amount at any point of the range. */
+function zngZoomStep(dir){
+  var b = zngZoomBounds();
+  zngZoomApply(zngZoomFromTick(zngZoomTick(ZNG.zoom, b) + (dir > 0 ? ZNG_ZOOM_STEP : -ZNG_ZOOM_STEP), b));
+}
+function zngZoomReset(){ zngZoomApply(1); }
+
+/* the control itself — top-right of the popup header, inside .znct-ctrls just before the ✕.
+   SAFE TO PUT HERE, despite the fixed-width hover readout that .znct-ctrls shares the row with:
+   .zng-readout is position:absolute (2026-07-31j) so it is OUT OF FLOW and cannot be pushed by
+   this, and on the Trends popup the box is 1600px wide (.zng-box overrides .znct-box's 1180px)
+   while the readout is 689px centred on the plot area — its right edge lands near 1198px, leaving
+   ~384px of clear header to the right. On a narrow window the readout's own
+   max-width:calc(100vw - 402px) shrinks it, so the clearance does not close up. If either the
+   readout's width rule or .zng-box's width is ever changed, re-check this. */
+function zngZoomHtml(){
+  var b = zngZoomBounds(), z = zngZoomClamp(ZNG.zoom, b);
+  var tip = "Zoom the timeline HORIZONTALLY — bars, lines, the date axis and both pinned strips " +
+            "stretch together; nothing vertical changes.\n" +
+            "100% is the chart's normal width. Zoom in to a maximum of " + ZNG_ZOOM_MAX + "× that, " +
+            "then scroll sideways to inspect a period closely.\n" +
+            "Fully zoomed out fits EVERY report in the current filter on one screen — a reporting " +
+            "year is assumed to be up to " + ZNG_ZOOM_YEAR_REPORTS + " reports.\n" +
+            "Ctrl + mouse wheel over the chart zooms too. Double-click the slider for 100%.";
+  return '<div class="zng-zoom' + (b.min >= 0.999 ? " nomin" : "") + '" id="zng-zoom" title="' + zngEsc(tip) + '">' +
+           '<span class="zl">Zoom</span>' +
+           '<button type="button" class="zb" title="Zoom out" aria-label="Zoom out" onclick="zngZoomStep(-1)">–</button>' +
+           '<input id="zng-zoomsl" class="zs" type="range" min="0" max="' + ZNG_ZOOM_TICKS + '" step="1"' +
+             ' value="' + zngZoomTick(z, b) + '" aria-label="Chart width"' +
+             ' oninput="zngZoomSlide(this.value)" onchange="zngZoomCommit(this.value)"' +
+             ' ondblclick="zngZoomReset()">' +
+           '<button type="button" class="zb" title="Zoom in" aria-label="Zoom in" onclick="zngZoomStep(1)">+</button>' +
+           '<span class="zp" id="zng-zoompc">' + zngZoomLabel(z) + '</span>' +
+         '</div>';
+}
+
 /* ---------------------------------------------------------------- chart SVG (panels only) */
 /* The date axis is NOT in this SVG — it is a separate, pinned strip. See the layout note at the
    top of the file for why. */
@@ -1229,10 +1602,31 @@ function zngChart(D){
   /* the scroller's usable width, measured live so the chart fits the popup at any size */
   var host = document.getElementById("zng-scroll");
   var availW = (host && host.clientWidth > 40) ? host.clientWidth - 4 : 1000;
-  var slot = n > 0 ? Math.max(ZNG_MINSLOT, availW / n) : availW;
-  var W = Math.max(availW, n * slot);
-  if(n > 0) slot = W / n;
-  var barW = Math.max(2, Math.min(26, slot * 0.72));
+  /* 2026-08-09b — THE 100% WIDTH, unchanged from what this chart drew before zoom existed. Kept as
+     its own named value because it is the baseline BOTH owner limits are measured against (3× it
+     zoomed in; availW ÷ it zoomed out). Do not fold it back into W. */
+  var baseSlot = n > 0 ? Math.max(ZNG_MINSLOT, availW / n) : availW;
+  /* NOT `Math.max(availW, n * baseSlot)`. When the reports fit, baseSlot IS availW/n and
+     n * (availW/n) can land a whisker ABOVE availW in floating point (measured: 1000 reports'
+     worth came back as 1000.0000000000001). baseW would then exceed availW by 1e-13, the minimum
+     zoom would be 0.9999999999999999 instead of exactly 1, and the chart would offer a
+     "zoom out" that does nothing. Branching on whether the ZNG_MINSLOT floor actually BINDS keeps
+     the fit case exact. */
+  var baseW = (n > 0 && baseSlot > availW / n) ? n * baseSlot : availW;
+  /* the whole of zoom, in three lines. Everything downstream reads W and slot exactly as before,
+     which is why no other geometry in this file had to change. */
+  var zb = zngZoomBounds(baseW, availW);
+  var zoom = zngZoomClamp(ZNG.zoom, zb);
+  ZNG.zoom = zoom;                       // write the clamped value back, so a resize that changes
+                                         // the bounds corrects the slider rather than remembering
+                                         // a zoom the chart is no longer allowed to draw
+  var W = baseW * zoom;
+  var slot = n > 0 ? W / n : W;
+  /* ZNG_MINBAR replaces a bare `2` here; the cap and the .72 ratio are untouched. At minimum zoom
+     with more reports than the owner's 500-per-year assumption the slot can fall below 2px, and
+     this floor is what keeps such bars visible (they then touch, which is the accepted cost of the
+     owner's "always fit everything on screen" choice — see the note above ZNG_ZOOM_MAX). */
+  var barW = Math.max(ZNG_MINBAR, Math.min(26, slot * 0.72));
 
   var s = [];
   s.push('<svg id="zng-svg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H +
@@ -1255,7 +1649,10 @@ function zngChart(D){
            '" stroke="#0e2c40" stroke-width="1" stroke-dasharray="3 3" opacity="0" pointer-events="none"></line>');
     s.push('<rect id="zng-hit" x="0" y="0" width="' + W + '" height="' + H + '" fill="transparent"></rect>');
     s.push("</svg>");
-    ZNG.panels = { list:P, maxes:[], slot:slot, barW:barW, W:W, H:H, n:n, pts:pts, ph:ph };
+    /* 2026-08-09b: baseW / availW / zoom / zmin ride along so the slider can be drawn and clamped
+       without re-measuring anything — zngChart() is the only place that knows the pane's live width. */
+    ZNG.panels = { list:P, maxes:[], slot:slot, barW:barW, W:W, H:H, n:n, pts:pts, ph:ph,
+                   baseW:baseW, availW:availW, zoom:zoom, zmin:zb.min };
     return s.join("");
   }
 
@@ -1284,7 +1681,8 @@ function zngChart(D){
     if(ZNG_FLOORED[pn.id] && meAxisMax > 0) raw = Math.max(raw, meAxisMax * ZNG_FLOOR_PCT);
     return zngNiceCeil(raw);
   });
-  ZNG.panels = { list:P, maxes:maxes, slot:slot, barW:barW, W:W, H:H, n:n, pts:pts, ph:ph };
+  ZNG.panels = { list:P, maxes:maxes, slot:slot, barW:barW, W:W, H:H, n:n, pts:pts, ph:ph,
+                 baseW:baseW, availW:availW, zoom:zoom, zmin:zb.min };   // 2026-08-09b, see above
 
   for(var pi = 0; pi < P.length; pi++){
     /* 2026-08-01b: `pph` is THIS panel's own plot height (weight × the unit `ph`). Everything
@@ -1540,13 +1938,14 @@ function zngBandStrip(){
   s.push('<defs><pattern id="zng-bhatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">' +
          '<rect width="5" height="5" fill="#eef2f5"></rect>' +
          '<line x1="0" y1="0" x2="0" y2="5" stroke="#c2cdd5" stroke-width="2"></line></pattern></defs>');
-  var y = ZNG_EPAD_T, h = ZNG_BCELL;
+  var y = ZNG_OP_PAD_T, h = ZNG_BCELL;   // 2026-08-09: was ZNG_EPAD_T — split off so Operation's own padding can move without touching Eligibility's
   var lbl = {};
   for(var z = 0; z < ZNG_STATES.length; z++) lbl[ZNG_STATES[z].id] = ZNG_STATES[z].label;
-  /* 2026-08-02: which columns got a bunker dot, so the OPL pass below can shoulder the two apart
-     instead of drawing one on top of the other. A report CAN be both (a bunkering tagged
-     OUTSIDE_PORT_LIMIT) — it does not happen in the owner's file, but nothing prevents it. */
-  var bunkerAt = {};
+  /* 2026-08-02 had a `bunkerAt` map here, recording which columns got a bunker dot so the OPL pass
+     could shoulder the two apart horizontally. REMOVED 2026-08-09c: the OPL dot now sits at 0.75 of
+     the cell and the bunker dot at 0.50, so they are separated vertically and neither needs to leave
+     the centre of its own column. A report can still be both (a bunkering tagged
+     OUTSIDE_PORT_LIMIT) — it now simply gets two markers, one above the other. */
   for(var i = 0; i < n; i++){
     var st = pts[i].state;
     if(st == null){
@@ -1607,10 +2006,18 @@ function zngBandStrip(){
              '<title>' + zngEsc(zngStamp(pts[i].t)) + ' — bunkering (no operational state of its own; ' +
              'the band is carried through from the report ' + carryDir + ', ' + zngEsc(lbl[carry] || carry) +
              ')</title></rect>');
-      bunkerAt[i] = 1;
-      s.push('<circle class="zng-bbunker" cx="' + (bx + slot / 2 - (pts[i].opl ? ZNG_BCELL / 8 + 1.2 : 0)).toFixed(2) +
-             '" cy="' + (y + h / 2).toFixed(2) +
-             '" r="' + (ZNG_BCELL / 8).toFixed(2) + '" fill="#eab308" pointer-events="none"></circle>');
+      /* 2026-08-09c: half the previous diameter (ZNG_MK_R), still dead centre, and NO LONGER
+         SHOULDERED SIDEWAYS when the report is also OPL — the OPL dot moved down to 0.75 of the
+         cell, so the two are now separated vertically by 11.25px against a combined 5.6px of
+         diameter and cannot touch. The old horizontal nudge would only have pushed this marker
+         off the centre of its own column for no reason. */
+      /* 2026-08-09e: gains the shared outline (owner instruction). Amber scored 1.24 against the
+         palest band — it was dissolving into At-Sea cells exactly the way the indigo diamond was
+         dissolving into navy ones, just less obviously. Size deliberately unchanged. */
+      s.push('<circle class="zng-bbunker" cx="' + (bx + slot / 2).toFixed(2) +
+             '" cy="' + (y + h * ZNG_MK_Y_MID).toFixed(2) +
+             '" r="' + ZNG_MK_R.toFixed(2) + '" fill="#eab308" stroke="' + ZNG_MK_STROKE +
+             '" stroke-width="' + ZNG_MK_STROKE_W + '" pointer-events="none"></circle>');
       continue;
     }
     var off = ZNG.states && ZNG.states[st] === false;
@@ -1652,12 +2059,100 @@ function zngBandStrip(){
      the strip's hit rect keeps driving the hover card, so the marker cannot create a dead spot.
      A dot is drawn even when the band is UNTICKED (hatched) — OPL is a fact about the report, not
      about the filter, exactly as 08-01u decided for the bunker join. */
+  /* 2026-08-09c (owner instruction): the OPL dot HALVES in diameter and DROPS to 0.75 of the cell —
+     a quarter of the bar's height up from the bottom — vacating the centre line for the new cargo
+     diamond. It also loses its sideways shoulder against the bunker dot: with one marker at 0.50
+     and the other at 0.75 of a 45px cell they are 11.25px apart vertically and 5.6px across, so
+     there is nothing left to avoid, and staying on the column centre keeps every marker aligned to
+     the report it belongs to. */
   for(var oi = 0; oi < n; oi++){
     if(!pts[oi].opl) continue;
-    var or_ = ZNG_BCELL / 8;
-    var ocx = oi * slot + slot / 2 + (bunkerAt[oi] ? or_ + 1.2 : 0);
-    s.push('<circle class="zng-bopl" cx="' + ocx.toFixed(2) + '" cy="' + (y + h / 2).toFixed(2) +
-           '" r="' + or_.toFixed(2) + '" fill="' + ZNG_OPL_COL + '" pointer-events="none"></circle>');
+    /* 2026-08-09e: same shared outline as the other two markers, size unchanged (owner: outline
+       them, keep them small — the diamond is the one that had to grow). */
+    s.push('<circle class="zng-bopl" cx="' + (oi * slot + slot / 2).toFixed(2) +
+           '" cy="' + (y + h * ZNG_MK_Y_OPL).toFixed(2) +
+           '" r="' + ZNG_MK_R.toFixed(2) + '" fill="' + ZNG_OPL_COL + '" stroke="' + ZNG_MK_STROKE +
+           '" stroke-width="' + ZNG_MK_STROKE_W + '" pointer-events="none"></circle>');
+  }
+  /* 2026-08-09c (Aurvin, owner instruction): THE CARGO DIAMOND. Owner: "Introduce a diamond shape
+     with 4 corners whenever there is a cargo operation in the activity, to be placed at this level
+     where we see this OPL circle right now. Cargo can be shown as a blue diamond or rhombus."
+
+     WHICH REPORTS: `p.cargoOp` — every report whose ASSOCIATED_ACTIVITY names a cargo operation,
+     with the V1 CARGO_OP fallback where that column is blank. The full rule, and why 2026-08-09d
+     moved it off the derivation ladder's verdict, is in the note above zngIsCargoOp().
+
+     WHY A SEPARATE PASS AFTER THE CELLS, same two reasons as the OPL pass above: a cargo report may
+     have a real band or (theoretically) none, and SVG paints in document order, so drawing here puts
+     the marker on top of its cell rather than under it.
+
+     DRAWN AS A <polygon>, not a rotated <rect>: four explicit points need no transform, so the shape
+     cannot inherit a scale from anything and reads identically at every zoom level. A diamond and
+     not a square-on-point-by-accident — the four corners are what the owner asked for.
+
+     THE ONE CASE WITH NO SHOULDERING CODE. This sits at the same height as the bunker dot. The owner
+     was asked and answered that the two can never occur on one report ("They will never clash in the
+     same report"), which the data agrees with: a bunkering is a stock movement that zngStateOf()
+     gives no operational state, so it is not a member of a port stay and can never be in `ops`. If a
+     future file ever did produce both, the diamond would simply cover the smaller amber dot — the
+     hover card still names both, so nothing becomes unreadable. Deliberately not defended against
+     with a nudge, which would have moved a marker off its column centre in every normal case to
+     guard one that cannot happen.
+
+     `pointer-events="none"` like the other two markers, so the cell underneath keeps its <title> and
+     the strip's hit rect keeps driving the hover card. */
+  /* 2026-08-09f — FULL SIZE ALWAYS, AND OVERLAPPING DIAMONDS MERGE INTO ONE SHAPE.
+     `dR` is now simply ZNG_MK_DIAG: no column-width cap, so the diamond never shrinks (see the
+     08-09f note above ZNG_MK_R for why the cap was removed).
+
+     Two markers whose centres are closer than 2 × dR overlap. Drawing them as separate outlined
+     diamonds then produces a scalloped chain with the outline cutting through the middle of the
+     mass — the owner was shown that option and chose a MERGED solid band instead.
+
+     THE GEOMETRY IS EXACT, not an approximation. The union of equal diamonds centred along a
+     horizontal line is a HEXAGON: the left tip, the two top corners, the right tip, the two bottom
+     corners (formally the Minkowski sum of one diamond and the segment joining the end centres).
+     So a merged run is drawn as those six points, and — this is the neat part — a run of ONE
+     degenerates to exactly the original four-point diamond, which is why lone cargo reports are not
+     a special case in the drawing code, only in the point count.
+
+     GROUPING IS BY GEOMETRY, NOT BY ADJACENT INDEX. Two cargo reports three columns apart still
+     overlap once the columns are thin enough, and merging only index-neighbours would leave those
+     overlapping with a visible seam — the exact look this replaces. WHAT THAT MEANS FOR THE READER,
+     stated plainly: a merged band says "cargo work through this period", NOT "every report in this
+     span was a cargo operation". It is a summary that only appears at a zoom where the individual
+     columns are a few pixels wide and could not be told apart anyway; zoom in and the run separates
+     back into individual diamonds, one per report. The hover card is always per-report regardless. */
+  var dR = ZNG_MK_DIAG, cy = y + h * ZNG_MK_Y_MID;
+  var runs = [];
+  for(var ci = 0; ci < n; ci++){
+    if(!pts[ci].cargoOp) continue;
+    var cx = ci * slot + slot / 2;
+    var last = runs.length ? runs[runs.length - 1] : null;
+    /* extend the open run when this marker would touch the previous one, else start a new run */
+    if(last && (cx - last.x1) <= dR * 2) last.x1 = cx;
+    else runs.push({ x0:cx, x1:cx });
+  }
+  for(var ri = 0; ri < runs.length; ri++){
+    var r0 = runs[ri].x0, r1 = runs[ri].x1, pp;
+    if(r1 - r0 < 0.01){
+      /* a lone report — the four-point diamond, unchanged since 2026-08-09c */
+      pp = r0.toFixed(2) + ',' + (cy - dR).toFixed(2) + ' ' +
+           (r0 + dR).toFixed(2) + ',' + cy.toFixed(2) + ' ' +
+           r0.toFixed(2) + ',' + (cy + dR).toFixed(2) + ' ' +
+           (r0 - dR).toFixed(2) + ',' + cy.toFixed(2);
+    } else {
+      /* a merged run — the same diamond stretched between the two end centres */
+      pp = (r0 - dR).toFixed(2) + ',' + cy.toFixed(2) + ' ' +
+           r0.toFixed(2) + ',' + (cy - dR).toFixed(2) + ' ' +
+           r1.toFixed(2) + ',' + (cy - dR).toFixed(2) + ' ' +
+           (r1 + dR).toFixed(2) + ',' + cy.toFixed(2) + ' ' +
+           r1.toFixed(2) + ',' + (cy + dR).toFixed(2) + ' ' +
+           r0.toFixed(2) + ',' + (cy + dR).toFixed(2);
+    }
+    s.push('<polygon class="zng-bcargo" points="' + pp +
+           '" fill="' + ZNG_CARGOMK_COL + '" stroke="' + ZNG_MK_STROKE +
+           '" stroke-width="' + ZNG_MK_STROKE_WD + '" pointer-events="none"></polygon>');
   }
   /* the strip's own sync marker, moved by zngHoverAt() — the panels' sync line lives in the other
      SVG and cannot reach across, so without this the strip is the one row you cannot read on hover */
@@ -1989,10 +2484,33 @@ function zngOplPill(){
          'excluded from EU ETS / UK ETS / FuelEU. Same flag as the OPL badge in the Report-Wise ' +
          'tab.">OPL</span>';
 }
+/* 2026-08-09c: the companion pill for the new cargo diamond, in the marker's own indigo so the card
+   and the strip agree on sight. Deliberately built like zngOplPill above — an INLINE span that
+   rides the existing row, never a row of its own. verify_graph_popup.js's load-bearing check is
+   that each hover card is exactly ONE reading tall (that is the whole reason two cards anchored
+   70px apart cannot collide), so a second pill may widen this row but must never lengthen it. */
+function zngCargoPill(){
+  /* 2026-08-09e: was indigo-on-lavender, matching the marker's old fill. The marker is now WHITE,
+     which would be invisible on this white card, so the pill takes the marker's OUTLINE colour
+     (ZNG_MK_STROKE #1b3547) instead — still a deliberate link to what you see on the strip, and it
+     stays legible. Hard-coded rather than interpolated because the pale background has to be
+     chosen to suit it; if the stroke colour ever changes, change both together. */
+  return '<span style="margin-left:6px;font-size:8.5px;font-weight:700;letter-spacing:0.05em;' +
+         'color:#1b3547;background:#e2e8f0;padding:1px 4px;border-radius:3px;line-height:1.3" ' +
+         'title="ASSOCIATED_ACTIVITY on this report names a cargo operation — loading, discharging ' +
+         'or their ship-to-ship variants. This reads the activity column as reported. Note it is a ' +
+         'slightly WIDER set than the reports the arrival/departure derivation counts when it ' +
+         'decides whether a stay is a port of call: that test only looks at a port stay&#39;s member ' +
+         'reports, so cargo recorded on an ARRIVAL-EOSP or DEPARTURE-SOSP row is marked here but ' +
+         'was not used there. On older V1-format files the signal is the CARGO_OP column instead, ' +
+         'and load cannot be told from discharge.">CARGO</span>';
+}
 function zngOpTip(p){
   if(!p) return "";
   var rows = "", sLbl = null;
-  var pill = p.opl ? zngOplPill() : "";
+  /* 2026-08-09c: cargo first, then OPL — the same left-to-right order the two markers now sit in
+     top-to-bottom on the strip, so the eye moves the same way in both places. */
+  var pill = (p.cargoOp ? zngCargoPill() : "") + (p.opl ? zngOplPill() : "");
   for(var si = 0; si < ZNG_STATES.length; si++) if(ZNG_STATES[si].id === p.state) sLbl = ZNG_STATES[si].label;
   if(sLbl){
     rows += '<div class="r"><i class="sw" style="background:' + (ZNG_STATE_COL[p.state] || "#c3ced4") +
@@ -2174,18 +2692,51 @@ function zngBindScrollSync(){
   sc.addEventListener("scroll", mirror(sc));
   if(bs) bs.addEventListener("scroll", mirror(bs));
   if(es) es.addEventListener("scroll", mirror(es));
-  /* the plot has no scrollbar of its own any more, so give it a wheel affordance: a horizontal
-     (or shift+) wheel over the chart drives the pinned bar, which then drives the plot */
-  sc.addEventListener("wheel", function(ev){
-    var dx = ev.shiftKey ? ev.deltaY : ev.deltaX;
-    if(!dx) return;
-    var max = xs.scrollWidth - xs.clientWidth;
-    if(max <= 0) return;
-    var next = Math.max(0, Math.min(max, xs.scrollLeft + dx));
-    if(next === xs.scrollLeft) return;   // already at the end — let the page have the event
-    ev.preventDefault();
-    xs.scrollLeft = next;
-  }, { passive:false });
+  /* WHEEL BEHAVIOUR — one handler, bound to every row of the chart.
+     2026-08-09b added ctrl+wheel zoom but bound the handler to the PLOT ALONE. The owner reported
+     the consequence immediately: "I am not able to zoom or side scroll when [the] cursor is on the
+     operation and scope strips." Those two strips are separate scrollers with overflow hidden and
+     no scrollbar of their own, so with no handler the wheel did nothing there but scroll the page —
+     and they are exactly the rows you are pointing at when you want to zoom into a port call.
+     2026-08-09d: the same handler is now bound to all four rows.
+
+     PLAIN VERTICAL WHEEL IS TREATED DIFFERENTLY ON THE PINNED STRIPS, on the owner's instruction.
+     Over the plot it is left alone (the plot sits inside a vertically-scrolling pane, and stealing
+     the wheel there would trap the page). The Operation, Eligibility and date rows cannot scroll
+     vertically at all, so a plain wheel over them has nothing of its own to do and pans them
+     sideways instead — which is what you want while reading along a strip. `panOnPlainWheel` is
+     what carries that distinction. */
+  var wheelHandler = function(panOnPlainWheel){
+    return function(ev){
+      /* 2026-08-09b: ctrl (or ⌘) + wheel ZOOMS, the near-universal convention. Checked before the
+         pan branch because the browser's own pinch-zoom gesture arrives as ctrlKey + deltaY, and
+         swallowing it here is what stops a trackpad pinch zooming the whole page instead of the
+         chart. Wheel UP (negative deltaY) zooms in, as everywhere else. */
+      if(ev.ctrlKey || ev.metaKey){
+        if(!ev.deltaY) return;
+        ev.preventDefault();
+        zngZoomStep(ev.deltaY < 0 ? 1 : -1);
+        return;
+      }
+      var dx = ev.shiftKey ? ev.deltaY : ev.deltaX;
+      if(!dx && panOnPlainWheel) dx = ev.deltaY;   // pinned strips: a plain wheel pans sideways
+      if(!dx) return;
+      var max = xs.scrollWidth - xs.clientWidth;
+      if(max <= 0) return;
+      var next = Math.max(0, Math.min(max, xs.scrollLeft + dx));
+      if(next === xs.scrollLeft) return;   // already at the end — let the page have the event
+      ev.preventDefault();
+      xs.scrollLeft = next;                // xs then drives the others through mirror() above
+    };
+  };
+  sc.addEventListener("wheel", wheelHandler(false), { passive:false });
+  /* the three pinned rows. Each is optional for the same reason the mirror list is — a null just
+     drops out — so removing a strip cannot break this. `xs` (the date row) has the real scrollbar
+     and already pans natively; binding it anyway is what gives it ctrl+wheel zoom, which the owner
+     asked for in the same breath. */
+  [xs, bs, es].forEach(function(el){
+    if(el) el.addEventListener("wheel", wheelHandler(true), { passive:false });
+  });
 }
 
 /* ---------------------------------------------------------------- open / close / render */
@@ -2200,7 +2751,10 @@ function zngOpen(){
     document.body.appendChild(host);
   }
   try{ document.querySelectorAll(".ibpop.open").forEach(function(x){ x.classList.remove("open"); }); }catch(e){}
-  ZNG.open = true; ZNG.hi = -1;
+  /* 2026-08-09b (owner's choice when asked): the chart ALWAYS opens at its normal width. A zoom
+     level surviving from a previous session would be indistinguishable from the chart's real
+     appearance, and someone reading a screenshot could not tell how wide 100% was. */
+  ZNG.open = true; ZNG.hi = -1; ZNG.zoom = 1; ZNG.anchor = null;
   host.classList.add("on");
   zngRender();
   /* the chart is sized from the scroller's measured width, which is only real once the popup
@@ -2252,11 +2806,26 @@ function zngRender(){
         "ticked — so you can isolate, say, At-Berth time in EU ports. Worth knowing: <b>In-Port " +
         "time is charged to the voyage leg, not the port stay</b>, so an EU call with a long " +
         "anchorage wait shows In-Port sitting inside a 50% To-EU/From-EU colour. That is the " +
-        "regulation's own boundary, not a discrepancy. A rose dot on the Operation band marks a " +
-        "report flagged <b>OPL</b> (OUTSIDE_PORT_LIMIT = TRUE) — the same flag the Report-Wise tab " +
-        "badges, and the hover card repeats it. OPL activity is normally scored as transit rather " +
-        "than a port of call, so it falls outside EU ETS / UK ETS / FuelEU. An amber dot on the same " +
-        "band is a bunkering join, not an OPL.<br><br>" +
+        "regulation's own boundary, not a discrepancy.<br><br>" +
+        /* 2026-08-09c: the band now carries THREE marker types at three fixed heights, so the ⓘ
+           lists them together and says which height each occupies — that is the fastest way to read
+           the strip, and the previous wording described only two of them, inline, mid-paragraph. */
+        "<b>Three markers</b> sit on the Operation band, each at its own height and each outlined " +
+        "so it reads on the pale and the dark bands alike. A <b>white diamond on the centre " +
+        "line</b> — the largest of the three — marks a <b>cargo operation</b>: every report whose " +
+        "ASSOCIATED_ACTIVITY names " +
+        "loading, discharging or their ship-to-ship variants, read as reported. That is a slightly " +
+        "wider set than the reports the arrival/departure derivation uses when deciding whether a " +
+        "stay is a port of call, which only looks at a stay's member reports; cargo recorded on an " +
+        "ARRIVAL-EOSP or DEPARTURE-SOSP row is marked here. Zoomed out far enough that neighbouring " +
+        "diamonds would overlap, a run of them <b>merges into one continuous shape</b> — read that " +
+        "as \"cargo work through this period\", not as one report; zoom in and it separates back " +
+        "into a diamond per report. A <b>rose dot lower down</b> marks a " +
+        "report flagged <b>OPL</b> " +
+        "(OUTSIDE_PORT_LIMIT = TRUE) — the same flag the Report-Wise tab badges. OPL activity is " +
+        "normally scored as transit rather than a port of call, so it falls outside EU ETS / UK ETS " +
+        "/ FuelEU. An <b>amber dot on the centre line</b> is a bunkering join, not an OPL. The hover " +
+        "card repeats whichever apply.<br><br>" +
         "<b>Totals</b> sit at the right-hand end of each parameter's own row, split by fuel and then " +
         "combined. They follow both the Scope and the Fuel ticks, so a total always equals the bars " +
         "you can actually see; a fuel you have unticked reads 0 rather than vanishing from the list. " +
@@ -2301,6 +2870,12 @@ function zngRender(){
       '<h4>Trends<span style="color:#7a8896;font-weight:700;font-size:11px;letter-spacing:.05em"> · REPORT TIMELINE</span></h4>' + tip +
       '<div class="znct-ctrls">' +
         '<span id="zng-head" class="zng-readout"><span class="zng-hint">Hover the chart to read every panel at once.</span></span>' +
+        /* 2026-08-09b: the horizontal zoom slider, only when there is something to zoom. Note this
+           markup is built from the PREVIOUS render's ZNG.panels (head is assembled before
+           zngChart() runs), so its slider position can be one render stale on the very first
+           paint — zngZoomSync() at the end of zngRender() corrects it once the geometry is
+           current. That is also why zngOpen() renders twice. */
+        (D.nAll ? zngZoomHtml() : "") +
         '<button type="button" class="znct-close" title="Close (Escape)" aria-label="Close" onclick="zngClose()">✕</button>' +
       '</div>' +
     '</div>';
@@ -2421,6 +2996,14 @@ function zngRender(){
     var er = host.querySelector("#zng-escroll"); if(er) er.innerHTML = zngEligStrip();
     zngBindHover();
     zngBindScrollSync();
+    /* 2026-08-09b, in this order and after the scroll sync is bound:
+       zngZoomSync()    — the header was built from the PREVIOUS render's geometry (see the note
+                          at the zoom control in `head`); ZNG.panels is current now, so correct the
+                          slider position, the % readout and the "cannot zoom out" state.
+       zngZoomRestore() — put the anchored view centre back, and the keyboard focus with it. It is
+                          a no-op unless this render was caused by a zoom change. */
+    zngZoomSync();
+    zngZoomRestore();
     if(ZNG.hi >= 0) zngHoverAt(ZNG.hi);
   }
 }

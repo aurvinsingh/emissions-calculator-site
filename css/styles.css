@@ -1073,6 +1073,52 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 #znfs-graph.on{display:flex}
 #znfs-graph .ibpop{z-index:9750}
 .zng-box{width:min(1600px,100%)}
+
+/* ---- the horizontal ZOOM control (2026-08-09b, Aurvin, owner instruction) ----
+   Sits in .znct-ctrls, top-right of the Trends header, immediately left of the ✕. It shares that
+   row with .zng-readout, which is 689px wide — but .zng-readout is position:absolute (2026-07-31j)
+   and therefore OUT OF FLOW, so it cannot push this and this cannot push it. The only risk is
+   visual OVERLAP, and there is none in practice: this popup's box is 1600px (.zng-box, above)
+   while the readout is centred on the plot area and ends near x≈1198px, leaving ~384px clear;
+   on narrower windows the readout's own max-width:calc(100vw - 402px) shrinks it faster than this
+   control grows. Re-check that arithmetic if .zng-box's width or the readout's width rule changes.
+   The whole control is ~210px wide, which is why the slider is 96px rather than something generous.
+   Kept scoped to #znfs-graph so it can never leak onto the CII / FuelEU trend popups, which share
+   the .znct-* header family but have no zoom (owner scoped this to Trends only, 2026-08-09b). */
+#znfs-graph .zng-zoom{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+#znfs-graph .zng-zoom .zl{font-size:9.5px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:#7a8896}
+/* the − / + buttons. Square, quiet, and the same 1px #dde4e8 border language as .znct-ctrl select
+   above, so the header reads as one family rather than as a bolted-on widget. */
+#znfs-graph .zng-zoom .zb{width:20px;height:20px;padding:0;line-height:1;flex:0 0 auto;
+  font-size:13px;font-weight:700;color:#0e2c40;background:#fff;cursor:pointer;
+  border:1px solid #dde4e8;border-radius:4px;display:flex;align-items:center;justify-content:center}
+#znfs-graph .zng-zoom .zb:hover{background:var(--blue2,#eef7f8);border-color:#9ec9d0;color:#0a5f6b}
+#znfs-graph .zng-zoom .zb:focus-visible{outline:2px solid var(--blue,#0a5f6b);outline-offset:1px}
+/* the range input, styled by hand because the platform default is far too tall for a 20px header
+   row. -webkit- and -moz- both needed: WebKit/Blink build the track and thumb from
+   ::-webkit-slider-*, Gecko from ::-moz-range-*, and neither understands the other's selector, so
+   omitting either gives that engine the unstyled control back. */
+#znfs-graph .zng-zoom .zs{-webkit-appearance:none;appearance:none;width:96px;height:14px;
+  flex:0 0 auto;margin:0;background:transparent;cursor:ew-resize}
+#znfs-graph .zng-zoom .zs::-webkit-slider-runnable-track{height:4px;border-radius:2px;
+  background:#dde4e8}
+#znfs-graph .zng-zoom .zs::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:13px;height:13px;margin-top:-4.5px;border-radius:50%;background:#fff;
+  border:2px solid var(--blue,#0a5f6b);box-shadow:0 1px 2px rgba(14,44,64,.25)}
+#znfs-graph .zng-zoom .zs::-moz-range-track{height:4px;border-radius:2px;background:#dde4e8}
+#znfs-graph .zng-zoom .zs::-moz-range-thumb{width:13px;height:13px;border-radius:50%;
+  background:#fff;border:2px solid var(--blue,#0a5f6b);box-shadow:0 1px 2px rgba(14,44,64,.25)}
+#znfs-graph .zng-zoom .zs:focus-visible{outline:2px solid var(--blue,#0a5f6b);outline-offset:3px}
+/* tabular-nums and a fixed width: the readout swings between "45%" and "300%", and without a
+   reserved slot the ✕ next to it would shuffle sideways as you drag — the same jump the
+   2026-07-31d note further down this file describes for the hover readout. */
+#znfs-graph .zng-zoom .zp{font-size:11px;font-weight:700;color:#0e2c40;
+  font-variant-numeric:tabular-nums;width:34px;text-align:right}
+/* .nomin = every report already fits on one screen, so there is nothing to zoom OUT to and the
+   slider is sitting on its own minimum. The − is dimmed rather than disabled: it still carries its
+   tooltip, and a disabled control gives no clue why. */
+#znfs-graph .zng-zoom.nomin .zb[aria-label="Zoom out"]{opacity:.4}
 /* the body is a two-column layout: the checkbox rail is fixed-width and the chart takes the
    rest. min-width:0 on the chart column is what lets the inner scroller actually scroll
    instead of stretching the whole popup. */

@@ -1065,6 +1065,37 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
       /* TEMPORARY V1: cargo ops from the CARGO_OP boolean when ASSOCIATED_ACTIVITY is absent
          file-wide (v1NoActivity). V3 files keep the ASSOCIATED_ACTIVITY test unchanged. */
       const ops=M.filter(m=> useCargoOp ? m.cargoOp : MDA_CARGO_ACT[m.aa]);
+      /* 2026-08-09c (Aurvin, owner instruction): TAG THE REPORTS THE LADDER JUST COUNTED AS CARGO
+         OPERATIONS, so the Trends chart can draw its cargo diamond on exactly those reports.
+
+         ⚠ SCOPE NARROWED THE SAME DAY (2026-08-09d). The chart now reads ASSOCIATED_ACTIVITY
+         directly and uses this tag ONLY as the fallback for files where that column is blank —
+         i.e. the V1 format, where the cargo signal is the CARGO_OP column and resolving it needs
+         the `useCargoOp` gate below, which is the one thing the chart genuinely cannot reproduce.
+         The owner's reasons for the change (an existing saved workspace must show diamonds without
+         a re-import; cargo on an EOSP/SOSP row must be marked, and those records never enter
+         `st.members`) are in the note above zngIsCargoOp() in js/graph.js. Everything below still
+         applies to what this tag MEANS and why it is written here rather than re-derived.
+
+         WHY THE TAG IS WRITTEN HERE AND NOT RE-DERIVED IN js/graph.js. `ops` above is the ladder's
+         OWN answer to "which reports are cargo operations", and it is not a one-liner to
+         reproduce: it switches between ASSOCIATED_ACTIVITY and the V1 CARGO_OP boolean via
+         `useCargoOp`, which is itself the file-wide `v1NoActivity` OR the per-stay `stayV1` of a
+         mixed file. A copy of that rule in graph.js would be a second implementation of a
+         derivation rule this file owns — precisely the fork CLAUDE.md forbids, and it would drift
+         the day the V1 branch is reverted. Reading the tag instead makes the chart's diamonds an
+         AGREEMENT with the ladder by construction, which is what verify_graph_popup.js asserts.
+
+         THIS CANNOT CHANGE ANY DERIVATION. It writes one boolean onto members ALREADY selected
+         into `ops`; it does not read it back, no condition anywhere tests it, and `ops` itself is
+         computed exactly as before. Mutating a member record in place is the established pattern
+         here — the V1 block above does the same with `m.ocD`. The frozen arrival/departure/POC
+         ladder is untouched.
+
+         REVERT NOTE: this line is NOT part of the temporary V1 branch and must survive its
+         removal. When the branch goes, `useCargoOp` collapses to the plain MDA_CARGO_ACT test and
+         this tag keeps meaning exactly what it means today. */
+      for(const m of ops) m.cargoMarked = true;
       /* cargo-quantity fallback: EOSP vs SOSP CARGO_QTY — 0↔loaded or >5% of DWT
          (2026-07-20b: computed BEFORE the ladder — the DRIFTING rung now depends on it) */
       const qtyE = st.eosp? st.eosp.qty : (M.length? M[0].qty : 0);
@@ -1363,6 +1394,12 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
      data is never rewritten. For V3 files ocD === oc, so this is a no-op there. */
   const reports = recs.map(c=>({ rt:c.rt, role:c.role||"", t:c.dt? iso(c.dt):c.tEnd, ts:c.tStart||null, te:c.tEnd||null,
     oc:c.oc||"", ocD:c.ocD||c.oc||"", aa:c.aa||"", opl:!!c.opl, poc:c.pocFile||"", qty:c.qty||0, qtyHas:!!c.qtyHas, dist:c.dist||0,
+    /* 2026-08-09c: the ladder's own "this report is a cargo operation" verdict, tagged in the stay
+       loop above — see the long note there for why it is carried rather than re-derived. Read
+       ONLY by the Trends chart's cargo diamond (js/graph.js). Named `cargoOp`, not `cargo`: the
+       chart already uses `cargo` for the cargo QUANTITY on board, a different fact. It is a new field on the in-memory
+       report record and is NOT in any download's column list, so no export changed. */
+    cargoOp:!!c.cargoMarked,
     voy:c.voy||"",
     lat:c.lat??null, lon:c.lon??null, org:c.org||"", cur:c.cur||"", dst:c.dst||"",
     portN:c.portN||"", ctry:c.ctry||"", regn:c.regn||"",
