@@ -42,7 +42,9 @@
    and still feeds the CII ice correction; only the display was dropped.)
    ============================================================================ */
 
-var ZNFS = { built:false, open:false, tab:"trace", wentFullscreen:false, prevTab:"work", home:{} };
+/* 2026-08-09h: `wentFullscreen` was dropped from this state — the overlay no longer asks the
+   browser for real fullscreen (it took Chrome's pinch zoom away; see the note in znfsOpen). */
+var ZNFS = { built:false, open:false, tab:"trace", prevTab:"work", home:{} };
 
 /* the three relocatable panels, in the order the owner asked for.
    2026-07-28b (Aurvin, owner instruction): labels renamed to REPORTS / LEGS / VOYAGES and the
@@ -2196,18 +2198,26 @@ function znfsOpen(){
   znfsRenderKpis();
   znfsTab(ZNFS.tab);
 
-  /* real browser fullscreen, requested on <html> (NOT on the overlay) so that the
-     info-icon popovers — which toggleInfo reparents to document.body — stay inside
-     the fullscreen element and remain visible. */
-  try{
-    var d = document.documentElement;
-    var req = d.requestFullscreen || d.webkitRequestFullscreen || d.msRequestFullscreen;
-    if(req && !document.fullscreenElement){
-      var p = req.call(d);
-      ZNFS.wentFullscreen = true;
-      if(p && p.catch) p.catch(function(){ ZNFS.wentFullscreen = false; });   // blocked (e.g. some file:// cases) — overlay still works
-    }
-  }catch(e){ ZNFS.wentFullscreen = false; }
+  /* 2026-08-09h (Aurvin, owner instruction) — THE FULLSCREEN API CALL WAS REMOVED HERE.
+     ------------------------------------------------------------------------------
+     This used to call requestFullscreen() on <html>, which hid Chrome's tab strip and
+     URL bar. It was removed because of the side effect: Chrome DELIBERATELY switches its
+     own pinch-to-zoom OFF for as long as any page is fullscreen that way (the same rule a
+     video player lives under), and no page-side setting can bring it back. The owner
+     zooms this view constantly on a trackpad, so losing pinch cost more than the ~90px of
+     screen the URL bar takes back.
+
+     The overlay itself does all the real work and always did: #znfs is position:fixed,
+     inset:0, z-index 9000, and body.znfs-open hides the header/nav/main behind it. It
+     still covers the entire browser window. The only thing that changed is that the
+     window is no longer the entire SCREEN — and Chrome's native pinch zoom, Ctrl/⌘ +/−
+     and everything else browser-level now work in here exactly as they do on the
+     ordinary calculator page.
+
+     If true edge-to-edge is ever wanted for a demo or a screenshot, Chrome's own
+     fullscreen (⌘⌃F on a Mac, F11 on Windows) still does it — and, unlike the API call,
+     it leaves pinch zoom working. Do NOT re-add requestFullscreen here without asking
+     the owner: it silently takes pinch zoom away again. See HANDOFF_LOG.md 2026-08-09h. */
 }
 
 function znfsClose(){
@@ -2240,13 +2250,11 @@ function znfsClose(){
   document.getElementById("znfs").classList.remove("on");
   document.body.classList.remove("znfs-open");
 
-  if(ZNFS.wentFullscreen){
-    ZNFS.wentFullscreen = false;
-    try{
-      var x = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
-      if(x && document.fullscreenElement) { var p = x.call(document); if(p && p.catch) p.catch(function(){}); }
-    }catch(e){}
-  }
+  /* 2026-08-09h: the matching exitFullscreen() went with the requestFullscreen() in
+     znfsOpen — see the long note there. Nothing to undo any more: the overlay never
+     put the browser into fullscreen in the first place. If the user has pressed ⌘⌃F /
+     F11 themselves, that is THEIR window state and closing this overlay must not
+     cancel it. */
 
   try{ showTab(ZNFS.prevTab); }catch(e){}   // restores display, the .shell body class and re-renders
 }
@@ -2717,8 +2725,13 @@ function znfsRegRender(){
     '</div>';
 }
 
-/* Escape closes. In real fullscreen most browsers swallow Escape to leave
-   fullscreen and never fire keydown, so fullscreenchange is the backstop.
+/* Escape closes. (Historic note, 2026-08-09h: the second half of this used to matter
+   because the overlay put the browser into REAL fullscreen, where most browsers swallow
+   Escape to leave fullscreen and never fire keydown — so a fullscreenchange listener was
+   the backstop. The overlay no longer does that, so this keydown handler is now the only
+   path and Escape reaches it normally. The fullscreenchange backstop that used to sit
+   below was deleted with it: if the user presses ⌘⌃F / F11 themselves, leaving that way
+   is a change to THEIR window and must not close this overlay.)
    2026-07-30 (Aurvin): the CII trend popup is layered ON TOP of the overlay, so Escape has
    to peel ONE layer at a time — popup first, full screen only once the popup is gone.
    Without this first branch a single Escape would dismiss the whole overlay from under the
@@ -2738,11 +2751,6 @@ document.addEventListener("keydown", function(ev){
   if(typeof ZNG !== "undefined" && ZNG.open){ ev.preventDefault(); ev.stopPropagation(); zngClose(); return; }
   if(ZNFS.open){ ev.preventDefault(); znfsClose(); }
 }, true);
-["fullscreenchange","webkitfullscreenchange","msfullscreenchange"].forEach(function(evt){
-  document.addEventListener(evt, function(){
-    if(ZNFS.open && ZNFS.wentFullscreen && !document.fullscreenElement && !document.webkitFullscreenElement) znfsClose();
-  });
-});
 
 /* ------------------------------------------------------------------- hooks */
 /* Keep the overlay chrome fresh without editing js/ui.js. Top-level function

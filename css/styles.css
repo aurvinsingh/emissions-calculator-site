@@ -479,11 +479,47 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 /* 2026-07-28k (Aurvin, owner instruction — spacing change validated in the separate cloud-design
    preview, ported here 1:1): loosen ONLY vertical spacing in this header block, no colour/font/
    width/content changes. Top padding 20px -> 38px (horizontal and bottom stay 0). */
-.znfs-top{background:#fff;border-bottom:1px solid #e6eaed;padding:38px 30px 0;flex:0 0 auto}   /* was 20px 30px 0 */
+/* ==========================================================================
+   2026-08-09i (Aurvin, owner instruction) — THE HEADER BLOCK IS TIGHTENED TO BUY THE
+   TABLE ONE MORE ROW. THIS DELIBERATELY REVERSES PART OF 2026-07-28k AND 2026-08-01j/k.
+   ==========================================================================
+   WHY NOW: 2026-08-09h removed the requestFullscreen() call (it was what stopped Chrome's
+   pinch zoom working), so the browser's tab strip and URL bar are visible again and the
+   overlay lost roughly 90px of height — about one and a half table rows. The owner asked
+   for a row to be won back from the chrome, and pointed specifically at the empty white
+   band between the vessel-particulars strip and the KPI cards.
+
+   WHAT THAT BAND ACTUALLY WAS: nothing. It is two paddings meeting — `.znfs-parts`'
+   26px bottom and `.znfs-kpis`' 22px top — 48px of white with no content in it.
+
+   THE HISTORY THIS OVERRULES, stated plainly so nobody thinks it was overlooked:
+     • 2026-07-28k deliberately made this block airier (top padding 20->38, the gap under
+       the vessel name 22->46). That was the owner's own "airier top" choice.
+     • 2026-08-01j tried to reclaim space from the KPI strip and tab row and the owner
+       reviewed it on screen and said it read CRAMPED; 2026-08-01k gave most of it back.
+       That same note records that he explicitly chose NOT to touch this white header
+       block, while acknowledging its ~100px of whitespace "is the larger prize".
+     • 2026-08-09i is him taking the prize, having asked for it directly.
+
+   WHY THIS SHOULD NOT REPEAT 08-01j's "cramped" outcome: 08-01j took its pixels from
+   around the CARDS, where the neighbours are dense bordered boxes and 12px reads as a
+   collision. This change takes them from four places in the OPEN header, spread out, and
+   leaves nothing closer to its neighbour than 14px. No font size, no colour, no border
+   and no content changes — only four vertical numbers. Every previous value is kept in
+   the trailing comment on its own line, so this is reversible one number at a time.
+
+   THE BUDGET: top padding -16, gap under the title -28, gap above the title -6,
+   particulars bottom -16, cards top -6  =  ~72px. A REPORTS row on a three-fuel ship
+   (HFO/MGO/LNG stacked) measures ~57px, so that is one clear row, with more on a one- or
+   two-fuel vessel where a row is nearer 40px.
+   ========================================================================== */
+.znfs-top{background:#fff;border-bottom:1px solid #e6eaed;padding:22px 30px 0;flex:0 0 auto}   /* 2026-08-09i: 38px -> 22px. was 20px 30px 0 before 07-28k */
 .znfs-crumbs{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#7a8896}
 .znfs-crumbs b{color:#2e7c99;font-weight:600}
-/* 2026-07-28k: 10px 0 22px -> 20px 0 46px (20px above the vessel name, 46px below it) */
-.znfs-title{display:flex;align-items:flex-end;gap:10px;margin:20px 0 46px}   /* was 10px 0 22px */
+/* 2026-07-28k: 10px 0 22px -> 20px 0 46px (20px above the vessel name, 46px below it)
+   2026-08-09i: -> 14px 0 18px. The 46px under a 29px heading was the single most generous
+   number in this file; 18px is still a normal, unhurried gap for type that size. */
+.znfs-title{display:flex;align-items:flex-end;gap:10px;margin:14px 0 18px}   /* was 20px 0 46px, and 10px 0 22px before 07-28k */
 .znfs-title h1{margin:0;font-size:29px;font-weight:800;letter-spacing:-0.4px;color:#0e2c40;line-height:1.1}
 .znfs-title .caret{color:#0e2c40;font-size:11px;padding-bottom:8px}
 .znfs-toprt{margin-left:auto;display:flex;align-items:center;gap:10px;padding-bottom:3px}
@@ -504,7 +540,10 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 .znfs-close:hover{background:#fdecec;border-color:#e3b7b3;color:#b3261e}
 /* vessel particulars strip */
 /* 2026-07-28k: bottom padding 18px -> 26px */
-.znfs-parts{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:0 0 26px;font-size:12.5px;color:#5c6c7a}   /* was 0 0 18px */
+/* 2026-08-09i: bottom padding 26px -> 10px. This is the UPPER half of the empty band the
+   owner circled; the lower half is .znfs-kpis' top padding below. Together the dead gap
+   between the particulars strip and the cards goes 48px -> 26px. */
+.znfs-parts{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:0 0 10px;font-size:12.5px;color:#5c6c7a}   /* was 0 0 26px, and 0 0 18px before 07-28d */
 .znfs-parts .p{padding:0 14px;border-right:1px solid #e2e8ec;white-space:nowrap}
 .znfs-parts .p:first-child{padding-left:0}
 .znfs-parts .p:last-child{border-right:0}
@@ -572,7 +611,12 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    recovered instead (see the #znfs-slot .card.panelA rule further down). 22px rather than the
    original 26px: the difference is not perceptible next to the cards' own 8px header padding,
    and the 4px stays with the table. */
-.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:22px 30px 2px}   /* was 14px, 34px, 26px, then 12px 30px 2px; 5 cols during 07-30h..l */
+/* 2026-08-09i: top padding 22px -> 16px, the LOWER half of the empty band the owner circled
+   (the upper half is .znfs-parts' bottom padding). Deliberately a small cut: 2026-08-01j
+   took this to 12px and the owner said the cards read cramped, so the pixels this time come
+   mostly from the open header above, not from around the cards. 16px + the strip's 10px
+   leaves a 26px gap, still a clear separation, where there was 48px of nothing. */
+.znfs-kpis{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:16px 30px 2px}   /* was 22px; and 14px, 34px, 26px, 12px before that; 5 cols during 07-30h..l */
 .znfs-kpis[data-n="1"]{grid-template-columns:minmax(0,1fr)}
 .znfs-kpis[data-n="2"]{grid-template-columns:repeat(2,minmax(0,1fr))}
 .znfs-kpis[data-n="3"]{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -585,16 +629,19 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
    above. Left as-is they would have been LARGER than the base value, i.e. a narrower window would
    have got MORE whitespace than a wide one — the opposite of this block's whole purpose.
    2026-08-01k: base went back up to 22px, so these go back up too (10 -> 18, 8 -> 14), staying
-   BELOW the base as this block intends. Nothing else in these two rules is touched. */
+   BELOW the base as this block intends. Nothing else in these two rules is touched.
+   2026-08-09i: base came down to 16px, so these come down again in step (18 -> 13, 14 -> 11).
+   Left alone, 18px would once more have been LARGER than the base — a narrower window getting
+   MORE whitespace than a wide one, the exact inversion this block exists to prevent. */
 @media(max-width:1180px){
-  .znfs-kpis{gap:9px;padding:18px 18px 2px}
+  .znfs-kpis{gap:9px;padding:13px 18px 2px}
   .znk>h3{padding:7px 10px;font-size:11.5px}
   .znk .body{padding:8px 10px 9px;gap:4px}
   .znk .hero .n{font-size:20px}
   .znk .hero .u,.znk .kvz{font-size:11px}
 }
 @media(max-width:980px){
-  .znfs-kpis{gap:7px;padding:14px 14px 2px}
+  .znfs-kpis{gap:7px;padding:11px 14px 2px}   /* 2026-08-09i: 14 -> 11, in step with the 16px base */
   .znk>h3{padding:6px 8px;font-size:11px;letter-spacing:0}
   .znk .body{padding:7px 8px 8px}
   .znk .hero{gap:5px}
@@ -904,7 +951,7 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
   .znfs-top{padding:10px 14px 0}
   /* 2026-07-30m: the ONE place the cards are still allowed to stack. Overrides every
      [data-n] rule above (same specificity, later in the file). Phone widths only. */
-  .znfs-kpis,.znfs-kpis[data-n]{grid-template-columns:1fr;padding:12px 14px 4px}
+  .znfs-kpis,.znfs-kpis[data-n]{grid-template-columns:1fr;padding:10px 14px 4px}   /* 2026-08-09i: 12 -> 10, so the phone step stays below the 980px one (now 11px) */
   .znfs-tabs{padding:10px 14px 8px;flex-wrap:wrap}
   .znfs-filters{margin-left:0;flex-wrap:wrap}
   .znfs-title{margin:6px 0 12px}

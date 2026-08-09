@@ -464,22 +464,40 @@ var ZNG_MINSLOT = 9;   // below this the bars stop shrinking and the chart scrol
    step. Overlap is handled by MERGING (see the cargo pass in zngBandStrip), not by shrinking.
 
    HEIGHTS, as fractions of the band cell:
-     • bunker circle  — 0.50, the centre, UNCHANGED. The owner was offered a move to the top quarter
-       (so all three markers would own a line) and declined: "They will never clash in the same
-       report. They can be safely at the center." A bunkering has no operational state of its own,
-       so it cannot also be a cargo operation on a port stay. See zngBandStrip for the one
-       theoretical case this leaves and why no shouldering code was written for it.
      • cargo diamond  — 0.50, the centre: "placed at this level where we see this OPL circle right
        now", i.e. where OPL sat before it moved down.
      • OPL circle     — 0.75, a quarter of the bar's height up from the bottom edge. Confirmed with
        the owner against a lower (0.875) and a shallower (0.625) alternative.
+     • bunker circle  — 0.75 TOO, since 2026-08-10 (see next paragraph). It was at 0.50 from
+       2026-08-01u until then.
    Fractions, not pixel literals, so all three follow ZNG_BCELL if the band is resized again — which
-   it was, only hours earlier, on 2026-08-09. */
+   it was, only hours earlier, on 2026-08-09.
+
+   ⚠ 2026-08-10 (Aurvin, owner instruction): THE BUNKER CIRCLE MOVES DOWN ONTO THE OPL LINE.
+   Owner: "copy the behaviour of the OPL red circle to the Bunker orange circle — same size, same
+   position height in the bar, same zoom in/out behaviour. Just the colours same as now."
+   SIZE and ZOOM needed no code at all: both circles already read the ONE ZNG_MK_R constant and
+   neither has ever had a column-width cap (08-09f removed the last one), so they were already
+   identical in both respects — confirmed with the owner before changing anything, and he confirmed
+   height was the only real difference he was seeing. So this change is exactly one number: the
+   bunker dot's Y fraction becomes ZNG_MK_Y_OPL. The two now share ONE constant and cannot drift.
+
+   WHAT THAT COSTS, and how it is paid: the vertical separation that 2026-08-09c relied on is gone,
+   so a report that is BOTH a bunkering and flagged OUTSIDE_PORT_LIMIT would now draw two dots on
+   the same point. The owner chose SHOULDERING THEM SIDEWAYS (over "let OPL cover the amber dot" and
+   "ignore it"), which is what 2026-08-02 did before the heights were split — so the `bunkerAt` map
+   in zngBandStrip is reinstated. ZNG_MK_SHOULDER is the half-offset: amber goes left, rose right.
+   1.4 × the radius puts 2.8 R between the centres against 2 R of diameter, leaving a 2.25px gap —
+   about 1.25px of it still visible after each circle's 1px outline eats 0.5px a side. Wider would
+   push each marker further off the column it belongs to for a case that is rare; narrower and the
+   two outlines merge into a peanut. Applied ONLY to a column that has both markers: a lone bunker
+   dot and a lone OPL dot each stay dead centre of their own column, as they do today. */
 var ZNG_MK_R      = ZNG_BCELL / 16;              // 2.8125 — bunker & OPL circle radius
 var ZNG_MK_DIAG_X = 2;                           // 2026-08-09e owner: "double the present size"
 var ZNG_MK_DIAG   = ZNG_MK_R * 1.25 * ZNG_MK_DIAG_X;  // 7.03 — cargo diamond half-diagonal
-var ZNG_MK_Y_MID  = 0.50;                        // bunker circle and cargo diamond
-var ZNG_MK_Y_OPL  = 0.75;                        // OPL circle — a quarter-height up from the bottom
+var ZNG_MK_Y_MID  = 0.50;                        // cargo diamond (bunker circle sat here until 2026-08-10)
+var ZNG_MK_Y_OPL  = 0.75;                        // OPL circle AND, since 2026-08-10, the bunker circle — a quarter-height up from the bottom
+var ZNG_MK_SHOULDER = ZNG_MK_R * 1.4;            // 3.94 — sideways half-offset, ONLY when one report is both a bunkering and OPL (2026-08-10)
 
 /* ---------------------------------------------------------------- horizontal zoom (2026-08-09b)
    2026-08-09b (Aurvin, owner instruction): "put a zoom-in/zoom-out slider which can zoom in and
@@ -1941,11 +1959,19 @@ function zngBandStrip(){
   var y = ZNG_OP_PAD_T, h = ZNG_BCELL;   // 2026-08-09: was ZNG_EPAD_T — split off so Operation's own padding can move without touching Eligibility's
   var lbl = {};
   for(var z = 0; z < ZNG_STATES.length; z++) lbl[ZNG_STATES[z].id] = ZNG_STATES[z].label;
-  /* 2026-08-02 had a `bunkerAt` map here, recording which columns got a bunker dot so the OPL pass
-     could shoulder the two apart horizontally. REMOVED 2026-08-09c: the OPL dot now sits at 0.75 of
-     the cell and the bunker dot at 0.50, so they are separated vertically and neither needs to leave
-     the centre of its own column. A report can still be both (a bunkering tagged
-     OUTSIDE_PORT_LIMIT) — it now simply gets two markers, one above the other. */
+  /* `bunkerAt` records which columns drew an amber bunker dot, so the OPL pass below can shoulder
+     the two apart horizontally when one report is both.
+     HISTORY, because this map has now been added, removed and added back and the next reader
+     deserves to know why rather than assuming churn:
+       • 2026-08-02 added it — both dots sat on the centre line, so they had to move apart sideways.
+       • 2026-08-09c removed it — the OPL dot dropped to 0.75 of the cell and the bunker dot stayed
+         at 0.50, which separated them VERTICALLY and made a sideways nudge pointless.
+       • 2026-08-10 restored it (owner instruction) — the bunker dot moved DOWN onto the OPL line, so
+         the vertical separation is gone again and the sideways offset is back to being the only
+         thing keeping a both-at-once report readable. See the ZNG_MK_SHOULDER note.
+     Keyed by column index; only set when the dot is actually drawn, so an OPL report that is not a
+     bunkering is never nudged. */
+  var bunkerAt = {};
   for(var i = 0; i < n; i++){
     var st = pts[i].state;
     if(st == null){
@@ -2006,16 +2032,21 @@ function zngBandStrip(){
              '<title>' + zngEsc(zngStamp(pts[i].t)) + ' — bunkering (no operational state of its own; ' +
              'the band is carried through from the report ' + carryDir + ', ' + zngEsc(lbl[carry] || carry) +
              ')</title></rect>');
-      /* 2026-08-09c: half the previous diameter (ZNG_MK_R), still dead centre, and NO LONGER
-         SHOULDERED SIDEWAYS when the report is also OPL — the OPL dot moved down to 0.75 of the
-         cell, so the two are now separated vertically by 11.25px against a combined 5.6px of
-         diameter and cannot touch. The old horizontal nudge would only have pushed this marker
-         off the centre of its own column for no reason. */
-      /* 2026-08-09e: gains the shared outline (owner instruction). Amber scored 1.24 against the
+      /* 2026-08-09c: half the previous diameter (ZNG_MK_R).
+         2026-08-09e: gains the shared outline (owner instruction). Amber scored 1.24 against the
          palest band — it was dissolving into At-Sea cells exactly the way the indigo diamond was
-         dissolving into navy ones, just less obviously. Size deliberately unchanged. */
-      s.push('<circle class="zng-bbunker" cx="' + (bx + slot / 2).toFixed(2) +
-             '" cy="' + (y + h * ZNG_MK_Y_MID).toFixed(2) +
+         dissolving into navy ones, just less obviously. Size deliberately unchanged.
+         2026-08-10 (owner instruction): DROPS from the centre line to ZNG_MK_Y_OPL, the same height
+         as the rose OPL dot — "copy the behaviour of the OPL red circle to the Bunker orange
+         circle … same position height in the bar". Size and zoom behaviour needed no change; they
+         were already identical (one shared ZNG_MK_R, no column-width cap on either). The height is
+         read from the SAME constant the OPL pass reads, not a copy of its value, so the two can
+         never drift apart. It also shoulders LEFT when this same report is flagged OPL — see the
+         ZNG_MK_SHOULDER note; the rose dot shoulders right by the same amount below. */
+      var bOpl = !!pts[i].opl;
+      if(bOpl) bunkerAt[i] = 1;
+      s.push('<circle class="zng-bbunker" cx="' + (bx + slot / 2 - (bOpl ? ZNG_MK_SHOULDER : 0)).toFixed(2) +
+             '" cy="' + (y + h * ZNG_MK_Y_OPL).toFixed(2) +
              '" r="' + ZNG_MK_R.toFixed(2) + '" fill="#eab308" stroke="' + ZNG_MK_STROKE +
              '" stroke-width="' + ZNG_MK_STROKE_W + '" pointer-events="none"></circle>');
       continue;
@@ -2061,15 +2092,18 @@ function zngBandStrip(){
      about the filter, exactly as 08-01u decided for the bunker join. */
   /* 2026-08-09c (owner instruction): the OPL dot HALVES in diameter and DROPS to 0.75 of the cell —
      a quarter of the bar's height up from the bottom — vacating the centre line for the new cargo
-     diamond. It also loses its sideways shoulder against the bunker dot: with one marker at 0.50
-     and the other at 0.75 of a 45px cell they are 11.25px apart vertically and 5.6px across, so
-     there is nothing left to avoid, and staying on the column centre keeps every marker aligned to
-     the report it belongs to. */
+     diamond. It also lost its sideways shoulder against the bunker dot, which then stayed at 0.50.
+     ⚠ 2026-08-10 (owner instruction) PUT THE SHOULDER BACK, because the bunker dot moved down onto
+     this same 0.75 line. The heights are no longer what separates the two — colour and a small
+     sideways offset are — and the offset applies ONLY where both markers land on one column. */
+  /* 2026-08-10 (owner instruction): the bunker dot joined this height, so the sideways shoulder is
+     back — rose goes RIGHT of centre, amber LEFT, and ONLY on a column that drew both. Every other
+     OPL dot is untouched and stays on its column's centre. */
   for(var oi = 0; oi < n; oi++){
     if(!pts[oi].opl) continue;
     /* 2026-08-09e: same shared outline as the other two markers, size unchanged (owner: outline
        them, keep them small — the diamond is the one that had to grow). */
-    s.push('<circle class="zng-bopl" cx="' + (oi * slot + slot / 2).toFixed(2) +
+    s.push('<circle class="zng-bopl" cx="' + (oi * slot + slot / 2 + (bunkerAt[oi] ? ZNG_MK_SHOULDER : 0)).toFixed(2) +
            '" cy="' + (y + h * ZNG_MK_Y_OPL).toFixed(2) +
            '" r="' + ZNG_MK_R.toFixed(2) + '" fill="' + ZNG_OPL_COL + '" stroke="' + ZNG_MK_STROKE +
            '" stroke-width="' + ZNG_MK_STROKE_W + '" pointer-events="none"></circle>');
@@ -2090,14 +2124,12 @@ function zngBandStrip(){
      cannot inherit a scale from anything and reads identically at every zoom level. A diamond and
      not a square-on-point-by-accident — the four corners are what the owner asked for.
 
-     THE ONE CASE WITH NO SHOULDERING CODE. This sits at the same height as the bunker dot. The owner
-     was asked and answered that the two can never occur on one report ("They will never clash in the
-     same report"), which the data agrees with: a bunkering is a stock movement that zngStateOf()
-     gives no operational state, so it is not a member of a port stay and can never be in `ops`. If a
-     future file ever did produce both, the diamond would simply cover the smaller amber dot — the
-     hover card still names both, so nothing becomes unreadable. Deliberately not defended against
-     with a nudge, which would have moved a marker off its column centre in every normal case to
-     guard one that cannot happen.
+     THE DIAMOND NOW HAS THIS HEIGHT TO ITSELF. It shared the centre line with the bunker dot from
+     2026-08-09c until 2026-08-10, when the owner moved the bunker dot down to the OPL line; the two
+     could never clash anyway ("They will never clash in the same report" — a bunkering is a stock
+     movement that zngStateOf() gives no operational state, so it is not a member of a port stay and
+     can never be in `ops`), and now they cannot even overlap. So there is still no shouldering code
+     here, and it is now unreachable rather than merely improbable.
 
      `pointer-events="none"` like the other two markers, so the cell underneath keeps its <title> and
      the strip's hit rect keeps driving the hover card. */
@@ -2807,10 +2839,12 @@ function zngRender(){
         "time is charged to the voyage leg, not the port stay</b>, so an EU call with a long " +
         "anchorage wait shows In-Port sitting inside a 50% To-EU/From-EU colour. That is the " +
         "regulation's own boundary, not a discrepancy.<br><br>" +
-        /* 2026-08-09c: the band now carries THREE marker types at three fixed heights, so the ⓘ
-           lists them together and says which height each occupies — that is the fastest way to read
-           the strip, and the previous wording described only two of them, inline, mid-paragraph. */
-        "<b>Three markers</b> sit on the Operation band, each at its own height and each outlined " +
+        /* 2026-08-09c: the band now carries THREE marker types, so the ⓘ lists them together and
+           says where each sits — that is the fastest way to read the strip, and the previous
+           wording described only two of them, inline, mid-paragraph.
+           2026-08-10: they occupy TWO heights now, not three — the bunker dot joined the OPL line on
+           owner instruction — so the wording no longer promises a height per marker. */
+        "<b>Three markers</b> sit on the Operation band, on two lines, each outlined " +
         "so it reads on the pale and the dark bands alike. A <b>white diamond on the centre " +
         "line</b> — the largest of the three — marks a <b>cargo operation</b>: every report whose " +
         "ASSOCIATED_ACTIVITY names " +
@@ -2824,7 +2858,9 @@ function zngRender(){
         "report flagged <b>OPL</b> " +
         "(OUTSIDE_PORT_LIMIT = TRUE) — the same flag the Report-Wise tab badges. OPL activity is " +
         "normally scored as transit rather than a port of call, so it falls outside EU ETS / UK ETS " +
-        "/ FuelEU. An <b>amber dot on the centre line</b> is a bunkering join, not an OPL. The hover " +
+        "/ FuelEU. An <b>amber dot</b> is a bunkering join, not an OPL; since 2026-08-10 it sits on " +
+        "that same lower line and is told apart by its colour, so on the rare report that is both " +
+        "the two sit side by side, amber left and rose right. The hover " +
         "card repeats whichever apply.<br><br>" +
         "<b>Totals</b> sit at the right-hand end of each parameter's own row, split by fuel and then " +
         "combined. They follow both the Scope and the Fuel ticks, so a total always equals the bars " +

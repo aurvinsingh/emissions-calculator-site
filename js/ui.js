@@ -4574,7 +4574,33 @@ function breakdownGrid(R, tips){
              so the voyage number stays on screen while the regulation columns scroll sideways.
              That is why track 2 became a fixed 280px in BR_GRID: a sticky offset has to be a
              real length, and an elastic 0.5fr track has no length to pin against. */""}
-        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${BR_FREEZE3}z-index:2;background:${bg};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? String(voyNo).split(",").map(v=>svVoyLink(v.trim(), d.tStart)).join(", ") : brDash}</div>
+        ${/* 2026-08-09j (Aurvin, owner instruction) — MULTI-VOYAGE CELLS NOW STACK INSTEAD OF
+             SPILLING OVER THE COLUMN NEXT DOOR.
+             THE BUG HE REPORTED: a leg that straddles a voyage change shows both numbers, e.g.
+             "24013, 25001". That needs ~100px; this track is minmax(84px,0.6fr). The cell was a
+             flex box with justify-content:flex-end and NOWHERE to wrap, so the overflow ran
+             LEFTWARDS — and because this column is sticky with z-index:2 it painted straight
+             over the frozen "Activity & timeframe" column, on top of the AT-BERTH / EU chips.
+             TWO CHANGES, both presentation only — brVoyNos() and every number it produces are
+             untouched, and a leg inside ONE voyage renders exactly as before:
+               1. the separator is now a line break, not ", ", so several numbers stack one per
+                  line (the owner's choice of the four offered). The grid row is sized by its
+                  TALLEST cell and the Activity cell beside it already carries a 2-3 line
+                  port/date block, so in practice no row gets taller.
+               2. the content sits in a wrapper span with min-width:0 and overflow-wrap:anywhere.
+                  This is the part that fixes the CLASS of bug rather than this one instance: an
+                  anonymous flex item cannot be styled, and its automatic minimum size is its
+                  min-content width, so a single long voyage number (an alphanumeric charterer
+                  reference, say) would still have spilled sideways with no way to stop it. A real
+                  element can be told to shrink and to break.
+             Column widths were deliberately NOT touched (owner's explicit choice when asked):
+             BR_GRID's tracks feed the frozen-column offsets and the grid-track tests, so this
+             stays a pure presentation change. Alignment also stays RIGHT — he was offered
+             left-aligning to match the header and did not take it.
+             NOTE: this changes DEFAULT rendered content for multi-voyage legs, so
+             verify_grid_columns.js's byte-identity baseline had to be repointed — see the dated
+             note above BACKUP in that file, and HANDOFF_LOG.md 2026-08-09j. */""}
+        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${BR_FREEZE3}z-index:2;background:${bg};padding:${cellPad};border-right:1px solid #e2e8f0;display:flex;align-items:center;justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#0f172a">${voyNo? `<span style="min-width:0;overflow-wrap:anywhere">${String(voyNo).split(",").map(v=>svVoyLink(v.trim(), d.tStart)).join("<br>")}</span>` : brDash}</div>
         <!-- 2026-07-26c (Aurvin, owner instruction): Cargo now has its own column between
              Voyage No and Dist., matching where it sits in the Workspace / Report-Wise
              tables. Owner chose PLAIN NUMBERS here — the old grey "ballast" word that the
@@ -5490,7 +5516,15 @@ function voyageGrid(R, tips){
              changes as the Leg-Wise Voyage No cell, see the long notes on BR_FREEZE3 and on that
              cell. The link is built inside vwVoyCell() so the "written N different ways" ✎ marker
              stays attached to it. */""}
-        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${VW_FREEZE3}z-index:2;background:${bg};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</div>
+        ${/* 2026-08-09j (Aurvin, owner instruction): the same overflow guard as the Leg-Wise cell
+             (see the long note there). VOYAGES only ever shows ONE canonical number, so there is
+             nothing here to stack — but this cell is the same sticky, right-aligned, no-wrap flex
+             box over the same 84px track, so a long alphanumeric voyage number would spill left
+             over the frozen "Voyage & timeframe" column in exactly the same way. The wrapper span
+             gives it something that can be told to shrink (min-width:0) and to break
+             (overflow-wrap:anywhere); an anonymous flex item cannot be. No visible change for a
+             normal number, and vwVoyCell()'s ✎ "written N different ways" marker is untouched. */""}
+        <div class="hicell" style="grid-column:3;grid-row:1 / span ${span};${VW_FREEZE3}z-index:2;background:${bg};padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;border-right:1px solid #e2e8f0;font-weight:700;color:#0e7490;font-variant-numeric:tabular-nums"><span style="min-width:0;overflow-wrap:anywhere">${g.voy?vwVoyCell(g):'<span style="color:#94a3b8;font-weight:400" title="These rows carry no VOYAGE_NUMBER in the source file (e.g. an OVD import, or hand-entered activity).">n/a</span>'}</span></div>
         ${cell(3,"1 / span "+span,"border-right:1px solid #e2e8f0;color:#475569;",brNum(g.dist,0))}
         ${fl(6,f=>`<span style="text-align:left;display:block;color:#334155">${esc(f.label)}</span>`,"text-align:left;")}
         ${fl(7,f=>brNum(f.tonnes,1),"padding-left:4px;color:#334155;")}
