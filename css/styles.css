@@ -1446,3 +1446,49 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
   .zng-rail{flex:0 0 auto;width:100%;border-right:0;border-bottom:1px solid #eef2f4;max-height:170px}
   .zng-chart{padding:8px}
 }
+
+/* ---- TOTAL-row KPI audit cards (2026-08-10, Aurvin — owner instruction) --------------------
+   The hover card behind every number in the sticky TOTAL row of the Leg-Wise and Voyage-Wise
+   tables. Built in js/ui.js (emkCardHtml / emkShow); see the long note above EMK_CARDS there.
+
+   position:fixed and appended to <body>, NOT absolute inside the table: the TOTAL row sits in
+   a sticky, horizontally-scrolling container which would clip the card or grow scrollbars just
+   to reveal it — the exact problem the ⓘ popovers hit in 2026-07-22h. top/left are written by
+   emkPlace() from the cell's screen rectangle; do not put static offsets back here.
+   pointer-events stay ON so a long card can be moved into and read; emkHide() tolerates that
+   by ignoring a mouseout whose destination is inside #emkTip. */
+.emk-tip{display:none;position:fixed;z-index:120;max-width:min(680px,94vw);max-height:60vh;
+  overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px 9px;font-size:11.5px;font-weight:400;line-height:1.45;color:var(--ink);
+  box-shadow:0 10px 30px rgba(20,40,70,.25);text-align:left;white-space:normal;
+  text-transform:none;letter-spacing:0;font-variant-numeric:tabular-nums}
+.emk-tip.on{display:block}
+/* full screen: #znfs is position:fixed, z-index:9000 with an OPAQUE background, so a card at
+   the base z-index would be painted underneath the overlay and the user would see nothing at
+   all — the same defect fixed for .ibpop in 2026-07-28h. Scoped to body.znfs-open so the
+   normal app's stacking is untouched. Do not lower this below #znfs's 9000. */
+body.znfs-open .emk-tip{z-index:9600}
+.emk-hd{font-weight:700;font-size:12px;color:var(--ink);letter-spacing:0}
+.emk-sub{font-size:10.5px;color:var(--sub);margin:1px 0 7px;font-weight:600}
+.emk-pre{background:#f6f9fb;border:1px solid #e6eef3;border-radius:6px;padding:6px 8px;margin:0 0 7px}
+.emk-pt{font-weight:700;font-size:10.5px;color:var(--sub);text-transform:uppercase;
+  letter-spacing:.03em;margin-bottom:3px}
+.emk-pl{display:flex;align-items:baseline;gap:12px;white-space:nowrap}
+.emk-pl span{flex:1 1 auto;color:#647684;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.emk-pl b{flex:0 0 auto;font-weight:700}
+.emk-t{border-collapse:collapse;width:100%;margin:0 0 6px}
+.emk-t th,.emk-t td{padding:2px 6px;text-align:right;white-space:nowrap}
+.emk-t th{font-size:10px;font-weight:700;color:var(--sub);text-transform:uppercase;
+  letter-spacing:.03em;border-bottom:1px solid #e6eef3}
+.emk-t th.k,.emk-t td.k{text-align:left;padding-left:0}
+.emk-t tbody tr.g td{font-weight:700}                       /* fuel summary line above its consumers */
+.emk-t tbody tr.s td.k{padding-left:12px;color:#647684}     /* a consumer inside that fuel */
+.emk-t tbody tr.s td{color:#475569}
+.emk-t tbody tr.tot td{font-weight:700;border-top:1px solid #cbd5e1;padding-top:3px}
+.emk-n{font-size:10.5px;line-height:1.45;color:#647684;margin-top:5px}
+.emk-n+.emk-n{margin-top:3px}
+.emk-n b{color:var(--ink)}
+/* the affordance lives here, not in the inline style of each TOTAL cell, so the cells' own
+   markup stays byte-identical apart from the two data- attributes (see the normaliser in
+   tools/verify_grid_columns.js). */
+[data-kt]{cursor:help}

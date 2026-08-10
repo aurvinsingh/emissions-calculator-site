@@ -4655,6 +4655,558 @@ function brFuelLines(d){
   return lines;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════════════════
+   TOTAL-ROW KPI AUDIT CARDS — "show the user what happens underneath"
+   2026-08-10 (Aurvin, EXPLICIT owner instruction, this session, after two clarifying-question
+   rounds). Hovering a number in the sticky TOTAL row of the Leg-Wise or Voyage-Wise table
+   opens a delayed card that breaks the figure down by FUEL TYPE and, where methane slip
+   differs between consumers, by CONSUMER within the fuel — showing the emission factors,
+   LCVs, coverage and phase-in that were ACTUALLY APPLIED.
+
+   Normal view and FULL SCREEN are covered by one implementation because they are the same
+   DOM: js/fullscreen.js moves the real panel nodes into the overlay rather than re-rendering
+   them (see znfsMountExtras there). The only full-screen-specific part is the z-index, which
+   css/styles.css raises under body.znfs-open exactly as the ⓘ popovers already had to.
+
+   FOUR OWNER DECISIONS ARE BAKED IN — do not quietly simplify any of them:
+   1. FULL AUDIT TRAIL, not a bare contribution list: tonnes → factor → intermediate →
+      contribution → sum. A per-fuel share list was offered and explicitly rejected.
+   2. PER-CONSUMER EXPANSION wherever slip differs (main engine / auxiliaries / boiler /
+      other). A single blended-slip line was offered and explicitly rejected. This is the
+      only reason js/engine.js keeps the `parts` working tape.
+   3. FuelEU CB and PENALTY show the REAL PERIOD CHAIN first (target vs attained GHG
+      intensity × scoped energy), and only then the per-fuel split, labelled indicative.
+      They are not per-fuel quantities in law and these cards must never imply they are.
+   4. COVERAGE is shown as the explicit ROW MIX (n rows at 100% / 50% / 0%), not one blended
+      percentage — the blend is an artefact of which rows happen to be ticked.
+
+   THE CARD NEVER RE-CALCULATES A KPI. Every figure is read from the same rowDetails /
+   per-fuel / per-part records the TOTAL row itself sums, or is arithmetic over those records
+   that must close back to the printed total. tools/verify_total_tooltips.js asserts exactly
+   that, per card, in both views: if a card and the cell it explains ever disagree, or if a
+   card's own lines stop adding up to its own total, the tests fail. That is what stops this
+   feature from becoming a confident, wrong explanation of a correct number.
+   ══════════════════════════════════════════════════════════════════════════════════════════ */
+/* ms before the card appears. 2026-08-10c (Aurvin, owner instruction): 500 → 1500. The card is
+   large and the TOTAL row is narrow, so at half a second it was opening while the mouse was
+   merely crossing the row on its way somewhere else. A deliberate hover is now required. */
+const EMK_DELAY = 1500;
+const EMK_CONSUMER = { ME:"Main engine", AE:"Auxiliary engines", BLR:"Boiler", OTH:"Other consumers" };
+const EMK_CONS_ORDER = ["ME","AE","BLR","OTH"];
+/* the attribute the hover handler looks for. Returns "" when a cell has no card, so every
+   existing cell(...)/rcell(...) call that passes no key emits byte-identical HTML — which is
+   what lets tools/verify_grid_columns.js keep its baseline instead of being repointed. */
+function emkAttr(kt, view){ return kt ? ` data-kt="${kt}" data-kv="${view}"` : ""; }
+
+/* The ticked rows behind a TOTAL cell, for BOTH views. Leg-Wise totals ARE rowDetails;
+   Voyage-Wise totals are voyage groups, and a group's g.dets are those same rowDetail
+   objects (vwFuelLines builds g.fuels from them), so both collapse to one flat detail list
+   and one code path serves both tables. */
+function emkCtx(view){
+  if(view === "br"){
+    const L = BR_LAST;
+    if(!L || !L.R || !L.R.rowDetails || !L.R.rowDetails.length) return null;
+    const n = L.R.rowDetails.length;
+    return { R:L.R, view, dets: rowselActive("br", n).map(i=>L.R.rowDetails[i]),
+             groups:null, label: rowselLabel("br", n, L.R.year) };
+  }
+  const L = VW_LAST;
+  if(!L || !L.R || !L.R.groups || !L.R.groups.length) return null;
+  const G = L.R.groups, k = ROWSEL.vw.sel.size;
+  const groups = rowselActive("vw", G.length).map(i=>G[i]);
+  return { R:L.R, view, groups, dets: groups.reduce((a,g)=>a.concat(g.dets||[]), []),
+           label: k ? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
+                    : `Total — all ${G.length} voyage${G.length===1?"":"s"} · ${L.R.year}` };
+}
+
+/* Roll the ticked rows up per fuel, and inside each fuel per consumer. The consumer level
+   comes from the engine's `parts` working tape; factors are constant for a given
+   fuel × consumer, so the first part seen supplies them and the rest only add tonnage. */
+function emkFuels(dets){
+  const acc = new Map();
+  for(const d of dets||[]) for(const fu of d.fuels||[]){
+    let a = acc.get(fu.id);
+    if(!a){
+      const fb = FUEL_BY_ID[fu.id] || {};
+      a = { id:fu.id, label:cleanFuelName(fb.id?fb:{id:fu.id,name:fu.name}), lcv:fb.lcv||0,
+            cfCII:Number(fu.cfCII)||0, tonnes:0, eligibleEU:0, eligibleUK:0, energy:0, E:0,
+            co2:0, etsCO2:0, etsCO2e:0, totalCO2:0, totalCO2e:0, euas:0, ukCO2e:0,
+            feuCB:0, feuPenalty:0, hfoEq:0, parts:new Map() };
+      acc.set(fu.id, a);
+    }
+    const fb = FUEL_BY_ID[fu.id] || {};
+    a.tonnes += Number(fu.tonnes)||0;
+    a.eligibleEU += Number(fu.eligibleEU)||0;
+    a.eligibleUK += Number(fu.eligibleUK)||0;
+    a.energy += (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0;
+    a.hfoEq += (fb.lcv && fu.tonnes) ? Number(fu.tonnes)*fb.lcv : 0;   // ÷ HFO LCV later
+    a.E += Number(fu.E)||0;             a.co2 += Number(fu.co2)||0;
+    a.etsCO2 += Number(fu.etsCO2)||0;   a.etsCO2e += Number(fu.etsCO2e)||0;
+    a.totalCO2 += Number(fu.totalCO2)||0; a.totalCO2e += Number(fu.totalCO2e)||0;
+    a.euas += Number(fu.euas)||0;       a.ukCO2e += Number(fu.ukCO2e)||0;
+    a.feuCB += Number(fu.feuCB)||0;     a.feuPenalty += Number(fu.feuPenalty)||0;
+    for(const pr of fu.parts||[]){
+      const key = (pr.m||"—")+"|"+pr.engine;
+      let q = a.parts.get(key);
+      if(!q){ a.parts.set(key, Object.assign({}, pr, { key })); continue; }
+      q.tonnes += pr.tonnes;   q.etsCO2 += pr.etsCO2;   q.etsCO2e += pr.etsCO2e;
+      q.eligEU += pr.eligEU;   q.eligUK += pr.eligUK;
+      q.totalCO2 += pr.totalCO2; q.totalCO2e += pr.totalCO2e; q.ukCO2e += pr.ukCO2e;
+      q.E += pr.E;             q.Ecov += pr.Ecov;
+      /* factors are per fuel × consumer and therefore identical across parts — except wtt,
+         which a user may override per row for bio/custom fuels. Flag a genuine mix rather
+         than printing whichever value happened to arrive first. */
+      if(pr.wtt != null){
+        if(q.wtt == null) q.wtt = pr.wtt;
+        else if(Math.abs(q.wtt - pr.wtt) > 1e-9) q.wttMixed = true;
+      }
+      if(pr.ttw != null && q.ttw == null) q.ttw = pr.ttw;
+      if(pr.efCO2 != null && q.efCO2 == null){
+        q.efCO2 = pr.efCO2; q.efCH4 = pr.efCH4; q.efN2O = pr.efN2O; q.zeroRated = pr.zeroRated;
+      }
+    }
+  }
+  const out = Array.from(acc.values());
+  for(const a of out){
+    a.list = Array.from(a.parts.values()).sort((x,y)=>{
+      const ix = EMK_CONS_ORDER.indexOf(x.m||""), iy = EMK_CONS_ORDER.indexOf(y.m||"");
+      return (ix<0?99:ix) - (iy<0?99:iy);
+    });
+    /* a consumer breakdown is only worth showing when the consumers actually differ. One
+       part, or several that share a slip figure, collapse to a single line per fuel. */
+    a.split = a.list.length > 1;
+  }
+  return out.sort((x,y)=>((TR_FUEL_ORDER.indexOf(x.id)+1||99)-(TR_FUEL_ORDER.indexOf(y.id)+1||99))
+                         || (x.label < y.label ? -1 : 1));
+}
+function emkConsLabel(p){ return EMK_CONSUMER[p.m] || (p.engine ? String(p.engine).split(" (")[0] : "All consumers"); }
+
+/* ---- small presentational helpers (no arithmetic lives in these) ---- */
+/* A line is [label, value] or [label, value, "key"]. The "key" marker names the ONE figure on
+   the card that is the number the hovered cell is showing — on the weighted-ratio cards (CII,
+   the two EEOIs, kg/nm) that figure is not the last line, because the lines that follow it are
+   context the reader needs. tools/verify_total_tooltips.js reads b.key to know which value it
+   must reconcile against the cell, so marking it is not decoration: an unmarked card falls
+   back to its last line, and a wrongly marked one fails the reconciliation. */
+function emkPre(title, lines){
+  return `<div class="emk-pre">${title?`<div class="emk-pt">${esc(title)}</div>`:""}`
+       + lines.filter(Boolean).map(l=>`<div class="emk-pl"><span>${l[0]}</span><b${l[2]==="key"?' class="key"':""}>${l[1]}</b></div>`).join("")
+       + `</div>`;
+}
+function emkTable(cols, rows){
+  return `<table class="emk-t"><thead><tr>`
+       + cols.map((c,i)=>`<th${i?"":' class="k"'}>${c}</th>`).join("")
+       + `</tr></thead><tbody>${rows.join("")}</tbody></table>`;
+}
+function emkTR(cells, cls){
+  return `<tr${cls?` class="${cls}"`:""}>`
+       + cells.map((c,i)=>`<td${i?"":' class="k"'}>${c}</td>`).join("") + `</tr>`;
+}
+function emkNote(t){ return `<div class="emk-n">${t}</div>`; }
+const emkPct = v => fmtF(v*100, (Math.abs(v*100 % 1) > 1e-9) ? 1 : 0) + "%";
+
+/* The explicit row mix behind a coverage-scoped column (owner decision 4). */
+function emkCovMix(dets, field){
+  const m = new Map();
+  for(const d of dets||[]){
+    const c = Math.round((Number(d[field])||0)*1e6)/1e6;
+    const e = m.get(c) || { cov:c, rows:0, tonnes:0 };
+    e.rows++;
+    e.tonnes += (d.fuels||[]).reduce((a,fu)=>a+(Number(fu.tonnes)||0), 0);
+    m.set(c, e);
+  }
+  return Array.from(m.values()).sort((a,b)=>b.cov-a.cov);
+}
+function emkCovLines(mix, what){
+  return mix.map(e=>[`${e.rows} row${e.rows===1?"":"s"} at ${emkPct(e.cov)} ${what}`,
+                     `${fmtF(e.tonnes,1)} t`]);
+}
+
+/* ---- the cards themselves ----------------------------------------------------------------
+   One entry per TOTAL cell that has a card. `t(ctx)` is the heading (units belong here, not
+   in the body); `build(ctx, fuels)` returns the body, or "" to suppress the card entirely
+   when there is nothing to explain. Keys are shared by both views wherever the column is
+   the same column — Leg-Wise and Voyage-Wise print the same FuelEU CB from the same records,
+   so they get the same card. */
+const EMK_CARDS = {
+
+  /* ---------- Fuel metrics ---------- */
+  cons: {
+    t: () => "Fuel consumption — tonnes",
+    build(ctx, fuels){
+      const rows = [];
+      for(const f of fuels){
+        rows.push(emkTR([esc(f.label), fmtF(f.tonnes,1)], f.split ? "g" : ""));
+        if(f.split) for(const p of f.list) rows.push(emkTR([esc(emkConsLabel(p)), fmtF(p.tonnes,1)], "s"));
+      }
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.tonnes,0),1)], "tot"));
+      return emkTable(["Fuel / consumer","Tonnes"], rows);
+    }
+  },
+
+  co2e: {
+    t: ctx => ctx.R.year>=2026
+        ? `Total CO₂e — tCO₂e (${(S.arSet==="AR4")?"AR4":"AR5"} GWP)`
+        : "Total CO₂ — tCO₂ (CO₂ only before 2026)",
+    /* 2026-08-10c (Aurvin, owner instruction — "shorten the tooltip"). This card used to print
+       the whole chain across four columns: base Cf, slip %, CO₂, then the CH₄/N₂O uplift. Those
+       are now COLLAPSED INTO ONE EFFECTIVE CONVERSION FACTOR — tonnes of CO₂e per tonne of fuel,
+       slip and the AR4/AR5 GWP set already inside it. That is the same quantity the Constants
+       tab publishes as its "AR4 / AR5 CO₂e (t/t fuel)" column, so the card and that table can be
+       read against each other: LNG at 3.1% slip is 3.56100 t/t in both places.
+
+       It is DERIVED, not re-derived: totalCO2e ÷ tonnes on records the engine already produced.
+       There is no second code path that could disagree with the emissions figure beside it — and
+       tools/verify_total_tooltips.js asserts factor × tonnes closes back to the printed CO₂e.
+
+       A SUMMARY line (a fuel spanning several consumers, and the All-fuels line) dashes the
+       factor rather than printing a blended one: a weighted average of two consumers' factors is
+       not a factor anyone can look up, and printing it beside real Constants-tab values would
+       invite exactly that mistake. */
+    build(ctx, fuels){
+      const co2e = ctx.R.year>=2026;
+      const val  = o => co2e ? o.totalCO2e : o.totalCO2;
+      const cols = ["Fuel / consumer", "t", co2e ? "tCO₂e / t" : "tCO₂ / t", co2e ? "CO₂e t" : "CO₂ t"];
+      const line = (label, o, cls) => emkTR([esc(label), fmtF(o.tonnes,1),
+        o.tonnes > 0 ? fmtF(val(o)/o.tonnes, 5) : "—", fmtF(val(o),2)], cls);
+      const summary = (label, o, cls) => emkTR([esc(label), fmtF(o.tonnes,1), "—", fmtF(val(o),2)], cls);
+      const rows = [];
+      for(const f of fuels){
+        if(f.split){
+          rows.push(summary(f.label, f, "g"));
+          for(const p of f.list) rows.push(line(emkConsLabel(p), p, "s"));
+        } else rows.push(line(f.label, f));
+      }
+      rows.push(summary("All fuels", {
+        tonnes:   fuels.reduce((a,f)=>a+f.tonnes,0),
+        totalCO2: fuels.reduce((a,f)=>a+f.totalCO2,0),
+        totalCO2e:fuels.reduce((a,f)=>a+f.totalCO2e,0)
+      }, "tot"));
+      return emkTable(cols, rows);
+    }
+  },
+
+  /* ---------- EU ETS ---------- */
+  euas: {
+    t: ctx => `EU ETS allowances (EUAs) — tCO₂${ctx.R.year>=2026?"e":""}`,
+    /* 2026-08-10d (Aurvin, owner instruction — same shortening as the CO₂e card got in 08-10c):
+       the "HOW THE TOTAL IS BUILT" preamble is GONE, the intermediate CO₂e column is GONE, and
+       an EFFECTIVE CONVERSION FACTOR takes their place — the Constants-tab t/t value, so this
+       card and the CO₂e card show the same 3.56100 for LNG at 3.1% slip.
+
+       THE PHASE-IN MOVED INTO THE COLUMN HEADER ("EUAs ×100%", "×70%" on a 2025 selection). It
+       had to go somewhere visible: it is now the ONLY step between the factor and the last
+       column, so with the intermediate column dropped, factor × eligible tonnes deliberately
+       does NOT reproduce the EUAs figure in a phase-in year. The header is what closes that gap
+       for the reader, which is why it is not decoration — do not shorten it back to "EUAs".
+
+       Consumer sub-lines now carry their OWN eligible tonnage (engine.js pr.eligEU) instead of a
+       dash, which was the second half of the owner's request. */
+    build(ctx, fuels){
+      const phase = Number((ctx.R.ets||{}).phase) || 0;
+      const co2e  = ctx.R.year>=2026;
+      const base  = o => co2e ? o.etsCO2e : o.etsCO2;
+      const line = (label, o, elig, cls) => emkTR([esc(label), fmtF(elig,1),
+        elig > 0 ? fmtF(base(o)/elig, 5) : "—", fmtF(base(o)*phase, 2)], cls);
+      const summary = (label, o, elig, cls) => emkTR([esc(label), fmtF(elig,1), "—",
+        fmtF(base(o)*phase, 2)], cls);
+      const rows = [];
+      for(const f of fuels){
+        if(f.split){
+          rows.push(summary(f.label, f, f.eligibleEU, "g"));
+          for(const p of f.list) rows.push(line(emkConsLabel(p), p, p.eligEU, "s"));
+        } else rows.push(line(f.label, f, f.eligibleEU));
+      }
+      rows.push(summary("All fuels",
+        { etsCO2: fuels.reduce((a,f)=>a+f.etsCO2,0), etsCO2e: fuels.reduce((a,f)=>a+f.etsCO2e,0) },
+        fuels.reduce((a,f)=>a+f.eligibleEU,0), "tot"));
+      return emkTable(["Fuel / consumer", "Elig. t", co2e?"tCO₂e / t":"tCO₂ / t",
+                       "EUAs ×"+emkPct(phase)], rows);
+    }
+  },
+
+  /* ---------- UK ETS ---------- */
+  ukas: {
+    t: () => "UK ETS allowances (UKAs) — tCO₂e",
+    /* 2026-08-10d: same shortening as EUAs. NOTE the factor here is the UK ETS one — UK
+       prescribes its own GWP set (28 / 265, ukets-sch2a-p35 Table C1), NOT the Settings AR
+       choice — so this column legitimately differs from the CO₂e card's for the same fuel. It
+       is the effective factor for THIS regime, which is exactly what the reader needs to
+       reconcile the number beside it. There is no phase-in in UK ETS, so no header multiplier. */
+    build(ctx, fuels){
+      const tot = fuels.reduce((a,f)=>a+f.ukCO2e,0);
+      if(!(tot > 0)) return emkPre("Nothing in UK ETS scope",
+          emkCovLines(emkCovMix(ctx.dets,"covUK"), "UK ETS coverage")
+            .concat([["UK ETS CO₂e for these rows", fmtF(0,2), "key"]]));
+      const line = (label, o, elig, cls) => emkTR([esc(label), fmtF(elig,1),
+        elig > 0 ? fmtF(o.ukCO2e/elig, 5) : "—", fmtF(o.ukCO2e,2)], cls);
+      const rows = [];
+      for(const f of fuels){
+        if(f.split){
+          rows.push(emkTR([esc(f.label), fmtF(f.eligibleUK,1), "—", fmtF(f.ukCO2e,2)], "g"));
+          for(const p of f.list) rows.push(line(emkConsLabel(p), p, p.eligUK, "s"));
+        } else rows.push(line(f.label, f, f.eligibleUK));
+      }
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.eligibleUK,0),1), "—",
+                       fmtF(tot,2)], "tot"));
+      return emkTable(["Fuel / consumer","Elig. t","tCO₂e / t","UK CO₂e t"], rows);
+    }
+  },
+
+  /* ---------- FuelEU ---------- */
+  elig: {
+    t: () => "FuelEU eligible mass — tonnes",
+    build(ctx, fuels){
+      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.tonnes,1),
+        f.tonnes>0 ? emkPct(f.eligibleEU/f.tonnes) : "—", fmtF(f.eligibleEU,1)]));
+      const T = fuels.reduce((a,f)=>a+f.tonnes,0), E = fuels.reduce((a,f)=>a+f.eligibleEU,0);
+      rows.push(emkTR(["All fuels", fmtF(T,1), T>0?emkPct(E/T):"—", fmtF(E,1)], "tot"));
+      /* 2026-08-10d: the "Row mix behind the coverage" preamble was removed with the other two
+         (owner instruction). The per-fuel "Effective" column already carries the information the
+         mix was there to justify, and this is the one card where that column is the subject. */
+      return emkTable(["Fuel","Burned t","Effective","Eligible t"], rows);
+    }
+  },
+
+  energy: {
+    t: () => "Energy — 10⁶ MJ",
+    build(ctx, fuels){
+      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.eligibleEU,1),
+        f.lcv?fmtF(f.lcv,5):"—", fmtF(f.energy,2)]));
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.eligibleEU,0),1), "",
+                       fmtF(fuels.reduce((a,f)=>a+f.energy,0),2)], "tot"));
+      return emkTable(["Fuel","Elig. t","LCV MJ/g","10⁶ MJ"], rows);
+    }
+  },
+
+  eligEnergy: {
+    t: () => "FuelEU scoped energy — 10⁶ MJ",
+    build(ctx, fuels){
+      const rows = [];
+      for(const f of fuels){
+        rows.push(emkTR([esc(f.label), fmtF(f.E/1e6,2)], f.split?"g":""));
+        if(f.split) for(const p of f.list) rows.push(emkTR([esc(emkConsLabel(p)), fmtF(p.Ecov/1e6,2)], "s"));
+      }
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.E,0)/1e6,2)], "tot"));
+      return emkTable(["Fuel / consumer","10⁶ MJ"], rows);
+    }
+  },
+
+  cb: {
+    t: () => "FuelEU compliance balance — tCO₂eq",
+    build(ctx, fuels){
+      const F = ctx.R.fueleu || {};
+      const cellTot = fuels.reduce((a,f)=>a+f.feuCB, 0);          // g, ticked rows only
+      if(F.cb == null) return emkNote("No compliance balance — nothing in the selected period falls inside the FuelEU energy scope.");
+      const shareOfYear = F.E_total>0 ? fuels.reduce((a,f)=>a+f.E,0)/F.E_total : 0;
+      const pre = emkPre("How the balance is built (whole compliance period, not per fuel)", [
+        [`Target GHG intensity, ${ctx.R.year}`, fmtF(F.target,4)+" gCO₂e/MJ"],
+        ["Attained GHG intensity", fmtF(F.ghgie,4)+" gCO₂e/MJ"],
+        (F.fwind && F.fwind !== 1) ? ["Wind reward factor applied", fmtF(F.fwind,2)] : null,
+        ["Energy in scope, whole period", fmtF(F.E_total/1e6,2)+" ×10⁶ MJ"],
+        [`CB = (${fmtF(F.target,4)} − ${fmtF(F.ghgie,4)}) × ${fmtF(F.E_total/1e6,2)}×10⁶`,
+         fmtF(F.cb/1e6,2)+" t"+(F.cb>=0?" surplus":" deficit")],
+        ["These rows' share of that scoped energy", emkPct(shareOfYear)]
+      ]);
+      const rows = [];
+      for(const f of fuels){
+        rows.push(emkTR([esc(f.label), fmtF(f.E/1e6,2),
+          F.E_total>0?emkPct(f.E/F.E_total):"—", fmtF(f.feuCB/1e6,2)]));
+      }
+      rows.push(emkTR(["All fuels, these rows", fmtF(fuels.reduce((a,f)=>a+f.E,0)/1e6,2),
+                       emkPct(shareOfYear), fmtF(cellTot/1e6,2)], "tot"));
+      return pre + emkTable(["Fuel","Scoped 10⁶ MJ","Share","CB t"], rows);
+    }
+  },
+
+  penalty: {
+    t: () => "FuelEU penalty — €",
+    build(ctx, fuels){
+      const F = ctx.R.fueleu || {};
+      const cellTot = fuels.reduce((a,f)=>a+f.feuPenalty, 0);
+      if(!(F.penalty > 0)) return emkPre("No penalty", [
+          ["Compliance balance", F.cbFinal==null?"—":fmtF(F.cbFinal/1e6,2)+" t"],
+          ["Status", (F.cbFinal||0) >= 0 ? "In surplus" : "Deficit"],
+          ["Penalty for these rows", "€ "+fmtF(0,0), "key"]
+        ]);
+      const shareOfYear = F.E_total>0 ? fuels.reduce((a,f)=>a+f.E,0)/F.E_total : 0;
+      const pre = emkPre("How the penalty is built (whole compliance period, not per fuel)", [
+        ["Balance after banking / pooling / borrowing", fmtF(F.cbFinal/1e6,2)+" t deficit"],
+        ["Attained GHG intensity", fmtF(F.ghgie,4)+" gCO₂e/MJ"],
+        ["Annex IV B: deficit ÷ (GHGIE × 41 000) × €2 400", "€ "+fmtF(F.penaltyBase,0)],
+        (F.mult && F.mult !== 1) ? [`Art 23(2) multiplier, consecutive deficit periods`, "× "+fmtF(F.mult,1)] : null,
+        ["Penalty, whole period", "€ "+fmtF(F.penalty,0)],
+        ["These rows' share of scoped energy", emkPct(shareOfYear)]
+      ]);
+      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.E/1e6,2),
+        F.E_total>0?emkPct(f.E/F.E_total):"—", "€ "+fmtF(f.feuPenalty,0)]));
+      rows.push(emkTR(["All fuels, these rows", fmtF(fuels.reduce((a,f)=>a+f.E,0)/1e6,2),
+                       emkPct(shareOfYear), "€ "+fmtF(cellTot,0)], "tot"));
+      return pre + emkTable(["Fuel","Scoped 10⁶ MJ","Share","€"], rows);
+    }
+  },
+
+  /* ---------- IMO / intensity columns: weighted chains, never per-fuel sums ---------- */
+  cii: {
+    t: ctx => `Attained CII — gCO₂/${esc(((ctx.R.cii||{}).capUnit)||"DWT")}·nm`,
+    build(ctx, fuels){
+      const cap = ciiCapacityOf(S);
+      const dist = ctx.dets.filter(d=>d.kind==="voyage" && d.dist>0).reduce((a,d)=>a+d.dist,0);
+      const co2 = fuels.reduce((a,f)=>a+f.co2,0);
+      const att = (cap>0 && dist>0) ? co2*1e6/(cap*dist) : null;
+      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.tonnes,1), fmtF(f.cfCII,4), fmtF(f.co2,2)]));
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.tonnes,0),1), "", fmtF(co2,2)], "tot"));
+      return emkTable(["Fuel","Tonnes","Cf t/t","CO₂ t"], rows)
+        + emkPre("Then the weighted intensity", [
+            ["CO₂ from every selected row, sea and berth", fmtF(co2,2)+" t"],
+            ["Capacity", fmtF(cap,0)+" "+esc(((ctx.R.cii||{}).capUnit)||"DWT")],
+            ["Distance, voyage legs only", fmtF(dist,0)+" nm"],
+            ["Attained = CO₂ ÷ (capacity × distance)", att==null?"—":fmtF(att,2), "key"],
+            (ctx.R.cii||{}).ciiReq!=null ? ["Required this year", fmtF(ctx.R.cii.ciiReq,2)] : null
+          ]);
+    }
+  },
+
+  hfoeq: {
+    t: () => "Fuel per mile — kg HFO-equivalent / nm",
+    build(ctx, fuels){
+      const hfoLcv = (FUEL_BY_ID.HFO||{}).lcv;
+      const legs = ctx.dets.filter(d=>d.kind==="voyage" && d.dist>0);
+      const dist = legs.reduce((a,d)=>a+d.dist,0);
+      const kg = legs.reduce((a,d)=>{ const t=legHfoEqTonnes(d); return a+(t!=null?t*1000:0); }, 0);
+      if(!hfoLcv || !(dist>0)) return emkNote("No sailing distance in the selection, so there is no fuel-per-mile figure.");
+      const legFuels = emkFuels(legs);
+      const rows = legFuels.map(f=>emkTR([esc(f.label), fmtF(f.tonnes,1), f.lcv?fmtF(f.lcv,5):"—",
+        fmtF(f.hfoEq/hfoLcv*1000,0)]));
+      rows.push(emkTR(["All fuels", fmtF(legFuels.reduce((a,f)=>a+f.tonnes,0),1), "", fmtF(kg,0)], "tot"));
+      return emkTable(["Fuel","Tonnes","LCV MJ/g","kg HFO-eq"], rows)
+        + emkPre("Then divided by distance", [
+            ["HFO-equivalent mass", fmtF(kg,0)+" kg"],
+            ["Distance sailed", fmtF(dist,0)+" nm"],
+            ["kg per nautical mile", fmtF(kg/dist,1), "key"]
+          ]);
+    }
+  },
+
+  eeoiImo: {
+    t: () => "EEOI (IMO) — gCO₂ / t·nm",
+    build(ctx, fuels){
+      const co2 = fuels.reduce((a,f)=>a+f.co2,0);
+      const tw = ctx.dets.filter(d=>d.tw>0).reduce((a,d)=>a+d.tw,0);
+      if(!(tw>0)) return emkNote("No transport work in the selection — no cargo was carried over any distance, so there are no tonne-miles to divide by.");
+      return emkPre("A weighted ratio, not an average of the rows", [
+          ["CO₂ from every selected row, sea and berth", fmtF(co2,2)+" t"],
+          ["Transport work (cargo × laden distance)", fmtF(tw/1e6,2)+" ×10⁶ t·nm"],
+          ["EEOI = CO₂ ÷ transport work", fmtF(co2*1e6/tw,2), "key"]
+        ]);
+    }
+  },
+
+  sccEeoi: {
+    t: () => "Sea Cargo Charter EEOI — gCO₂e / t·nm (well-to-wake)",
+    build(ctx){
+      const src = ctx.groups ? ctx.groups.filter(g=>!g.sccNoFactor)
+                             : ctx.dets.filter(d=>d.kind==="voyage" && d.tw>0 && !d.sccNoFactor);
+      const tw = src.reduce((a,x)=>a+(Number(x.tw)||0),0);
+      const num = src.reduce((a,x)=>a+(Number(ctx.groups?x.sccWtW:x.sccNumerator)||0),0);
+      if(!(tw>0)) return emkNote("No transport work with a Sea Cargo Charter factor in the selection.");
+      return emkPre("A weighted ratio, not an average of the voyages", [
+          ["Well-to-wake CO₂e, incl. ballast legs and port stays absorbed", fmtF(num,2)+" t"],
+          ["Transport work", fmtF(tw/1e6,2)+" ×10⁶ t·nm"],
+          ["EEOI = CO₂e ÷ transport work", fmtF(num*1e6/tw,2), "key"]
+        ]);
+    }
+  },
+
+  sccTw: {
+    t: () => "Transport work — 10⁶ tonne-miles",
+    build(ctx){
+      const src = ctx.groups ? ctx.groups : ctx.dets.filter(d=>d.kind==="voyage");
+      const rows = src.filter(x=>(Number(x.tw)||0)>0).slice(0,14).map(x=>emkTR([
+        esc(String(x.label || x.voy || x.no || "—")).slice(0,34),
+        fmtF(Number(x.cargo)||0,0), fmtF(Number(x.dist)||0,0), fmtF((Number(x.tw)||0)/1e6,2)]));
+      const tw = src.reduce((a,x)=>a+(Number(x.tw)||0),0);
+      if(!rows.length) return emkNote("No laden legs in the selection — transport work is cargo × laden distance, and a ballast leg has none.");
+      rows.push(emkTR(["Total", "", "", fmtF(tw/1e6,2)], "tot"));
+      return emkTable(["Laden leg / voyage","Cargo t","Dist nm","10⁶ t·nm"], rows);
+    }
+  }
+};
+
+/* Build one card. Returns "" when there is nothing to show, which suppresses the hover. */
+function emkCardHtml(view, key){
+  const def = EMK_CARDS[key]; if(!def) return "";
+  const ctx = emkCtx(view); if(!ctx) return "";
+  let body = "";
+  try { body = def.build(ctx, emkFuels(ctx.dets)) || ""; }
+  catch(e){ return ""; }               // a card must never be able to break the table it sits on
+  if(!body) return "";
+  return `<div class="emk-hd">${esc(def.t(ctx))}</div><div class="emk-sub">${esc(ctx.label)}</div>${body}`;
+}
+
+/* ---- hover behaviour: delayed in, forgiving out, never clipped -----------------------------
+   The card is appended to <body> and positioned with position:fixed from the cell's screen
+   rectangle, for the same reason toggleInfo() re-parents the ⓘ popovers (2026-07-22h): the
+   TOTAL row lives inside a sticky, horizontally-scrolling container that would otherwise clip
+   it or grow scrollbars just to reveal it. */
+let EMK_TIMER = null, EMK_CELL = null, EMK_BOUND = false;
+function emkHide(){
+  if(EMK_TIMER){ clearTimeout(EMK_TIMER); EMK_TIMER = null; }
+  EMK_CELL = null;
+  const el = document.getElementById("emkTip");
+  if(el){ el.classList.remove("on"); el.innerHTML = ""; }
+}
+function emkPlace(el, cell){
+  const r = cell.getBoundingClientRect();
+  el.style.left = "0px"; el.style.top = "0px";          // measure unconstrained first
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  el.style.left = Math.round(Math.min(Math.max(8, r.left + r.width/2 - w/2), Math.max(8, vw - w - 8))) + "px";
+  /* prefer below the TOTAL row (it is at the top of the table, so there is room); flip above
+     only when the card genuinely will not fit. */
+  el.style.top = Math.round((r.bottom + 8 + h <= vh - 8) ? r.bottom + 8
+                          : Math.max(8, r.top - h - 8)) + "px";
+}
+function emkShow(cell){
+  const html = emkCardHtml(cell.getAttribute("data-kv"), cell.getAttribute("data-kt"));
+  if(!html) return;
+  let el = document.getElementById("emkTip");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "emkTip"; el.className = "emk-tip";
+    el.addEventListener("mouseleave", emkHide);
+    document.body.appendChild(el);
+  }
+  el.innerHTML = html;
+  el.classList.add("on");
+  emkPlace(el, cell);
+}
+function emkBind(){
+  if(EMK_BOUND || typeof document === "undefined" || !document.addEventListener) return;
+  EMK_BOUND = true;
+  document.addEventListener("mouseover", ev => {
+    const cell = ev.target && ev.target.closest && ev.target.closest("[data-kt]");
+    if(!cell || cell === EMK_CELL) return;
+    if(EMK_TIMER) clearTimeout(EMK_TIMER);
+    EMK_CELL = cell;
+    EMK_TIMER = setTimeout(()=>emkShow(cell), EMK_DELAY);
+  });
+  document.addEventListener("mouseout", ev => {
+    const cell = ev.target && ev.target.closest && ev.target.closest("[data-kt]");
+    if(!cell) return;
+    const to = ev.relatedTarget;
+    if(to && to.closest && (to.closest("[data-kt]") === cell || to.closest("#emkTip"))) return;
+    emkHide();
+  });
+  /* any scroll moves the cell out from under a fixed-position card, so drop it rather than
+     leave it hanging over unrelated numbers. Capture phase: the tables scroll internally. */
+  window.addEventListener("scroll", emkHide, true);
+}
+if(typeof document !== "undefined"){
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", emkBind);
+  else emkBind();
+}
+
 /* the sticky totals row — rebuilt on its own whenever the tick selection changes */
 function brTotalsHtml(){
   if(!BR_LAST) return "";
@@ -4723,23 +5275,26 @@ function brTotalsHtml(){
      leg vs. every ticked leg) differs. */
   const hfoEqKgTot = imoDets.reduce((a,d)=>{ const t=legHfoEqTonnes(d); return a+(t!=null? t*1000 : 0); },0);
   const hfoEqPerNmTot = imoDist>0 ? hfoEqKgTot/imoDist : null;
-  const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  /* 2026-08-10: the trailing `kt` argument names this cell's audit card (see EMK_CARDS). It is
+     OPTIONAL — emkAttr returns "" without it, so every call that passes none emits exactly the
+     HTML it emitted before, which is what keeps verify_grid_columns.js on its old baseline. */
+  const cell=(col,extra,val,kt)=>`<div${emkAttr(kt,"br")} style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   /* 2026-08-01c: this row is rebuilt on its own whenever the tick selection changes, so it
      re-reads the column plan itself rather than inheriting breakdownGrid()'s — that also means
      it stays correct if the picker is changed while rows are ticked. The SUMS are untouched:
      hiding a column removes its cell, never a row from `dets`. */
   const P = emcPlan(BR_GRID, EMC_LEGS_COLS, EMC_LEGS_SCC_COLS);
   const feuWallAt = emcWall(P, 16, 20);
-  const rcell=(col,extra,val)=>{
+  const rcell=(col,extra,val,kt)=>{
     const phys = col+1;
     if(!P.on(phys)) return "";
-    return `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${feuWallAt===phys?EMC_WALL:""}">${val}</div>`;
+    return `<div${emkAttr(kt,"br")} style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${feuWallAt===phys?EMC_WALL:""}">${val}</div>`;
   };
   /* 2026-08-06: TOTAL-row cells for the optional Sea Cargo Charter columns (physical 21-24).
      Emits "" for anything not ticked on, so the default TOTAL row is unchanged. */
   const sccWallAt = emcWall(P, 21, 24);
-  const scell=(phys,extra,val)=> !P.on(phys) ? "" :
-    `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${sccWallAt===phys||phys===24?EMC_WALL:""}${extra||""}">${val}</div>`;
+  const scell=(phys,extra,val,kt)=> !P.on(phys) ? "" :
+    `<div${emkAttr(kt,"br")} style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${sccWallAt===phys||phys===24?EMC_WALL:""}${extra||""}">${val}</div>`;
   /* 2026-08-06 (Aurvin, owner instruction, after a clarifying-question round) — the SCC
      TOTALS. Built here and CONCATENATED onto an existing template line below rather than
      written as four new `${…}` lines, because an empty expression on its own template line
@@ -4766,11 +5321,11 @@ function brTotalsHtml(){
      card uses. EEOI (IMO) → eeoiImoTot, unchanged from its 2026-07-26i definition. */
   const sccTotCells = !(P.on(21)||P.on(22)||P.on(23)||P.on(24)) ? "" :
     scell(21,"color:#9a6b1f;", `<span style="color:#94a3b8;font-weight:400;cursor:help" title="No total. A port stay's well-to-wake CO₂e is also counted inside the laden leg that absorbed it (SCC 2025 Technical Guidance Appendix 3), so adding this column up would count a large part of the year twice. The correctly-weighted year figure is the EEOI two columns to the right, and every tonne is still in the Total CO₂e column.">—</span>`)+
-    scell(22,"color:#475569;", twTot>0? fmtF(twTot/1e6,2) : brDash)+
+    scell(22,"color:#475569;", twTot>0? fmtF(twTot/1e6,2) : brDash, "sccTw")+
     scell(23,"color:#9a6b1f;", eeoiTot!=null
         ? `<span title="Weighted Sea Cargo Charter EEOI for the ticked rows: Σ numerators (${fmtF(numTot,2)} t WtW CO₂e — each leg's own emissions plus what it absorbed from ballast legs and port stays) ÷ Σ transport work (${fmtF(twTot/1e6,2)} ×10⁶ t·nm). NOT the average of the per-leg EEOIs. Legs burning a fuel with no Appendix 6 factor are excluded from both sides.">${fmtF(eeoiTot,2)}</span>`
-        : brDash)+
-    scell(24,"color:#1d7a5f;", eeoiCellHtml(eeoiImoTot));
+        : brDash, "sccEeoi")+
+    scell(24,"color:#1d7a5f;", eeoiCellHtml(eeoiImoTot), "eeoiImo");
   return `
     <div style="display:grid;${P.box}grid-template-columns:${P.grid};background:#eef2f7;border-bottom:2px solid #cbd5e1">
       <div style="grid-column:1;${BR_FREEZE}z-index:3;background:#eef2f7;border-right:1px solid #e2e8f0"></div>
@@ -4803,9 +5358,9 @@ function brTotalsHtml(){
       ${/* 2026-07-26e: weighted IMO totals — see the note above brTotalsHtml's imoDets block.
            The CII cell reuses ciiCellHtml, so the TOTAL row's badge and percentage look
            exactly like the leg rows' and the Results tab's. IMO now sits LEFT of Fuel metrics. */""}
-      <div style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
-      ${cell(9,"border-right:1px solid #e2e8f0;color:#1e293b;", hfoEqPerNmValueHtml(hfoEqPerNmTot))}
-      ${cell(11,"padding-left:4px;", fmtF(sumF("tonnes"),1))}
+      <div${emkAttr("cii","br")} style="grid-column:9;padding:${cellPad};display:flex;align-items:center;justify-content:center;text-align:center;font-weight:700">${ciiTot? ciiCellHtml(ciiTot) : brDash}</div>
+      ${cell(9,"border-right:1px solid #e2e8f0;color:#1e293b;", hfoEqPerNmValueHtml(hfoEqPerNmTot), "hfoeq")}
+      ${cell(11,"padding-left:4px;", fmtF(sumF("tonnes"),1), "cons")}
       ${/* 2026-07-23 (Aurvin, owner instruction — decimal alignment): the TOTAL row now uses
            the SAME number of decimal places as the leg rows underneath it in every column.
            It previously rounded CO₂, EUAs, UKAs, TtW and WtW to whole tonnes while the legs
@@ -4813,14 +5368,14 @@ function brTotalsHtml(){
            the column it was heading. Display only — the summed value is unchanged. */""}
       ${/* 2026-07-26p: Total CO2e moved to Fuel metrics — sums det.totalCO2/totalCO2e (full
            fuel burned, not EU-ETS-coverage-scoped). Border-right moved here from Cons. (col 11). */""}
-      ${cell(12,"border-right:1px solid #e2e8f0;", fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
-      ${rcell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2))}
-      ${rcell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2))}
-      ${rcell(15,"", fmtF(sumF("eligibleEU"),1))}
-      ${rcell(16,"", fmtF(sumEnergy,2))}
-      ${rcell(17,"", fmtF(sum("E")/1e6,2))}
-      ${rcell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2))}
-      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0))}${sccTotCells}
+      ${cell(12,"border-right:1px solid #e2e8f0;", fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2), "co2e")}
+      ${rcell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2), "euas")}
+      ${rcell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2), "ukas")}
+      ${rcell(15,"", fmtF(sumF("eligibleEU"),1), "elig")}
+      ${rcell(16,"", fmtF(sumEnergy,2), "energy")}
+      ${rcell(17,"", fmtF(sum("E")/1e6,2), "eligEnergy")}
+      ${rcell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2), "cb")}
+      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0), "penalty")}${sccTotCells}
     </div>`;
 }
 
@@ -5648,7 +6203,9 @@ function vwTotalsHtml(){
   const hfoEqKgVoyTot = hfoEqLegsTot.reduce((a,d)=>{ const t=legHfoEqTonnes(d); return a+(t!=null? t*1000 : 0); },0);
   const hfoEqDistVoyTot = hfoEqLegsTot.reduce((a,d)=>a+(Number(d.dist)||0),0);
   const hfoEqPerNmVoyTot = hfoEqDistVoyTot>0 ? hfoEqKgVoyTot/hfoEqDistVoyTot : null;
-  const cell=(col,extra,val)=>`<div style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
+  /* 2026-08-10: optional trailing `kt` names this cell's audit card — see the matching note in
+     brTotalsHtml. Omitting it reproduces the previous HTML byte for byte. */
+  const cell=(col,extra,val,kt)=>`<div${emkAttr(kt,"vw")} style="grid-column:${col+1};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}">${val}</div>`;
   /* 2026-08-01c: this totals row is rebuilt on its own when the tick selection changes, so it
      re-reads the column plan rather than inheriting voyageGrid()'s. The SUMS above are
      untouched — hiding a column removes a cell, never a voyage group from `sel`.
@@ -5658,11 +6215,11 @@ function vwTotalsHtml(){
   const P = emcPlan(VW_GRID, EMC_VOY_COLS);
   const sccWallAt = emcWall(P, 10, 14);
   const feuWallAt = emcWall(P, 17, 21);
-  const rcell=(col,extra,val)=>{
+  const rcell=(col,extra,val,kt)=>{
     const phys=col+1;
     if(!P.on(phys)) return "";
     const wall=(sccWallAt===phys||feuWallAt===phys)?EMC_WALL:"";
-    return `<div style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${wall}">${val}</div>`;
+    return `<div${emkAttr(kt,"vw")} style="grid-column:${P.m(phys)};padding:${cellPad};text-align:right;font-weight:700;font-variant-numeric:tabular-nums;${extra||""}${wall}">${val}</div>`;
   };
   const k=ROWSEL.vw.sel.size;
   const label=k? `Total — ${k} of ${G.length} voyage${G.length===1?"":"s"} selected`
@@ -5674,35 +6231,35 @@ function vwTotalsHtml(){
       ${/* 2026-08-06e — the VOYAGES twin of the Leg-Wise TOTAL-row freeze bug; see the long note
            on the breakdownGrid total row, including why `""}` and the <div> share a line. */""}<div style="grid-column:3;${VW_FREEZE3}z-index:3;background:#eef2f7;padding:${cellPad};text-align:right;border-right:1px solid #e2e8f0">${brDash}</div>
       ${cell(3,"border-right:1px solid #e2e8f0;",fmtF(sum("dist"),0))}
-      <div style="grid-column:5;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTotCell}</div>
+      <div${emkAttr("cii","vw")} style="grid-column:5;padding:${cellPad};display:flex;align-items:center;justify-content:flex-end;text-align:right;font-weight:700">${ciiTotCell}</div>
       ${/* 2026-08-01 (Aurvin, owner instruction): TOTAL-row kg/nm, not the IMO EEOI total any
            more — see hfoEqPerNmVoyTot above. The EEOI total (eeoiImoTot) moved to the new
            rcell(13) below, unchanged in value. */""}
-      ${cell(5,"border-right:1px solid #e2e8f0;color:#1e293b;",hfoEqPerNmValueHtml(hfoEqPerNmVoyTot))}
-      ${cell(7,"padding-left:4px;",fmtF(sumFu("tonnes"),1))}
+      ${cell(5,"border-right:1px solid #e2e8f0;color:#1e293b;",hfoEqPerNmValueHtml(hfoEqPerNmVoyTot),"hfoeq")}
+      ${cell(7,"padding-left:4px;",fmtF(sumFu("tonnes"),1),"cons")}
       ${/* 2026-07-26q3: Total CO2e relocated here, next to Cons. — full fuel burned, not
            EU-ETS-coverage-scoped, same figure as before, just moved next to Fuel metrics'
            other two columns instead of sitting isolated after Sea Cargo Charter. */""}
-      ${cell(8,"border-right:1px solid #e2e8f0;",fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2))}
+      ${cell(8,"border-right:1px solid #e2e8f0;",fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2),"co2e")}
       ${rcell(9,"color:#9a6b1f;",fmtF(sum("sccWtW"),2))}
       ${rcell(10,"color:#475569;",fmtF(sum("cargo"),0))}
-      ${rcell(11,"color:#475569;",fmtF(sum("tw")/1e6,2))}
+      ${rcell(11,"color:#475569;",fmtF(sum("tw")/1e6,2),"sccTw")}
       ${/* 2026-08-01f: hardcoded border-right removed from the SCC EEOI-WtW TOTAL cell — it is
            no longer the group's rightmost column (EEOI (IMO) TOTAL joined it to its right). */""}
-      ${rcell(12,"color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash)}
+      ${rcell(12,"color:#9a6b1f;",eeoiTot!=null? fmtF(eeoiTot,2):brDash,"sccEeoi")}
       ${/* 2026-08-01f (Aurvin, owner instruction — screenshot review): the "EEOI (IMO)" column's
            own TOTAL cell, physical 14 — eeoiImoTot, unchanged in value, now merged into the Sea
            Cargo Charter group's hideability/tinting (see EMC_VOY_COLS/header edits above). Its
            border-right is unchanged: it is now correctly the group's last static-default
            column. */""}
-      ${rcell(13,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash)}
-      ${rcell(14,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2))}
-      ${rcell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2))}
-      ${rcell(16,"",fmtF(sumFu("eligibleEU"),1))}
-      ${rcell(17,"",fmtF(sumFu("energy"),2))}
-      ${rcell(18,"",fmtF(sum("E")/1e6,2))}
-      ${rcell(19,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2))}
-      ${rcell(20,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0))}
+      ${rcell(13,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash,"eeoiImo")}
+      ${rcell(14,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2),"euas")}
+      ${rcell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2),"ukas")}
+      ${rcell(16,"",fmtF(sumFu("eligibleEU"),1),"elig")}
+      ${rcell(17,"",fmtF(sumFu("energy"),2),"energy")}
+      ${rcell(18,"",fmtF(sum("E")/1e6,2),"eligEnergy")}
+      ${rcell(19,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2),"cb")}
+      ${rcell(20,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0),"penalty")}
     </div>`;
 }
 function downloadVoyageXlsx(){

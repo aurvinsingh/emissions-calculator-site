@@ -501,16 +501,56 @@ function computeAll(state){
                    co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
                    /* SCC (2026-07-22c): sccWtW stays null when Appendix 6 has no factor for
                       this fuel, so the UI can show a dash instead of a wrong number */
-                   sccTtW:0, sccWtW:null, sccBio:0, sccNoFactor:false, sccLabel:null, sccGranular:false };
+                   sccTtW:0, sccWtW:null, sccBio:0, sccNoFactor:false, sccLabel:null, sccGranular:false,
+                   /* 2026-08-10 (Aurvin, EXPLICIT owner instruction, after a clarifying-question
+                      round) — the WORKING TAPE. See the long note above the `pr` record inside the
+                      machine-parts loop below. DISPLAY-ONLY: nothing here is ever read back into a
+                      calculation. */
+                   parts:[], cfCII:0 };
       det.fuels.push(fe);
       /* CII: all fuel, CO2 only (imo-g1-s4) — slip/consumer independent. Optional Circ.905 override via fr.ciiCf. */
       const cfCII = (fr.ciiCf!==undefined && fr.ciiCf!=="" && fr.ciiCf!=null) ? Number(fr.ciiCf) : f.cf;
       cii_g += t*1e6*cfCII;
       det.co2 += t*cfCII;
       fe.co2 = t*cfCII;                                  // 2026-07-22: per-fuel mirror of det.co2
+      fe.cfCII = cfCII;                                  // 2026-08-10: working tape — see `pr` below
       /* per-machine parts: slip (and hence ETS CO2e / UK CH4 / FuelEU TtW) differs per consumer */
       for(const p of machineParts(fr, f, t, state)){
         const s = slipPct(f, p.engine)/100;
+        /* 2026-08-10 (Aurvin, EXPLICIT owner instruction, this session, after a clarifying-question
+           round) — THE WORKING TAPE, for the TOTAL-row hover cards on the Leg-Wise and Voyage-Wise
+           tables ("show the user what happens underneath"). The owner chose the per-CONSUMER
+           expansion over a single blended-slip line, and this loop is the only place the per-part
+           inputs exist: machineParts() splits a fuel line into ME / AE / boiler / other, each with
+           its OWN slip, and every part is folded into the fuel totals and then discarded. `pr`
+           keeps a copy.
+
+           THREE PROPERTIES THIS MUST KEEP, or the cards start lying:
+           1. PURELY ADDITIVE and DISPLAY-ONLY. Every field below is either a straight copy of an
+              input (tonnes, Cf, LCV, slip) or a copy of a value the line beneath it already
+              computed. NO accumulator is touched, no expression is moved or reordered, and
+              nothing on `parts` is ever read back into a calculation. The run_site_tests /
+              run_standalone_tests self-test suites and verify_workspace_rows are the proof that
+              no number moved — they were green before this change and must stay green.
+           2. It records the factors ACTUALLY APPLIED, not the fuel's published ones. That is the
+              whole point: when bioZeroRatedETS zero-rates a bio/RFNBO fuel, efCO2/efCH4/efN2O all
+              become 0 and `zeroRated` says so, which is why the card can show "0.00" and explain
+              itself instead of showing 3.114 next to a zero result.
+           3. It stays in step with the expressions it mirrors. If the CO2e / UK ETS / FuelEU
+              formulas below are ever changed, change the matching `pr.*` line in the SAME edit.
+              tools/verify_total_tooltips.js re-derives every card figure from `parts` and asserts
+              it equals the rendered TOTAL, so a drift here fails loudly rather than silently
+              producing a plausible wrong explanation. */
+        const pr = { m:p.m, engine:p.engine, tonnes:p.t, slip:s*100,
+                     cf:f.cf, ch4:f.ch4, n2o:f.n2o, lcv:f.lcv,
+                     efCO2:null, efCH4:null, efN2O:null, zeroRated:false,
+                     etsCO2:0, etsCO2e:0, totalCO2:0, totalCO2e:0, ukCO2e:0,
+                     /* 2026-08-10d: eligible mass per consumer, so the EU/UK ETS cards can show
+                        a per-consumer "Elig. t" instead of a dash. Same p.t*coverage the row
+                        level uses — copied, not recomputed. */
+                     eligEU:0, eligUK:0,
+                     E:0, Ecov:0, wtt:null, ttw:null, rwd:1 };
+        fe.parts.push(pr);
         /* SCC (2026-07-22d): factors read from Table 8 per consumer, so LNG methane slip and
            boiler/steam plants take their own published rows rather than a computed slip. */
         const sf = sccFactor(f, p.engine, p.m);
@@ -531,6 +571,8 @@ function computeAll(state){
           ets_t_co2 += mt*efCO2; ets_t_co2e += co2e;
           det.etsCO2 += mt*efCO2; det.etsCO2e += co2e;
           fe.etsCO2 += mt*efCO2; fe.etsCO2e += co2e;     // 2026-07-22: per-fuel mirror
+          pr.etsCO2 = mt*efCO2; pr.etsCO2e = co2e;       // 2026-08-10: working tape
+          pr.eligEU = mt;                                // 2026-08-10d
         }
         /* 2026-07-26p (Aurvin, owner instruction): "Total CO2e" — Fuel metrics figure, moved
            OUT of the EU ETS group. Same CO2+CH4/N2O GWP treatment EU ETS uses (GWP_EUETS —
@@ -548,6 +590,10 @@ function computeAll(state){
           tot_t_co2 += p.t*efCO2; tot_t_co2e += co2eFull;
           det.totalCO2 += p.t*efCO2; det.totalCO2e += co2eFull;
           fe.totalCO2 += p.t*efCO2; fe.totalCO2e += co2eFull;
+          /* 2026-08-10: working tape. This block runs UNCONDITIONALLY (unlike the EU ETS one
+             above), so it is the reliable place to record which factors were actually applied. */
+          pr.efCO2 = efCO2; pr.efCH4 = efCH4; pr.efN2O = efN2O; pr.zeroRated = !!zero;
+          pr.totalCO2 = p.t*efCO2; pr.totalCO2e = co2eFull;
         }
         /* UK ETS (ukets-sch2a-p35) */
         if(covUK>0){
@@ -556,6 +602,8 @@ function computeAll(state){
           const ukPart = (m-mNC)*f.cf + GWP_UKETS.ch4*((m-mNC)*f.ch4 + mNC) + GWP_UKETS.n2o*(m-mNC)*f.n2o;
           det.ukCO2e += ukPart;
           fe.ukCO2e += ukPart;                           // 2026-07-22: per-fuel mirror
+          pr.ukCO2e = ukPart;                            // 2026-08-10: working tape
+          pr.eligUK = m;                                 // 2026-08-10d
         }
         /* FuelEU (fueleu-annexi + essf-ws1-2-5 allocation):
            the row's FULL fuel is allocatable (it is MRV-monitored); only E × coverage
@@ -572,6 +620,8 @@ function computeAll(state){
           E_scope += E*covEU;
           det.E += E*covEU;
           fe.E += E*covEU;                               // 2026-07-22: per-fuel mirror
+          pr.E = E; pr.Ecov = E*covEU;                   // 2026-08-10: working tape
+          pr.wtt = wtt; pr.ttw = ttw; pr.rwd = rwd;
         }
       }
     }
