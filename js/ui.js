@@ -335,7 +335,34 @@ function portIndex(){
   }
   return _PORTS;
 }
-function portName(code){ portIndex(); return _PORT_BY_CODE[(code||"").toUpperCase()] || null; }
+/* ---- file-supplied port NAME overlay (2026-08-13, Aurvin, owner instruction) ----
+   Some producers ship a port UN/LOCODE that is not a real one and is therefore absent from
+   js/ports_data.js — Mercuria's OCEAN BLUE export writes Eleusis as "GRFLS" (the real codes
+   are GREEU "Eleusina" / GRIXE "Elefsina"). portName() found nothing, and every label fell
+   back to `portName(code)||code`, so the owner saw a bare "GRFLS" on the LEGS tab even though
+   the file states "Eleusis" in its own PORT column right beside the code. mdaToOVD harvests
+   those {code -> name} pairs (see the portNames block there) and the import call sites register
+   them here BEFORE parseOVD runs, so the name is folded into the row's persisted port{c,n}.
+
+   DISPLAY ONLY, and deliberately weak: it is consulted ONLY when the built-in table has no
+   name for the code, so no file can ever rename a real port. Nothing else reads it —
+   portSearch() and resolvePortByName() iterate _PORTS, and zoneOfLocode() reads the country
+   prefix ("GR" → EEA), which is why GRFLS was already zoned and scoped correctly. No
+   derivation, zone, coverage or POC value can move because of this map.
+
+   WHAT THIS DOES NOT FIX (owner informed, deliberately left visible this session): a stay whose
+   UN/LOCODE is BLANK in the file still borrows the code of the next stay that did resolve — in
+   the OCEAN BLUE file two April stays (STS off Kalamata, Singapore Anchorage) are labelled
+   "Chiba (JPCHB)" from 2½ months later. That is a wrong CODE, not a missing name, and no
+   display rule can see it. See HANDOFF_LOG.md 2026-08-13. */
+const _PORT_FILE_NAMES={};
+function registerFilePortNames(map){
+  for(const k in (map||{})){
+    const c=String(k||"").trim().toUpperCase(), n=String(map[k]||"").trim();
+    if(c && n && !_PORT_FILE_NAMES[c]) _PORT_FILE_NAMES[c]=n;     // first file to name a code wins; never overrides ports_data
+  }
+}
+function portName(code){ portIndex(); code=(code||"").toUpperCase(); return _PORT_BY_CODE[code] || _PORT_FILE_NAMES[code] || null; }
 /* 2026-08-02 (Aurvin, owner instruction): resolve a port reported by NAME only (blank UN/LOCODE)
    to a real LOCODE, so its zone/coverage and label come out right instead of carrying the previous
    port's code forward (owner's POLLUX file booked a Sulina cargo call as "Tarragona"). Tries the
@@ -733,6 +760,33 @@ function parseOVD(text){
    SOSP=Departure mapping and POC passthrough, with a note. */
 const MDA_REQUIRED = ["REPORT_TYPE","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"];
 const MDA_CARGO_ACT = {CARGO_DISCHARGING:1,CARGO_DISCHARGING_STS:1,CARGO_LOADING:1,CARGO_LOADING_STS:1};
+/* ---- 2026-08-13c (Aurvin, EXPLICIT owner instruction — a derivation-ladder change) ----
+   ASSOCIATED_ACTIVITY can carry SEVERAL activities in one cell, comma-separated. Every test in
+   this file read the cell as ONE atomic string, so `MDA_CARGO_ACT["CARGO_STOPPAGE, CARGO_DISCHARGING"]`
+   was undefined and a report unambiguously discharging cargo at a berth was INVISIBLE to the
+   arrival/departure ladder. Owner's OCEAN BLUE file, Chiba: the 18-hour berth report covering
+   17 Jun 06:30 → 18 Jun 00:30 (the ship's own POC column says YES) was dropped from the stay, the
+   arrival was derived 21 hours late at 18 Jun 03:30, and 14.253 t of at-berth fuel was booked to
+   the voyage at 50% EU ETS instead of at a non-EEA berth at 0%.
+
+   NOT A REGRESSION — the exact-match test is present unchanged in the 2026-08-09j backup and dates
+   from the original MDA importer, so every calculation this app has produced carried it. It only
+   became visible when a multi-value cell landed on the report that sets an arrival.
+
+   Owner's decisions this session, each answered explicitly:
+     • a cell counts as a cargo operation when ANY listed activity is one;
+     • CARGO_STOPPAGE alone does NOT count — it is a pause, not an operation (it is simply absent
+       from MDA_CARGO_ACT, so this needs no code: the co-listed CARGO_DISCHARGING is what fires);
+     • the same splitting applies to the BUNKERING rung and to the LOAD/DISCH/STS display flags.
+
+   Scale at the time of the change: OCEAN BLUE 1 multi-value row, NJORD DF 99 (81 carrying a real
+   cargo op), ANNA-BARBARA 0, CORONA 0. On NJORD most were rescued only because OTHER single-value
+   cargo reports in the same stay happened to widen the window — luck, not design. */
+function mdaActs(aa){
+  return String(aa==null?"":aa).toUpperCase().split(/[,;]/).map(s=>s.trim()).filter(Boolean);
+}
+function mdaHasCargoAct(aa){ return mdaActs(aa).some(a=>MDA_CARGO_ACT[a]===1); }
+function mdaHasAct(aa, name){ return mdaActs(aa).indexOf(name)>=0; }
 const MDA_DEFAULT_DWT = 20000;   // 5%-of-DWT fallback when vessel capacity is unset or in GT
 function mdaFuel(name){
   const u=String(name).toUpperCase().replace(/[^A-Z]/g,"");
@@ -812,6 +866,26 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   const vDwt=(vDwtRaw!=="" && isFinite(parseFloat(vDwtRaw))) ? parseFloat(vDwtRaw) : null;
   const vTypeId=mdaShipType(firstVal("VESSEL_TYPE"));
   const vessel={ name:vName||null, imo:vImo||null, dwt:vDwt, typeId:vTypeId };
+  /* ---- file-supplied port NAMES (2026-08-13, Aurvin, owner instruction) ----
+     Same read-only-passthrough category as the vessel particulars above: pair each PORT name
+     column with its UN/LOCODE column and hand the {code -> name} map back on the result, so a
+     code that ports_data.js has never heard of can still be shown with the name the file gives
+     it (owner's OCEAN BLUE export: "GRFLS" = Eleusis). Purely additive — this map is NOT part
+     of the intermediate CSV and is never read by the derivation, so the CSV this function emits
+     is byte-identical to before. See registerFilePortNames() / portName() for how it is used
+     and for the limits deliberately built into it. */
+  const portNames={};
+  { const PAIRS=[["ORIGIN_PORT","ORIGIN_PORT_UNLO_CODE"],["CURRENT_PORT","CURRENT_PORT_UNLO_CODE"],["DESTINATION_PORT","DESTINATION_PORT_UNLO_CODE"]]
+                 .filter(p=>(p[0] in col)&&(p[1] in col));
+    if(PAIRS.length) for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]; if(!r) continue;
+      for(const p of PAIRS){
+        const c=String(r[col[p[1]]]==null?"":r[col[p[1]]]).trim().toUpperCase();
+        const n=String(r[col[p[0]]]==null?"":r[col[p[0]]]).trim();
+        if(c && n && !(c in portNames)) portNames[c]=n;            // first non-empty pairing wins, like the vessel particulars
+      }
+    }
+  }
   const EV={"DEPARTURE-SOSP":"Departure","ARRIVAL-EOSP":"Arrival","AT_SEA":"Noon","IN_PORT":"Port"};
   const iso = dt => dt? dt[0]+"T"+dt[1] : null;
   const truthy = v => { const s=String(v).trim().toUpperCase(); return s==="TRUE"||s==="1"||s==="YES"; };
@@ -1116,7 +1190,10 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         return e; };
       /* TEMPORARY V1: cargo ops from the CARGO_OP boolean when ASSOCIATED_ACTIVITY is absent
          file-wide (v1NoActivity). V3 files keep the ASSOCIATED_ACTIVITY test unchanged. */
-      const ops=M.filter(m=> useCargoOp ? m.cargoOp : MDA_CARGO_ACT[m.aa]);
+      /* 2026-08-13c: mdaHasCargoAct splits a multi-value ASSOCIATED_ACTIVITY cell — see the note on
+         MDA_CARGO_ACT. A single-value cell behaves exactly as before, so V1/V3 files that never
+         list two activities are bit-identical. */
+      const ops=M.filter(m=> useCargoOp ? m.cargoOp : mdaHasCargoAct(m.aa));
       /* 2026-08-09c (Aurvin, owner instruction): TAG THE REPORTS THE LADDER JUST COUNTED AS CARGO
          OPERATIONS, so the Trends chart can draw its cargo diamond on exactly those reports.
 
@@ -1163,7 +1240,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
         const firstLast=(cond,name)=>{ const xs=M.filter(m=>!m.transparent && m.ocD===cond); if(!xs.length) return false;
           arr=xs[0].tStart; dep=xs[xs.length-1].tEnd; rule=name; return true; };
         firstLast("AT_BERTH","AT_BERTH")
-        || (()=>{ const bs=M.filter(m=>m.aa==="BUNKERING"); if(!bs.length) return false;
+        || (()=>{ const bs=M.filter(m=>mdaHasAct(m.aa,"BUNKERING")); if(!bs.length) return false;   /* 2026-08-13c: was m.aa==="BUNKERING" — missed "AWAITING_ORDERS, BUNKERING" */
              const f=bs[0], l=bs[bs.length-1], cf=effCond(f), cl=effCond(l);
              arr = M[ cf!=null? chainStart(M.indexOf(f),cf) : M.indexOf(f) ].tStart;
              dep = M[ cl!=null? chainEnd(M.indexOf(l),cl)   : M.indexOf(l) ].tEnd;
@@ -1240,9 +1317,11 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
            does not take part in the arrival/departure ladder or the POC decision above.
            2026-07-24: also emit these for an OPL-demoted stay so its 📦 tooltip can name the op. */
         if(ops.length && (poc || oplCargo)){
-          if(ops.some(m=>m.aa==="CARGO_LOADING"||m.aa==="CARGO_LOADING_STS"))       flags.push("LOAD");
-          if(ops.some(m=>m.aa==="CARGO_DISCHARGING"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("DISCH");
-          if(ops.some(m=>m.aa==="CARGO_LOADING_STS"||m.aa==="CARGO_DISCHARGING_STS"))flags.push("STS");
+          /* 2026-08-13c: comma-split too, so the 📦 tooltip and the graph's cargo diamonds name the
+             operation on a multi-value cell instead of falling silent. Display-only, as before. */
+          if(ops.some(m=>mdaHasAct(m.aa,"CARGO_LOADING")||mdaHasAct(m.aa,"CARGO_LOADING_STS")))       flags.push("LOAD");
+          if(ops.some(m=>mdaHasAct(m.aa,"CARGO_DISCHARGING")||mdaHasAct(m.aa,"CARGO_DISCHARGING_STS")))flags.push("DISCH");
+          if(ops.some(m=>mdaHasAct(m.aa,"CARGO_LOADING_STS")||mdaHasAct(m.aa,"CARGO_DISCHARGING_STS")))flags.push("STS");
         }
         if(oplCargo){ nOPL++; flags.push("OPLCARGO"); }
         /* TEMPORARY V1: no MISMATCH flag when the tag IS the source of truth (it would compare
@@ -1493,7 +1572,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
   } else {
     notes.push("OPERATING_CONDITION column not found — arrival/departure/POC derivation skipped; EOSP/SOSP used as arrival/departure and the file's POC column (if present) applied (legacy import).");
   }
-  return { csv: lines.join("\n"), notes, reports, vessel };
+  return { csv: lines.join("\n"), notes, reports, vessel, portNames };
 }
 
 /* ---- minimal .xlsx reader (ZIP + worksheet XML), no external libraries ----
@@ -1692,7 +1771,9 @@ function importOVDFile(ev){
   if(/\.xlsx$/i.test(f.name)){                            // MDA event-log workbook
     const fr=new FileReader();
     fr.onload=()=>{ xlsxToRows(fr.result)
-      .then(rows=>{ const m=mdaToOVD(rows); applyImport(parseOVD(m.csv), "MDA xlsx", m.notes, m.reports, m.vessel); })
+      /* 2026-08-13: register the file's own port names BEFORE parseOVD runs — parseOVD calls
+         portName() while building each row's persisted port{c,n}, so a later call would be too late. */
+      .then(rows=>{ const m=mdaToOVD(rows); registerFilePortNames(m.portNames); applyImport(parseOVD(m.csv), "MDA xlsx", m.notes, m.reports, m.vessel); })
       .catch(fail); };
     fr.readAsArrayBuffer(f);
     return;
@@ -1704,6 +1785,7 @@ function importOVDFile(ev){
       if(/^\s*(<\?xml|<emissions[\s>])/i.test(txt)){ applyImport(parseTHETIS(txt), "THETIS XML"); return; }
       if(/DATE_?TIME_GMT/.test(txt.slice(0,5000))){       // MDA saved as CSV (DATE_TIME_GMT or DATETIME_GMT header)
         const m=mdaToOVD(parseCSV(txt));
+        registerFilePortNames(m.portNames);                // 2026-08-13: before parseOVD — see the xlsx branch above
         applyImport(parseOVD(m.csv), "MDA CSV", m.notes, m.reports, m.vessel); return;
       }
       applyImport(parseOVD(txt), "OVD");
@@ -1711,8 +1793,48 @@ function importOVDFile(ev){
   };
   r.readAsText(f);
 }
+/* ---- 2026-08-13b (Aurvin, owner instruction): the TRUE name of a TRANSIT stay ----
+   A stay whose UN/LOCODE is blank in the file borrows the LOCODE of the next stay that did
+   resolve (defect B in HANDOFF_LOG.md 2026-08-13) — the owner's OCEAN BLUE file labels an STS
+   transfer off Kalamata and a Singapore bunkering stop as "Chiba (JPCHB)", from 2½ months later.
+   The reports retain the ship's own wording in `portN`, so stamp it on the row for DISPLAY.
+
+   WHY THIS IS SAFE ON A TRANSIT STAY, AND ONLY THERE (proved, not assumed — see the
+   FILE-STAY-NAMES self-tests): on a stay with poc===false, annotateVoyageContinuity routes the
+   fuel through the VOYAGE's coverage and never reads the stay's own zone. Rewriting both of the
+   owner's transit stays from JPCHB (OTHER) to NLRTM (EEA) — the largest zone swing available —
+   left CII, EUAs, UKAs, CO2e, the FuelEU balance/energy/GHGIE and the EU ETS / UK ETS / FuelEU
+   coverage of EVERY row byte-identical. The moment the stay is a PORT OF CALL the code is
+   load-bearing again, so legPorts() shows this name ONLY while poc===false and reverts to the
+   borrowed code the instant the owner ticks "YES — port of call" on the row (js/ui.js ~1980).
+   That revert is the safety property; do not make this unconditional.
+
+   Stored, but display-only: nothing reads `portFileN` except legPorts(). `port.n` is deliberately
+   NOT overwritten, so the Excel exports keep their existing code-based labels rather than shipping
+   a Greek name against a Japanese LOCODE into a regulatory file.
+
+   Matching is by the stay's OWN derived window (arrGmt..depGmt), both sides of which came out of
+   the same derivation pass as the reports — this is NOT the fuzzy trMatchRow() time-window
+   matching that CLAUDE.md warns about. */
+function stampFileStayNames(rows, reports){
+  if(!Array.isArray(rows) || !Array.isArray(reports) || !reports.length) return;
+  for(const r of rows){
+    if(!r || r.kind!=="port" || !r.arrGmt || !r.depGmt) continue;
+    const seen={}; let best="", bestN=0;
+    for(const rep of reports){
+      const t=rep && rep.t; if(!t || t<r.arrGmt || t>r.depGmt) continue;
+      const n=String(rep.portN||"").trim(); if(!n) continue;
+      seen[n]=(seen[n]||0)+1;
+      if(seen[n]>bestN){ bestN=seen[n]; best=n; }          // the wording most of the stay's own reports use
+    }
+    /* only worth keeping when it actually disagrees with what the row is currently called */
+    if(best && !(r.port && (r.port.n===best || r.port.c===best))) r.portFileN=best;
+    else delete r.portFileN;
+  }
+}
 function applyImport(res, label, extraNotes, reports, vessel){
       if(!res.rows.length) throw new Error("No voyages/port stays could be built from the file");
+      stampFileStayNames(res.rows, reports||[]);            // 2026-08-13b — display-only, see above
       const replace = confirm("Imported "+res.rows.length+" activity rows from "+label+".\n\nOK = REPLACE current activity  ·  Cancel = APPEND to current activity");
       const notes=(extraNotes||[]).concat(res.notes||[]);
       if(replace){
@@ -3507,8 +3629,18 @@ function feuTotalFor(kind, R){
   if(!F) return null;
   if(!sel.size){
     /* whole period — the legal, annual position */
+    /* 2026-08-13d (Aurvin — owner report, confirmed against a third-party FuelEU report):
+       `terms` was MISSING here, and it is not optional. The TOTAL row's "Elig. mt" cell reads
+         const mt = (t && t.terms) ? t.terms.reduce(...) : 0;
+       so in ANNUAL mode — no rows ticked, i.e. the default view everyone reads — the ternary fell
+       to the `0` branch and the cell printed a confident "0.0" while "Elig. energy" beside it,
+       which reads t.E, printed the correct 33.66 x 10^6 MJ. 33.66 million MJ of LNG cannot weigh
+       nothing: the owner's provider puts it at 686 mt and this app's own working tape at 685.5 mt.
+       The SELECTION branch below never had the bug, because F.forRows() returns terms — so ticking
+       any row made the mass appear and unticking it made it vanish again, which is how it was
+       finally pinned. Carrying F.terms through is the whole fix; nothing downstream changes. */
     return { mode:"annual", cb:F.cb, penalty:F.penalty, surplusValue:F.surplusValue,
-             ghgie:F.ghgie, E:F.E_total };
+             ghgie:F.ghgie, E:F.E_total, terms:F.terms||[] };
   }
   if(typeof F.forRows !== "function") return null;
   const own = F.forRows(Array.from(sel));
@@ -3693,6 +3825,15 @@ function legPortEntry(p, fallbackLabel, juris){
   /* 2026-08-10e: `disp`/`tip` are the LOCODE-first screen string and the hover tooltip (tooltip
      adds the country). `label` is deliberately LEFT name-first — downloadVoyageXlsx reads it for
      the "From port"/"To port" columns, and exports were out of scope for the reorder. */
+  /* 2026-08-13b: a TRANSIT stay displaying its own MDA name over a BORROWED LOCODE (see legPorts).
+     Two things must NOT happen here. The tooltip must not append the borrowed code's COUNTRY —
+     "Japan" under a Greek STS position is worse than the wrong name was. And `label` must keep the
+     ORIGINAL code-based text, because downloadVoyageXlsx reads it: an export is a regulatory
+     artefact and must not carry a Greek name against a Japanese LOCODE. Only the on-screen `disp`
+     and the explanatory `tip` change. */
+  if(p && p.c && p._fileN) return { label: portDisp({c:p.c, n:p._origN||p.c}), disp: portDispCodeFirst(p),
+      tip: portDispCodeFirst(p)+" — name as reported by the ship. This stay is scored as TRANSIT, so its UN/LOCODE carries no calculation weight; the code shown ("+p.c+") was carried over from another port stay in the file and is NOT this position. Mark the row a port of call and it will revert to the carried-over name.",
+      name: (p.n && p.n!==p.c) ? p.n : "", code: p.c, juris: juris||null };
   if(p && p.c) return { label: portDisp(p), disp: portDispCodeFirst(p), tip: portTipCodeFirst(p), name: (p.n && p.n!==p.c) ? p.n : "", code: p.c, juris: juris||null };
   return { label: fallbackLabel||"", disp: fallbackLabel||"", tip: fallbackLabel||"", name: fallbackLabel||"", code: "", juris: juris||null };
 }
@@ -3707,8 +3848,17 @@ function legPorts(det, row){
     // voyages: never badged (SPEC §2)
     return [ legPortEntry(pa, a), legPortEntry(pb, b) ];
   }
-  const p = row && row.port;
+  let p = row && row.port;
   const fb = row ? zoneName(row.zone) : (det.label||"").replace(/^At berth\s*/,"");
+  /* 2026-08-13b (Aurvin, owner instruction): a TRANSIT stay (poc===false) shows the name its own
+     MDA reports give it instead of the name that came with a borrowed LOCODE — see
+     stampFileStayNames(). The borrowed CODE is deliberately LEFT ON SCREEN beside it (the display
+     is LOCODE-first since 2026-08-10e), so the row reads "JPCHB – STS Location Off Kalamata": the
+     right place, and visible evidence that the code does not belong to it.
+     GATED ON poc===false. Tick "YES — port of call" on the row and this whole branch stops firing,
+     the label snaps back to "JPCHB – Chiba", and the defect is loud again — which is exactly when
+     the code starts driving the row's zone and its money. Do not remove the gate. */
+  if(p && p.c && row && row.poc===false && row.portFileN) p = { c:p.c, n:row.portFileN, _fileN:true, _origN:p.n };
   return [ legPortEntry(p, fb, jurisOfPort(p, row?row.zone:null)) ];
 }
 /* 2026-07-23: 📦 tooltip text. The cargo operation type comes from the MDA
@@ -9189,6 +9339,179 @@ function runSelfTests(){
           !!sp && sp.poc===true && Math.abs(euCoverage(sp)-1)<0.001);
       ckT("NAME-ONLY: resolvePortByName strips the 'Fair Buoy' descriptor; confident single match only",
           resolvePortByName("Sulina Fair Buoy")==="ROSUL" && resolvePortByName("Off Piraeus")==="GRPIR" && resolvePortByName("zzzz nowhere port")===null);
+    }
+    /* ---- 2026-08-13 (owner instruction): FILE-SUPPLIED PORT NAMES. A producer's UN/LOCODE that
+       is not in ports_data.js showed as a bare code on every tab (owner's OCEAN BLUE export writes
+       Eleusis as "GRFLS"; the real codes are GREEU/GRIXE). mdaToOVD now hands back a {code -> name}
+       map harvested from the file's own PORT columns, and the import registers it as a display-only
+       fallback for portName(). The load-bearing checks are the three NEGATIVE ones — that the
+       overlay cannot override ports_data, cannot reach portSearch/resolvePortByName/zoneOfLocode,
+       and cannot reach the intermediate CSV. If any of those ever goes green-to-red, an imported
+       file has gained the power to move a calculation, which this feature must never have. ---- */
+    {
+      const FNAME=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE","CURRENT_PORT","ORIGIN_PORT","DESTINATION_PORT"],
+        ["2026-02-01 00:00","2026-01-31 12:00","2026-02-01 00:00","AT_SEA","NORMAL SAILING","","",'{"VLSFO": 5}',"60","9000","NLRTM","","GRFLS","","Rotterdam Bogus","Eleusis"],
+        ["2026-02-01 06:00","2026-02-01 00:00","2026-02-01 06:00","ARRIVAL-EOSP","","","",'{"VLSFO": 0.5}',"6","9000","NLRTM","GRFLS","GRFLS","Eleusis","Rotterdam Bogus","Eleusis"],
+        ["2026-02-01 12:00","2026-02-01 06:00","2026-02-01 12:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE",'{"MDO": 0.3}',"0","4000","","GRFLS","","Eleusis","",""],
+        ["2026-02-02 12:00","2026-02-01 12:00","2026-02-02 12:00","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE",'{"MDO": 0.3}',"0","0","","GRFLS","","Eleusis","",""],
+        ["2026-02-02 18:00","2026-02-02 12:00","2026-02-02 18:00","DEPARTURE-SOSP","MANOEUVRING","","",'{"MDO": 0.1}',"2","0","GRFLS","","NLRTM","","Eleusis","Rotterdam Bogus"]];
+      const mfn=mdaToOVD(FNAME, 20000);
+      ckT("FILE-NAMES: mdaToOVD harvests {LOCODE -> name} from the file's own PORT columns",
+          !!mfn.portNames && mfn.portNames.GRFLS==="Eleusis");
+      /* NEGATIVE 1 — the map must never reach the intermediate CSV, i.e. never reach the derivation. */
+      ckT("FILE-NAMES: the name map is NOT in the intermediate CSV (derivation cannot see it)",
+          mfn.csv.indexOf("Eleusis")<0 && mfn.csv.indexOf("Rotterdam Bogus")<0);
+      registerFilePortNames(mfn.portNames);
+      ckT("FILE-NAMES: an unknown LOCODE now shows the file's name instead of the bare code",
+          portName("GRFLS")==="Eleusis");
+      /* NEGATIVE 2 — a file must never be able to RENAME a port the app already knows. */
+      ckT("FILE-NAMES: ports_data always wins — the file's 'Rotterdam Bogus' cannot rename NLRTM",
+          portName("NLRTM")==="Rotterdam");
+      /* NEGATIVE 3 — the overlay is display-only: it must not become searchable or resolvable,
+         and zoneOfLocode must still read the country prefix (which is why GRFLS was ALREADY
+         zoned EEA and scoped correctly even while it displayed as a bare code). */
+      ckT("FILE-NAMES: display-only — the overlay never reaches portSearch / resolvePortByName",
+          portSearch("Eleusis").length===0 && resolvePortByName("Eleusis")===null);
+      ckT("FILE-NAMES: zone still comes from the country prefix, not the name (GRFLS = EEA, unchanged)",
+          zoneOfLocode("GRFLS")==="EEA");
+      const xfn=parseOVD(mfn.csv);
+      const pfn=xfn.rows.find(r=>r.kind==="port" && r.port && r.port.c==="GRFLS");
+      ckT("FILE-NAMES: the workspace port row persists the name, so labels read 'Eleusis (GRFLS)'",
+          !!pfn && pfn.port.n==="Eleusis" && portDisp(pfn.port).indexOf("Eleusis")===0);
+      const lfn=xfn.rows.find(r=>r.kind==="voyage" && r.toPort && r.toPort.c==="GRFLS");
+      ckT("FILE-NAMES: voyage endpoints pick it up too (both branches read portName)",
+          !!lfn && lfn.toPort.n==="Eleusis");
+      ckT("FILE-NAMES: an unnamed unknown code still falls back to the bare code (no invention)",
+          portName("ZZZZZ")===null);
+    }
+    /* ---- 2026-08-13b (owner instruction): a TRANSIT stay shows the name ITS OWN reports give it,
+       over the LOCODE it borrowed from another stay. Owner's argument, which tested out correct:
+       on a stay scored as transit the code cannot reach any number, so showing the true name there
+       is free. THE LOAD-BEARING CHECKS ARE THE INVARIANCE ONE AND THE GATE. Invariance is the whole
+       licence for this feature — if a transit stay's code ever starts moving a figure, the licence
+       is void and this must be reverted, not adjusted. The gate is what keeps the feature honest:
+       the moment the row becomes a port of call the borrowed code drives its zone, so the display
+       must snap back and stop reassuring the reader. ---- */
+    {
+      const TRN=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE","CURRENT_PORT"],
+        ["2026-03-01 06:00","2026-02-28 18:00","2026-03-01 06:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","9000","GRPIR","","JPCHB",""],
+        ["2026-03-02 06:00","2026-03-01 06:00","2026-03-02 06:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"200","9000","GRPIR","","JPCHB",""],
+        ["2026-03-02 18:00","2026-03-02 06:00","2026-03-02 18:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","9000","GRPIR","","JPCHB","STS Location Off Kalamata"],
+        ["2026-03-03 06:00","2026-03-02 18:00","2026-03-03 06:00","IN_PORT","DRIFTING","CARGO_LOADING_STS","TRUE","NO",'{"MGO": 1}',"0","9000","","","","STS Location Off Kalamata"],
+        ["2026-03-04 06:00","2026-03-03 06:00","2026-03-04 06:00","IN_PORT","DRIFTING","CARGO_LOADING_STS","TRUE","NO",'{"MGO": 1}',"0","12000","","","","STS Location Off Kalamata"],
+        ["2026-03-04 12:00","2026-03-04 06:00","2026-03-04 12:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.2}',"2","12000","","","JPCHB",""],
+        ["2026-03-06 12:00","2026-03-04 12:00","2026-03-06 12:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 20}',"400","12000","","","JPCHB",""]];
+      const mt=mdaToOVD(TRN, 20000), xt=parseOVD(mt.csv);
+      stampFileStayNames(xt.rows, mt.reports||[]);
+      annotateVoyageContinuity(xt.rows);
+      const st=xt.rows.find(r=>r.kind==="port" && r.poc===false);
+      ckT("FILE-STAY-NAMES: the OPL/STS stay is scored transit and carries a borrowed LOCODE, not its own",
+          !!st && st.poc===false && !!st.port && st.port.c!=="" && st.port.n!=="STS Location Off Kalamata");
+      ckT("FILE-STAY-NAMES: the ship's own wording is stamped on the row from its reports",
+          !!st && st.portFileN==="STS Location Off Kalamata");
+      const entT=legPorts({kind:"port"}, st)[0];
+      ckT("FILE-STAY-NAMES: a TRANSIT stay displays its true name WITH the borrowed code still visible",
+          !!entT && entT.disp===st.port.c+" – STS Location Off Kalamata");
+      ckT("FILE-STAY-NAMES: the tooltip says the code is carried over, and never names the borrowed code's country",
+          !!entT && entT.tip.indexOf("carried over")>0 && entT.tip.indexOf("Japan")<0);
+      /* the export path must not learn the new name — a regulatory artefact keeps the code-based label */
+      ckT("FILE-STAY-NAMES: `label` (read by downloadVoyageXlsx) is UNCHANGED — exports never carry the substituted name",
+          !!entT && entT.label.indexOf("STS Location Off Kalamata")<0);
+      /* THE GATE — mark it a port of call and the reassuring label must disappear */
+      st.poc=true;
+      const entP=legPorts({kind:"port"}, st)[0];
+      ckT("FILE-STAY-NAMES: THE GATE — ticking 'port of call' reverts the display to the borrowed code",
+          !!entP && entP.disp.indexOf("STS Location Off Kalamata")<0 && entP.disp===portDispCodeFirst(st.port));
+      st.poc=false;
+      /* THE INVARIANCE LICENCE — a transit stay's code must reach no number at all */
+      const fig=()=>{ const R=computeAll(S); return JSON.stringify([R.cii&&R.cii.attained, R.ets&&R.ets.euas, R.ets&&R.ets.ukas,
+                        R.ets&&R.ets.co2e, R.fueleu&&R.fueleu.cb, xt.rows.map(r=>euCoverage(r)+"/"+(typeof fueleuCoverage==="function"?fueleuCoverage(r):"")).join(",")]); };
+      const keep=S.rows, keepY=S.year;
+      S.rows=xt.rows; S.year=2026;
+      const f1=fig();
+      const wasC=st.port.c, wasZ=st.zone;
+      st.port={c:"NLRTM",n:"Rotterdam"}; st._locode="NLRTM"; st.zone=zoneOfLocode("NLRTM");   // OTHER -> EEA, the biggest swing there is
+      annotateVoyageContinuity(xt.rows);
+      const f2=fig();
+      st.port={c:wasC,n:"Chiba"}; st._locode=wasC; st.zone=wasZ; annotateVoyageContinuity(xt.rows);
+      S.rows=keep; S.year=keepY;
+      ckT("FILE-STAY-NAMES: INVARIANCE — a TRANSIT stay's LOCODE moves NO figure (OTHER→EEA changes nothing)", f1===f2);
+    /* ---- 2026-08-13c (EXPLICIT owner instruction — a DERIVATION-LADDER change): a multi-value
+       ASSOCIATED_ACTIVITY cell. Owner's OCEAN BLUE file derived the Chiba arrival 21 hours late
+       because "CARGO_STOPPAGE, CARGO_DISCHARGING" was not an exact key of MDA_CARGO_ACT, so an
+       18-hour berth report discharging cargo (the ship's own POC column says YES) was invisible to
+       the ladder and its 14.253 t was booked to the voyage at 50% instead of a non-EEA berth at 0%.
+       NOT a regression — the exact-match test is unchanged in the 2026-08-09j backup.
+       THE LOAD-BEARING CHECK IS THE PRIORITY ONE: cargo must outrank bunkering when a cell lists
+       both, which is what the owner asked for and what Case-A-before-Case-B already delivers. If it
+       ever fails, a cargo call has started being bracketed as a bunkering stop. ---- */
+    {
+      ckT("MULTI-ACT: a cell listing several activities is a cargo op when ANY of them is one",
+          mdaHasCargoAct("CARGO_STOPPAGE, CARGO_DISCHARGING") && mdaHasCargoAct("AWAITING_ORDERS, CARGO_LOADING")
+          && mdaHasCargoAct("AWAITING_ORDERS, CARGO_DISCHARGING, BUNKERING"));
+      ckT("MULTI-ACT: CARGO_STOPPAGE alone is NOT a cargo operation (owner: a pause, not an operation)",
+          !mdaHasCargoAct("CARGO_STOPPAGE") && !mdaHasCargoAct("AWAITING_ORDERS") && !mdaHasCargoAct(""));
+      ckT("MULTI-ACT: single-value cells behave exactly as before (no V1/V3 file changes shape)",
+          mdaHasCargoAct("CARGO_LOADING_STS") && mdaHasCargoAct("CARGO_DISCHARGING") && !mdaHasCargoAct("BUNKERING"));
+      ckT("MULTI-ACT: the BUNKERING rung sees a bunkering tag inside a multi-value cell",
+          mdaHasAct("AWAITING_ORDERS, BUNKERING","BUNKERING") && mdaHasAct("BUNKERING","BUNKERING")
+          && !mdaHasAct("AWAITING_ORDERS","BUNKERING"));
+      /* end to end: the exact shape of the owner's Chiba stay — a berth report whose activity cell
+         pairs a stoppage with a discharge, followed by a manoeuvring break and a second berth. */
+      const MACT=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","POC","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
+        ["2026-05-01 06:00","2026-04-30 18:00","2026-05-01 06:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"VLSFO": 0.5}',"5","9000","SGSIN","","JPCHB"],
+        ["2026-05-02 06:00","2026-05-01 06:00","2026-05-02 06:00","AT_SEA","NORMAL SAILING","","","",'{"VLSFO": 10}',"200","9000","SGSIN","","JPCHB"],
+        ["2026-05-02 18:00","2026-05-02 06:00","2026-05-02 18:00","ARRIVAL-EOSP","","","","",'{"VLSFO": 1}',"10","9000","SGSIN","JPCHB","JPCHB"],
+        ["2026-05-03 06:00","2026-05-02 18:00","2026-05-03 06:00","IN_PORT","MANOEUVRING","","FALSE","NO",'{"MGO": 0.5}',"0","9000","","JPCHB",""],
+        ["2026-05-04 00:30","2026-05-03 06:00","2026-05-04 00:30","IN_PORT","AT_BERTH","CARGO_STOPPAGE, CARGO_DISCHARGING","FALSE","YES",'{"MGO": 2}',"0","6000","","JPCHB",""],
+        ["2026-05-04 03:30","2026-05-04 00:30","2026-05-04 03:30","IN_PORT","MANOEUVRING","","FALSE","YES",'{"MGO": 0.4}',"0","6000","","JPCHB",""],
+        ["2026-05-04 23:54","2026-05-04 03:30","2026-05-04 23:54","IN_PORT","AT_BERTH","CARGO_DISCHARGING","FALSE","YES",'{"MGO": 2}',"0","0","","JPCHB",""],
+        ["2026-05-05 03:00","2026-05-04 23:54","2026-05-05 03:00","DEPARTURE-SOSP","MANOEUVRING","","","",'{"MGO": 0.2}',"2","0","JPCHB","","KRYOS"]];
+      const xma=parseOVD(mdaToOVD(MACT, 20000).csv);
+      const sma=xma.rows.find(r=>r.kind==="port" && r.port && r.port.c==="JPCHB");
+      ckT("MULTI-ACT: the arrival is derived from the FIRST cargo report, not the second (owner's Chiba defect)",
+          !!sma && sma.arrGmt==="2026-05-03T06:00" && sma.depGmt==="2026-05-04T23:54" && sma.poc===true);
+      ckT("MULTI-ACT: the 📦 flags read a multi-value cell, so the icon names the operation",
+          !!sma && sma.cargoDisch===true && !sma.cargoLoad);
+      /* PRIORITY — the rule the owner set: cargo outranks bunkering when one cell lists both */
+      const BOTH=MACT.map(r=>r.slice());
+      BOTH[5][5]="AWAITING_ORDERS, CARGO_DISCHARGING, BUNKERING";
+      const sb=parseOVD(mdaToOVD(BOTH, 20000).csv).rows.find(r=>r.kind==="port" && r.port && r.port.c==="JPCHB");
+      ckT("MULTI-ACT: PRIORITY — a cell listing cargo AND bunkering derives as CARGO (Case A), never as a bunkering stop",
+          !!sb && sb.deriveRule==="CASE_A" && sb.arrGmt==="2026-05-03T06:00");
+    }
+    /* ---- 2026-08-13d: the TOTAL row's FuelEU "Elig. mt" read 0.0 while "Elig. energy" beside it
+       read 33.66 x 10^6 MJ, because feuTotalFor()'s ANNUAL branch (no rows ticked — the default
+       view) returned an object with no `terms`. Owner spotted it comparing against a third-party
+       FuelEU report that put the same energy at 686 mt. THE LOAD-BEARING CHECK IS THE INVARIANT:
+       eligible ENERGY and eligible MASS must be zero or non-zero TOGETHER. Energy without mass is
+       physically impossible and is exactly the shape this bug had; asserting the literal 685.5
+       would not have caught the selection-mode variant, and would break on any fixture change. ---- */
+    {
+      const keepR=S.rows, keepY=S.year, keepSel=ROWSEL.br.sel;
+      ROWSEL.br.sel=new Set();
+      S.year=2026;
+      S.rows=[{ kind:"voyage", from:"EEA", to:"EEA", dist:500, cargo:10000,
+                fromPort:{c:"NLRTM",n:"Rotterdam"}, toPort:{c:"DEHAM",n:"Hamburg"},
+                fuels:[{fuelId:"LNG", tonnes:100, price:0, split:{ME:70,AE:20,BLR:10}}] }];
+      const Rf=computeAll(S), tf=feuTotalFor("br", Rf);
+      const mtOf=t=>(t&&t.terms)? t.terms.reduce((a,x)=>a+(x.E>0?x.tonnes:0),0) : 0;
+      ckT("FEU-TOTAL: the ANNUAL total carries its `terms` (the cell that prints Elig. mt reads them)",
+          !!tf && tf.mode==="annual" && Array.isArray(tf.terms) && tf.terms.length>0);
+      ckT("FEU-TOTAL: INVARIANT — eligible energy and eligible mass are zero or non-zero TOGETHER",
+          !!tf && ((tf.E>0) === (mtOf(tf)>0)));
+      ckT("FEU-TOTAL: the annual eligible mass is the fuel actually in FuelEU scope (100 t at 100%)",
+          !!tf && Math.abs(mtOf(tf)-100)<0.5, "got "+fmtF(mtOf(tf),2));
+      /* the selection branch never had the bug — pin it so a future refactor cannot lose either */
+      ROWSEL.br.sel=new Set([0]);
+      const ts=feuTotalFor("br", computeAll(S));
+      ckT("FEU-TOTAL: the SELECTION total still carries terms and mass (F.forRows path)",
+          !!ts && ts.mode==="selection" && mtOf(ts)>0);
+      ROWSEL.br.sel=keepSel; S.rows=keepR; S.year=keepY;
+    }
+      ckT("FILE-STAY-NAMES: the stamp only fires on a stay whose derived window exists and whose name disagrees",
+          (()=>{ const r=[{kind:"port",arrGmt:"2026-01-01T00:00",depGmt:"2026-01-02T00:00",port:{c:"NLRTM",n:"Rotterdam"}}];
+                 stampFileStayNames(r,[{t:"2026-01-01T12:00",portN:"Rotterdam"}]); return r[0].portFileN===undefined; })());
     }
     /* DATETIME_GMT header variant + incomplete stay at file end */
     const INC_FIX=[["DATETIME_GMT","REPORT_START_GMT","REPORT_END_GMT","REPORT_TYPE","OPERATING_CONDITION","ASSOCIATED_ACTIVITY","OUTSIDE_PORT_LIMIT","FUEL_CONSUMPTION","DISTANCE","CARGO_QTY","ORIGIN_PORT_UNLO_CODE","CURRENT_PORT_UNLO_CODE","DESTINATION_PORT_UNLO_CODE"],
