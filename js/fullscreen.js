@@ -574,9 +574,22 @@ function znfsRenderKpis(){
            unit touching the number itself (the unit is the small caption to its right); the
            €/£ cost rows elsewhere on these cards keep their inline currency symbol and stay
            at 0dp, untouched. */
-        '<span class="n ' + (cbT == null ? "dim" : (cbPos ? "pos" : "neg")) + '">' + (cbT == null ? "—" : fmtF(cbT, 1)) + '</span>' +
+        /* 2026-08-10g (Aurvin, owner instruction — the full-screen card must match the ordinary
+           Results-tab one, which was signed and coloured on 2026-08-10f): the hero now carries a
+           leading "+" on a surplus, via the SAME feuCBText() helper js/ui.js uses for every other
+           CB on screen. Sharing the helper is the point — two formatters for one regulatory
+           figure is exactly how the tabs came to disagree in the first place.
+           The pos/neg class was already here and already correct; it simply never rendered until
+           the specificity fix in css/styles.css the same day. See the long note there. */
+        '<span class="n ' + (cbT == null ? "dim" : (cbPos ? "pos" : "neg")) + '">' + (cbT == null ? "—" : feuCBText(cbT, 1)) + '</span>' +
         '<span class="u">t CO₂eq - <b>CB</b></span>' + feuTrendBtn + '</div>' +
-      '<div class="kvz" title="Article 23 penalty on a remaining deficit, including the multiplier for consecutive deficit years.">Penalty <b class="' + (f.penalty > 0 ? "neg" : "pos") + '">' + (f.penalty > 0 ? "€ " + fmtI(f.penalty) : "None") + '</b></div>' +
+      /* 2026-08-10g (Aurvin, owner instruction): "None" -> a GREEN em dash, to read as the visual
+         opposite of a penalty rather than as a word. Owner explicitly chose the dash over putting
+         the surplus VALUE on this card (offered and declined) — the card is height-constrained by
+         2026-08-09i and the surplus value is already a row in the Regulatory detail drawer below
+         ("Surplus value", znrdKv, ~line 2536). The label stays "Penalty": this row reports the
+         penalty and nothing else. */
+      '<div class="kvz" title="' + (f.penalty > 0 ? "Article 23 penalty on a remaining deficit, including the multiplier for consecutive deficit years." : "No penalty — the compliance balance is not in deficit. The indicative value of a surplus is in the Regulatory detail drawer below.") + '">Penalty <b class="' + (f.penalty > 0 ? "neg" : "pos") + '">' + (f.penalty > 0 ? "€ " + fmtI(f.penalty) : "—") + '</b></div>' +
       /* 2026-08-01m (Aurvin, owner instruction): the merged "GHGIE attained vs target" row
          (added 2026-08-01i, briefly removed entirely 2026-08-01l, see HANDOFF_LOG.md) is brought
          back but the TARGET half is dropped — owner wants the attained figure kept, just not the

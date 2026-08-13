@@ -683,9 +683,34 @@ body.znfs-open>header,body.znfs-open>nav,body.znfs-open>main,body.znfs-open>.dis
 .znk .kvz{display:flex;align-items:baseline;gap:8px;font-size:11.5px;color:#5c6c7a;border-top:1px solid #f2f5f7;padding-top:4px}
 .znk .kvz:first-child{border-top:0;padding-top:0}
 .znk .kvz b{margin-left:auto;color:#0e2c40;font-weight:700;text-align:right}
-.znk .pos{color:#1d7a3e}
-.znk .neg{color:#b3261e}
-.znk .dim{color:#8a97a3;font-weight:400}
+/* 2026-08-10g (Aurvin, owner instruction — full-screen FuelEU card read dark, not green).
+   THESE THREE RULES HAD NEVER RENDERED on the two places that use them. js/fullscreen.js
+   has always put `pos` / `neg` / `dim` on the hero number and on the .kvz bold value, but
+   CSS specificity silently threw them away:
+
+       .znk .pos          (0,2,0)      <- these
+       .znk .hero .n      (0,3,0)  color:#0e2c40   WINS over .pos on the hero
+       .znk .kvz b        (0,2,1)  color:#0e2c40   WINS over .pos on a kvz value
+
+   Source order does not help — specificity is decided first, and .pos is only two classes.
+   So a FuelEU surplus and a FuelEU deficit rendered in the SAME dark colour, and UK ETS's
+   deliberately-greyed "no obligation" rows rendered at full strength. The class was present
+   in the HTML the whole time, which is why this looked like a missing style rather than a
+   dead one.
+
+   FIXED BY RAISING SPECIFICITY, NOT BY !important — an !important here would also override
+   any future state class and is much harder to reason about. Each state now lists the two
+   contexts that were beating it:
+       .znk .hero .n.pos  (0,4,0)  beats .znk .hero .n  (0,3,0)
+       .znk .kvz b.pos    (0,3,1)  beats .znk .kvz b    (0,2,1)
+   The bare `.znk .pos` is kept last so any other element still picks the colour up.
+
+   KNOCK-ON, deliberate and owner-approved: this also revives `.dim` on the UK ETS card
+   (its "no obligation in <year>" hero and its "Computed CO₂e" row), which is what that
+   markup always asked for. */
+.znk .hero .n.pos, .znk .kvz b.pos, .znk .pos{color:#1d7a3e}
+.znk .hero .n.neg, .znk .kvz b.neg, .znk .neg{color:#b3261e}
+.znk .hero .n.dim, .znk .kvz b.dim, .znk .dim{color:#8a97a3;font-weight:400}
 .znk .note{margin:0;font-size:11.5px;color:#8a97a3;line-height:1.45}
 /* the VOYAGES caption on the tab row borrows .znk .note — keep it from eating the row */
 .znfs-tabs .znk.note{font-size:11px;max-width:330px}

@@ -194,7 +194,10 @@ function sccFactor(fuel, engine, machine){
 }
 
 /* ---------- scope coverage ----------
-   EU ETS (euets-art3ga) & FuelEU: EEA→EEA 100%, EEA↔other 50%, at berth EEA 100%.
+   EU ETS (euets-art3ga): EEA→EEA 100%, EEA↔other 50%, at berth EEA 100%.
+   FuelEU: SAME 100/50/0 shape, but a DIFFERENT map — NO/IS are third countries until the
+   EEA Joint Committee incorporates Reg. (EU) 2023/1805. See fueleuZone/fueleuCoverage below
+   (2026-08-10, FURE VIKEN bug). Never reuse euCoverage() for FuelEU.
    UK ETS (ukets-sch2a-p7): UK→UK voyages + UK in-port activity only.
    Port-of-call flag (2026-07-15): both regimes attach at-berth scope to a PORT OF CALL
    (EU ETS Art 3(z) definition via euets-art3ga; FuelEU Art 2/3 "port of call").
@@ -213,10 +216,35 @@ function sccFactor(fuel, engine, machine){
    from the row sequence; it is re-run on every computeAll. A LONE non-call stay with no
    surrounding voyage rows keeps the legacy behaviour (out of scope) because its voyage
    endpoints are unknowable. */
+/* Where a row's UN/LOCODE actually lives (2026-08-10b, Aurvin — second-pass fix).
+   parseOVD builds rows with the TEMPORARY fields _from/_to/_locode and then DELETES them
+   (js/ui.js, "delete r._locode; delete r._from; delete r._to") once it has folded them into
+   the persisted objects port{c,n} / fromPort{c,n} / toPort{c,n}. The first cut of the FuelEU
+   fix read only the temporary fields, so on every REAL import it saw no country code, took
+   the "no locode → leave the zone alone" path, and quietly did nothing — the bug looked fixed
+   in the unit tests (which hand-build rows) while the app still scored Norway⇄Iceland at 100%
+   FuelEU. Read BOTH, persisted first-class, temporaries as a fallback. */
+function rowLocode(r, end){
+  if(!r) return "";
+  if(r.kind==="voyage"){
+    const t = end==="to";
+    return String((t ? r._to : r._from) || ((t ? r.toPort : r.fromPort)||{}).c || "");
+  }
+  return String(r._locode || (r.port||{}).c || "");
+}
 function annotateVoyageContinuity(rows){
   rows = rows||[];
-  for(const r of rows){ delete r._covFrom; delete r._covTo; }   // poc flags may have changed
+  for(const r of rows){ delete r._covFrom; delete r._covTo; delete r._covFromCode; delete r._covToCode; }   // poc flags may have changed
   const isNC = r => r && r.kind==="port" && r.poc===false;      // non-call stay
+  /* 2026-08-10 (Aurvin, FURE VIKEN NO/IS bug): the chain below propagates ZONE codes
+     ("EEA"/"UK"/"OTHER"), which is all EU ETS and UK ETS ever need. FuelEU needs MORE —
+     it must tell a Norwegian/Icelandic EEA port from an EU-27 one (see fueleuZone below),
+     and that distinction only survives in the raw UN/LOCODE. So the same forward/backward
+     passes now carry the LOCODE alongside the zone (_covFromCode/_covToCode), by exactly
+     the same rules, so the two never drift apart. Rows with no locode (hand-entered, where
+     the user picked a zone bucket, not a port) propagate "" and fall back to zone-only
+     behaviour in fueleuZone. */
+  const codeOf = (r,end) => rowLocode(r, end);
   /* 2026-08-03 (Aurvin, owner-reported bug — METRO LIVAS): a sea leg that straddles the
      31 Dec / 1 Jan calendar-year boundary is split by parseOVD (2026-07-16 feature) into
      TWO consecutive "voyage" rows for the SAME physical leg (front part yearPart 2025,
@@ -234,27 +262,33 @@ function annotateVoyageContinuity(rows){
      directly by another voyage row means the shared port had no stay row => it is a
      call by default, so the chain must NOT survive past it) — UNLESS that next voyage
      row is just the other calendar-year part of this same leg (isSplitCont above). */
-  let openFrom=null;
+  let openFrom=null, openFromCode=null;
   for(let i=0;i<rows.length;i++){
     const r=rows[i];
     if(r.kind==="voyage"){
       r._covFrom = openFrom || r.from;
-      openFrom = (isNC(rows[i+1]) || isSplitCont(r, rows[i+1])) ? r._covFrom : null;
+      r._covFromCode = openFromCode || codeOf(r,"from");
+      const bridge = (isNC(rows[i+1]) || isSplitCont(r, rows[i+1]));
+      openFrom = bridge ? r._covFrom : null;
+      openFromCode = bridge ? r._covFromCode : null;
     } else if(r.kind==="port"){
-      if(r.poc===false){ if(openFrom) r._covFrom = openFrom; }
-      else openFrom=null;
+      if(r.poc===false){ if(openFrom){ r._covFrom = openFrom; r._covFromCode = openFromCode; } }
+      else { openFrom=null; openFromCode=null; }
     }
   }
   /* backward: effective destination, mirror image */
-  let openTo=null;
+  let openTo=null, openToCode=null;
   for(let i=rows.length-1;i>=0;i--){
     const r=rows[i];
     if(r.kind==="voyage"){
       r._covTo = openTo || r.to;
-      openTo = (isNC(rows[i-1]) || isSplitCont(rows[i-1], r)) ? r._covTo : null;
+      r._covToCode = openToCode || codeOf(r,"to");
+      const bridge = (isNC(rows[i-1]) || isSplitCont(rows[i-1], r));
+      openTo = bridge ? r._covTo : null;
+      openToCode = bridge ? r._covToCode : null;
     } else if(r.kind==="port"){
-      if(r.poc===false){ if(openTo) r._covTo = openTo; }
-      else openTo=null;
+      if(r.poc===false){ if(openTo){ r._covTo = openTo; r._covToCode = openToCode; } }
+      else { openTo=null; openToCode=null; }
     }
   }
 }
@@ -270,6 +304,71 @@ function euCoverage(row){
     return row.zone==="EEA" ? 1 : 0;
   }
   return covVoyEU(row._covFrom||row.from, row._covTo||row.to);
+}
+
+/* ---------- FuelEU scope: NOT the same geography as EU ETS ----------
+   2026-08-10 (Aurvin, owner-reported bug — FURE VIKEN, Equinor OVD, Mongstad ⇄ Iceland).
+   Until this fix the app ran EU ETS and FuelEU off the SINGLE euCoverage() above, on the
+   assumption (also stated in EMISSIONS_QA_KNOWLEDGE.md) that "EEA" means the same thing to
+   both. It does not:
+
+     EU MRV  (Reg. (EU) 2015/757)      — incorporated into the EEA Agreement  → NO/IS = EEA
+     EU ETS  (Dir. 2003/87 as amended) — incorporated into the EEA Agreement  → NO/IS = EEA
+     FuelEU  (Reg. (EU) 2023/1805)     — NOT YET incorporated (EEA Joint Committee has not
+                                          acted; Iceland also needs parliamentary approval)
+                                                                              → NO/IS = THIRD COUNTRY
+
+   Consequence for a Norway⇄Iceland trade like FURE VIKEN's: EU ETS 100% (intra-EEA) but
+   FuelEU 0% (third country → third country, and no EU port of call). Norway confirmed in
+   Dec-2025 it could not apply FuelEU from 1 Jan 2026; entry into force is expected "later
+   in 2026". Until the EEA Joint Committee decision lands, a NO/IS port is to FuelEU exactly
+   what a Singapore port is: out of scope, and an EU-27 ⇄ NO/IS voyage is a 50% voyage.
+
+   FUELEU_EEA_FROM is the switch. It is a whole-REPORTING-YEAR switch on purpose: mid-year
+   incorporation would raise a partial-year pro-rating question (does the year split like the
+   UK ETS H2-2026 window, or does a transitional provision cover the whole year?) that cannot
+   be answered until the actual decision text exists. Owner decision 2026-08-10: DEFERRED —
+   do not guess a pro-rating rule. Set the date to 1 Jan of the first year FuelEU applies in
+   NO/IS once it is known; until then leave it blank.
+
+   Liechtenstein is EEA and landlocked — no ports, listed for completeness only. */
+const FUELEU_NON_EEA_CC = new Set(["NO","IS","LI"]);
+/* Resolve the switch to a plain boolean for reporting year y. "" / null = not incorporated. */
+function fueleuAppliesInEftaEea(state, y){
+  const d = state && state.fueleuEEAFrom;
+  if(!d) return false;
+  const yr = parseInt(String(d).slice(0,4), 10);
+  if(!isFinite(yr)) return false;
+  if(y > yr) return true;
+  if(y < yr) return false;
+  return String(d).slice(5,10) === "01-01";     // same year: only a 1-Jan date covers it whole
+}
+/* Zone as FuelEU sees it. Downgrades an EEA zone to OTHER when the locode is NO/IS/LI and
+   the regulation is not yet in force there. No locode (hand-entered row where the user chose
+   a zone bucket rather than a port) => leave the zone alone: "EU/EEA" was a deliberate user
+   statement and we must not silently reinterpret it. */
+function fueleuZone(zone, locode, state, y){
+  if(zone!=="EEA") return zone;
+  const cc = String(locode||"").trim().slice(0,2).toUpperCase();
+  if(!cc) return zone;
+  if(!FUELEU_NON_EEA_CC.has(cc)) return zone;
+  return fueleuAppliesInEftaEea(state, y) ? "EEA" : "OTHER";
+}
+/* Mirror of euCoverage() in FuelEU zone space. Identical structure and identical fallbacks —
+   the ONLY difference is the fueleuZone() downgrade applied to each endpoint. */
+function fueleuCoverage(row, state, y){
+  const Z = (z,c) => fueleuZone(z, c, state, y);
+  if(row.kind==="port"){
+    const own = rowLocode(row);
+    if(row.poc===false){
+      if(!row._covFrom && !row._covTo) return 0;
+      return covVoyEU(Z(row._covFrom||row.zone, row._covFromCode||own),
+                      Z(row._covTo  ||row.zone, row._covToCode  ||own));
+    }
+    return Z(row.zone, own)==="EEA" ? 1 : 0;
+  }
+  return covVoyEU(Z(row._covFrom||row.from, row._covFromCode||rowLocode(row,"from")),
+                  Z(row._covTo  ||row.to,   row._covToCode  ||rowLocode(row,"to")));
 }
 function ukCoverage(row){
   if(row.kind==="port"){
@@ -469,6 +568,10 @@ function computeAll(state){
   for(const row of _aggRows){
     if(!rowInYear(row)){ nOutOfYear++; continue; }
     const covEU = euCoverage(row);
+    /* 2026-08-10: FuelEU gets its OWN coverage — same 100/50/0 shape, different geography
+       (NO/IS are third countries until EEA incorporation). For an all-EU-27 trade covFEU
+       === covEU and nothing changes; it only diverges on NO/IS/LI ports. */
+    const covFEU = fueleuCoverage(row, state, y);
     /* UK ETS 1 Jul 2026 window fraction: prefer the REPORT-EXACT share computed at import
        (row.ukInFrac = actual consumption on/after 1 Jul ÷ total, per report — same granular
        basis as the calendar-year split), and fall back to the time-proration ukSchemeFraction
@@ -476,7 +579,7 @@ function computeAll(state){
     const ukFrac = (row.ukInFrac!=null) ? row.ukInFrac : ukSchemeFraction(row, y);
     const covUK = ukCoverage(row) * ukFrac;               // 2026 = half-year 1 Jul–31 Dec only
     if(y===2026 && ukCoverage(row)>0 && ukFrac<1) nUkPartial++;
-    const det = { kind:row.kind, label:row.label||"", covEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
+    const det = { kind:row.kind, label:row.label||"", covEU, covFEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
                   cargoSOSP: !!row.cargoSOSP, fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
                   /* SCC (2026-07-22c) — see SCC_WTW / sccTtWFactor above */
@@ -497,7 +600,7 @@ function computeAll(state){
          expressions that feed the row-level (det.*) accumulators just below. Purely ADDITIVE —
          no existing figure changes; it lets the Calculations tab show every column per fuel
          instead of only Fuel type / Cons. mt / Elig. mt / Energy. */
-      const fe = { id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleUK: t*covUK,
+      const fe = { id:f.id, name:f.name, tonnes:t, eligibleEU: t*covEU, eligibleFEU: t*covFEU, eligibleUK: t*covUK,
                    co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
                    /* SCC (2026-07-22c): sccWtW stays null when Appendix 6 has no factor for
                       this fuel, so the UI can show a dash instead of a wrong number */
@@ -609,18 +712,23 @@ function computeAll(state){
            the row's FULL fuel is allocatable (it is MRV-monitored); only E × coverage
            counts towards the energy scope. Pool entries are per fuel × consumer so LNG
            in engines with different slip ranks separately (essf-ws1 extra-EEA ex. 2). */
-        if(covEU>0){
+        if(covFEU>0){
           const E  = p.t*1e6*f.lcv;                    // MJ, full mass of this part
           const wtt = wttOf(f, fr.E, fr.wtt);
           const ttw = ttwIntensity(f, p.engine);
           const rwd = (f.rfnbo && y>=2025 && y<=2033) ? 2 : 1;
-          feuPool.push({ id:f.id, name:f.name, engine:p.engine, m:p.m, E, Ecov:E*covEU,
+          /* 2026-08-10h: `ri` tags the entry with the index this row WILL take in rowDetails
+             (pushed at the end of the row loop below, so length IS this row's index). It is
+             what lets the same allocation be re-run over ONE row's own fuel for the
+             charterer-settlement figures further down. Nothing in the annual path reads it. */
+          feuPool.push({ ri: rowDetails.length,
+                         id:f.id, name:f.name, engine:p.engine, m:p.m, E, Ecov:E*covFEU,
                          wtt, ttw, rwd, gPerMJ:wtt+ttw, eff:(wtt+ttw)/rwd,
                          tonnes:p.t, price, bio:f.bio||false, rfnbo:f.rfnbo||false });
-          E_scope += E*covEU;
-          det.E += E*covEU;
-          fe.E += E*covEU;                               // 2026-07-22: per-fuel mirror
-          pr.E = E; pr.Ecov = E*covEU;                   // 2026-08-10: working tape
+          E_scope += E*covFEU;
+          det.E += E*covFEU;
+          fe.E += E*covFEU;                              // 2026-07-22: per-fuel mirror
+          pr.E = E; pr.Ecov = E*covFEU;                  // 2026-08-10: working tape
           pr.wtt = wtt; pr.ttw = ttw; pr.rwd = rwd;
         }
       }
@@ -630,6 +738,10 @@ function computeAll(state){
        LADEN. A ballast leg (cargo 0) therefore has tw 0 — its emissions are folded into the
        next laden leg below, not into its own denominator (ADR 2026 Appendix 3). */
     if(row.kind==="voyage" && det.cargo>0 && det.dist>0){ det.tw = det.cargo*det.dist; sum.tw += det.tw; }
+    /* 2026-08-10h: `ri` is this row's own index in rowDetails — the same tag the FuelEU pool
+       entries carry. It lets a caller holding a set of rowDetails (a Voyage-Wise group, for
+       instance) ask fueleu.forRows() to price exactly those rows standalone. */
+    det.ri = rowDetails.length;
     rowDetails.push(det);
   }
   if(nOutOfYear) warn.push(rangeOn
@@ -642,17 +754,24 @@ function computeAll(state){
      RFNBO ranked on intensity ÷ RWD reward, agreed 2026-07-16) ascending and fill
      cleanest-first — the marginal entry pro-rata. Proportional = each entry contributes
      E × coverage (pre-2026-07-16 behaviour, kept as a comparison toggle). */
-  const feuMerged = {};
-  for(const e of feuPool){
-    const k = e.id+"|"+e.engine+"|"+e.wtt.toFixed(6)+"|"+e.ttw.toFixed(6)+"|"+e.rwd;
-    const g = feuMerged[k] || (feuMerged[k] = Object.assign({}, e, { E:0, Ecov:0, tonnes:0, _pw:0 }));
-    g.E += e.E; g.Ecov += e.Ecov; g.tonnes += e.tonnes; g._pw += e.tonnes*e.price;
+  /* 2026-08-10h: the merge and the fill are FACTORED OUT so the identical rule can be run
+     over a subset of the pool (one row, or the rows a user has ticked) as well as over the
+     whole period. Behaviour for the whole period is unchanged — feuMergePool(feuPool) and
+     feuFill(pool, E_scope, optimal) are exactly the code that was inline here before, and
+     the annual result is asserted bit-identical by the self-tests. */
+  function feuMergePool(entries){
+    const merged = {};
+    for(const e of entries){
+      const k = e.id+"|"+e.engine+"|"+e.wtt.toFixed(6)+"|"+e.ttw.toFixed(6)+"|"+e.rwd;
+      const g = merged[k] || (merged[k] = Object.assign({}, e, { E:0, Ecov:0, tonnes:0, _pw:0 }));
+      g.E += e.E; g.Ecov += e.Ecov; g.tonnes += e.tonnes; g._pw += e.tonnes*e.price;
+    }
+    const p = Object.values(merged).map(g=>{ g.price = g.tonnes>0? g._pw/g.tonnes : 0; delete g._pw; return g; });
+    p.sort((a,b)=> a.eff-b.eff || a.gPerMJ-b.gPerMJ);
+    return p;
   }
-  const pool = Object.values(feuMerged).map(g=>{ g.price = g.tonnes>0? g._pw/g.tonnes : 0; delete g._pw; return g; });
-  pool.sort((a,b)=> a.eff-b.eff || a.gPerMJ-b.gPerMJ);
-  const allocMethod = state.fueleuAlloc==="proportional" ? "proportional" : "optimal";
-  const mkTerms = (optimal)=>{
-    let remaining = E_scope, num=0, E_rwd=0;
+  function feuFill(pool, scope, optimal){
+    let remaining = scope, num=0, E_rwd=0;
     const terms=[];
     for(const e of pool){
       const take = optimal ? Math.min(e.E, Math.max(0, remaining)) : e.Ecov;
@@ -663,7 +782,10 @@ function computeAll(state){
                    E:take, E_pool:e.E, tonnes: e.E>0? e.tonnes*take/e.E : 0, tonnesPool:e.tonnes });
     }
     return { num, E_rwd, terms };
-  };
+  }
+  const pool = feuMergePool(feuPool);
+  const allocMethod = state.fueleuAlloc==="proportional" ? "proportional" : "optimal";
+  const mkTerms = (optimal)=> feuFill(pool, E_scope, optimal);
   const aOpt = mkTerms(true), aProp = mkTerms(false);
   const sel = allocMethod==="optimal" ? aOpt : aProp, alt = allocMethod==="optimal" ? aProp : aOpt;
   const feu = { terms: sel.terms, E_plain: E_scope, E_rwd: sel.E_rwd, num: sel.num };
@@ -746,6 +868,141 @@ function computeAll(state){
     penalty = Math.round(penaltyBase*mult);            // final penalty rounded to nearest EUR
   }
   const surplusValue = (cbFinal!=null && cbFinal>0 && ghgie>0) ? cbFinal/(ghgie*41000)*2400 : 0;
+
+  /* ================================================================================
+     PER-LEG STANDALONE FuelEU — "what is due for THIS charterer's leg / voyage"
+     2026-08-10h, owner instruction (Aurvin), explicit and recorded:
+
+       "sometime the Voyage charterer want to have CB and Penalty for their legs /
+        voyages — we don't have end of year data at that time to settle it for them,
+        so I want to know what's due for them for their legs/voyage."
+
+     This is a SETTLEMENT ESTIMATE, deliberately different from the pro-rata attribution
+     below it. The rules the owner chose, each one asked and answered:
+
+       • ALLOCATION — cleanest-first (the workspace's own method), but drawing ONLY on
+         that leg's own burn. Never on the year's pool: a charterer cannot be credited
+         with LNG that was physically burned on somebody else's voyage.
+       • MULTIPLIER — none. Always n = 1, so Art 23(2)'s consecutive-deficit escalation
+         (the OWNER's compliance history across years) never lands on a charterer.
+       • FLEXIBILITY — excluded. Banking, borrowing and pooling (Art 20/21) are
+         whole-ship, whole-period and belong to the owner's annual position. Including
+         them would let an owner's banking decision silently change what a charterer owes.
+       • SURPLUS — valued, symmetrically with the penalty, so a charterer who delivered a
+         clean leg sees the credit it generated.
+
+     CONSEQUENCE, BY DESIGN: these figures DO NOT SUM to the annual balance, and a
+     multi-leg selection does not equal the sum of its legs — cleanest-first pools across
+     whatever is in scope, so two legs assessed together can beat the two assessed apart
+     (measured at up to 25 t on the owner's own NJORD data). Each leg's figure is instead
+     INVARIANT to what else is selected, which is the property a settlement needs: you
+     settle leg by leg, with different counterparties, and leg A's number cannot depend on
+     whether leg B happened to be ticked. tools/verify_fueleu_charterer.js pins exactly
+     that invariance — do not "fix" these to add up.
+
+     The annual, legal position is untouched: `cb`, `cbFinal`, `penalty` and the KPI cards
+     above/below are computed exactly as before.
+     ================================================================================ */
+  const feuByRow = new Map();
+  for(const e of feuPool){
+    if(!feuByRow.has(e.ri)) feuByRow.set(e.ri, []);
+    feuByRow.get(e.ri).push(e);
+  }
+  /* Run the workspace's allocation over an arbitrary set of pool entries, standalone.
+     `scope` is the in-scope energy those entries carry (Σ Ecov), i.e. the same energy the
+     annual calculation would have counted for them. OPS energy is deliberately NOT added:
+     shore power is a whole-ship figure with no leg to belong to. */
+  function feuStandalone(entries){
+    const scope = entries.reduce((s,e)=>s+e.Ecov, 0);
+    if(!(scope>0)) return null;
+    const a = feuFill(feuMergePool(entries), scope, allocMethod==="optimal");
+    if(!(a.E_rwd>0)) return null;
+    const g   = fwind * a.num / a.E_rwd;                 // this selection's own attained GHGIE
+    const cbS = (T - g) * scope;                         // Annex IV A, on its own energy
+    /* Annex IV B at n = 1 — no Art 23(2) multiplier (owner decision above) */
+    const pen = cbS < 0 ? Math.round((-cbS)/(g*41000)*2400) : 0;
+    const sur = cbS > 0 ? cbS/(g*41000)*2400 : 0;
+    return { ghgie:g, E:scope, cb:cbS, penalty:pen, surplusValue:sur, terms:a.terms };
+  }
+  /* Exposed so the tables can price whatever the user has ticked. Takes row indices into
+     rowDetails and pools their entries — this is the "TOTAL of the legs selected" figure. */
+  function feuForRows(indices){
+    const ents = [];
+    for(const i of indices||[]){ const g = feuByRow.get(i); if(g) ents.push(...g); }
+    return feuStandalone(ents);
+  }
+  for(const [ri, ents] of feuByRow){
+    const det = rowDetails[ri]; if(!det) continue;
+    const own = feuStandalone(ents);
+    if(!own) continue;
+    det.feuOwn = own;                                  // {ghgie, E, cb, penalty, surplusValue}
+    /* one level deeper, for the per-fuel sub-rows: each fuel's share of THIS leg's own
+       balance is (target − that fuel's own intensity) × the energy the leg's allocation
+       actually gave it. These DO sum to the leg's own CB exactly — the decomposition is
+       algebraically exact whenever fwind = 1 and no RFNBO reward is in play, and the
+       verifier checks the sum rather than trusting that. */
+    /* 2026-08-10k (Aurvin, owner instruction): the per-fuel figures are taken from the
+       ALLOCATION the balance was actually built from — allocated tonnes, allocated energy and
+       the intensity weighted by that same allocated energy.
+
+       WHY. Until now the mass and energy columns showed the PHYSICAL scope share (tonnes ×
+       covFEU) while the CB beside them came from cleanest-first. Three columns, three different
+       bases, and the row could not be reconciled: on a 50%-coverage leg burning LNG and MGO the
+       display implied LNG +2.14 t against a shown +4.14, and MGO −0.48 against a shown 0.00.
+       Cleanest-first had in fact claimed ALL the energy from LNG and none from the MGO, which is
+       exactly why MGO's CB was zero — but nothing on screen said so.
+
+       On this basis (target − GHGIE_fuel) × E_fuel === CB_fuel holds exactly, on every line, and
+       the fuel lines still sum to the leg. Note the MASS total legitimately changes: covering the
+       same energy with a higher-LCV fuel takes fewer tonnes. "Eligible" here means "claimed to
+       meet the obligation", not "physically inside the scope" — owner confirmed. */
+    const perFuel = new Map();
+    for(const t of own.terms){
+      if(!(t.E>0)) continue;
+      const a = perFuel.get(t.id) || { cb:0, E:0, mt:0, gNum:0 };
+      a.cb   += (T - (t.wtt+t.ttw)) * t.E;
+      a.E    += t.E;
+      a.mt   += t.tonnes;
+      a.gNum += t.E * (t.wtt+t.ttw);
+      perFuel.set(t.id, a);
+    }
+    for(const fe of det.fuels||[]){
+      const a = perFuel.get(fe.id);
+      /* A fuel cleanest-first did NOT claim gets EXPLICIT ZEROS, not nulls (owner's choice over
+         a dash): the fuel was considered and allocated nothing, and zeros say that plainly. The
+         physical tonnage is still on the row's Cons. column and in the cell tooltip. Only a row
+         with NO FuelEU obligation at all falls through to a dash, which the covFEU guard in
+         js/ui.js handles. */
+      if(!a){ fe.feuOwnCB = 0; fe.feuOwnE = 0; fe.feuOwnMt = 0; fe.feuOwnGhgie = null;
+              fe.feuOwnEur = 0; fe.feuOwnPenalty = 0; fe.feuOwnSurplus = 0; continue; }
+      fe.feuOwnCB = a.cb;
+      fe.feuOwnE  = a.E;
+      fe.feuOwnMt = a.mt;                                   /* allocated tonnes */
+      fe.feuOwnGhgie = a.E>0 ? a.gNum/a.E : null;            /* allocation-weighted WtW */
+      /* 2026-08-10i (Aurvin, owner instruction — the per-fuel € split).
+         ONE SIGNED FIGURE per fuel, not a penalty and a surplus in separate fields:
+             + = this fuel ADDED credit to the leg's result
+             − = this fuel ERODED it (on a surplus leg) or ADDED to the bill (on a deficit leg)
+
+         Basis: the fuel's OWN balance valued at the LEG's attained intensity — owner's
+         choice over "what this fuel would owe standing alone". Because € is linear in CB at
+         a fixed leg intensity, these sum to the leg's own € EXACTLY, so the column always
+         reconciles with the row it belongs to. (Standalone-per-fuel would not, since each
+         fuel would carry its own intensity.)
+
+         THE BUG THIS FIXES: the previous split stored a penalty and a surplus separately and
+         DROPPED every negative share, because a "surplus" was only stored when positive. On a
+         leg where LNG carried 154% of the balance and HFO/MGO carried −8% and −46%, only the
+         LNG line was visible — showing €8,885 against a leg total of €5,781, with the two
+         negative lines rendered as a green dash. Reported by the owner from a screenshot. */
+      const shr = own.cb !== 0 ? a.cb/own.cb : 0;
+      fe.feuOwnEur = (own.surplusValue>0 ? own.surplusValue : -own.penalty) * shr;
+      /* kept so nothing that reads the old field names breaks; both are now derived views
+         of feuOwnEur and neither is used for display any more. */
+      fe.feuOwnPenalty = fe.feuOwnEur < 0 ? -fe.feuOwnEur : 0;
+      fe.feuOwnSurplus = fe.feuOwnEur > 0 ?  fe.feuOwnEur : 0;
+    }
+  }
 
   /* ---- per-row attribution (INDICATIVE — FuelEU/ETS are period-based in law) ---- */
   for(const det of rowDetails){
@@ -900,7 +1157,15 @@ function computeAll(state){
     fuelTotals:{ t_co2:tot_t_co2, t_co2e:tot_t_co2e, basis_t: y>=2026 ? tot_t_co2e : tot_t_co2 },
     ukets:{ active:ukActive, tco2e:ukets_t, co2:uk_co2, ch4:uk_ch4, n2o:uk_n2o, cost:ukCost },
     fueleu:{ target:T, targetPct:fueleuTargetPct(y), ghgie, E_total, E_fuel:feu.E_plain, opsMJ, cb, banked, poolCB, borrowUsed, borrowDebt, borrowLimit, cbFinal, penalty, penaltyBase, mult, surplusValue, fwind, terms:feu.terms,
-             allocMethod, ghgieAlt, cbAlt, E_pool: pool.reduce((s,e)=>s+e.E,0) },
+             /* 2026-08-10h: feuForRows(indices) prices an arbitrary ticked selection under
+                the same standalone rules as the per-leg figures — the "TOTAL of the legs
+                selected" the charterer-settlement view needs. A FUNCTION, not a table:
+                cleanest-first is not additive, so a selection's value cannot be looked up
+                from its parts and has to be computed for the actual set. */
+             forRows: feuForRows,
+             allocMethod, ghgieAlt, cbAlt, E_pool: pool.reduce((s,e)=>s+e.E,0),
+             /* 2026-08-10: resolved NO/IS status, so the UI can state which map was used */
+             eftaEEA: fueleuAppliesInEftaEea(state, y), eftaEEAFrom: (state&&state.fueleuEEAFrom)||"" },
     scc:{ voyages:sccVoyages, weighted:sccWeighted, totTW:sccTotTW, totCO2:sccTotCO2, deltaMin:sccDeltaMin, deltaStr:sccDeltaStr,
           missingFactors:[...sccMissing], excluded:sccExcluded, trailingBallast:sccTrailingBallast,
           portTotal:sccPortTotal, gwp:SCC_GWP, factors:SCC_FACTORS },

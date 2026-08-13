@@ -11,6 +11,11 @@ const DEFAULT_STATE = {
   lngEngineDefault: "LNG Otto (dual fuel medium speed)",
   lngEngineDefaultAux: "LNG Otto (dual fuel medium speed)",
   fueleuAlloc: "optimal",
+  /* 2026-08-10: EEA incorporation date for FuelEU (Reg. (EU) 2023/1805). "" = NOT yet
+     incorporated, which is the position as of Aug-2026 — NO/IS/LI are third countries for
+     FuelEU only (EU ETS and EU MRV are unaffected: those ARE incorporated). See the long
+     note above fueleuZone() in engine.js. */
+  fueleuEEAFrom: "",
   mdaReports: [],
   windRatio: 0, opsMJ: 0,
   euaPrice: 0, ukaPrice: 0, bioZeroRatedETS: true,
@@ -44,6 +49,10 @@ function migrateState(s){
   /* 2026-07-16 additions: AE consumer class, FuelEU allocation method, machinery split */
   if(!s.lngEngineDefaultAux) s.lngEngineDefaultAux = s.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
   if(!s.fueleuAlloc) s.fueleuAlloc = "optimal";
+  /* 2026-08-10: sessions saved before the FuelEU/EEA split default to "not incorporated",
+     which is both the correct position today AND the one that changes their numbers — a
+     pre-fix NO/IS session was over-scoping FuelEU and its saved figures were wrong. */
+  if(s.fueleuEEAFrom===undefined) s.fueleuEEAFrom = "";
   if(s.showSplit===undefined) s.showSplit = false;
   if(!s.mdaReports) s.mdaReports = [];
   if(!s.dateFilter)    s.dateFilter    = { fromISO:"", toISO:"", active:false };   // 2026-07-24 within-year window
@@ -208,6 +217,24 @@ function fmtRange(a,b){ if(!a&&!b) return ""; return (a?fmtTs(a):"…")+" – "+
 /* ---------- port picker widgets ---------- */
 function zoneName(z){ return z==="EEA"?"EU/EEA":z==="UK"?"UK":"Non-EU/UK"; }
 function portDisp(p){ return !p ? "" : (p.n && p.n!==p.c ? p.n+" ("+p.c+")" : p.c); }
+/* 2026-08-10e (Aurvin, owner instruction): LOCODE-FIRST display order — "INHZR – Hazira" instead
+   of "Hazira (INHZR)" — for the three data TABLES only (Report-Wise, Leg-Wise, Voyage-Wise).
+   portDisp() above is deliberately UNCHANGED and still name-first: it feeds the Workspace port
+   pickers, composeLabel(), every stored row.label, and the Leg/Voyage Excel exports (which read
+   legPortEntry's `label`) — all four were explicitly OUT of scope for this reorder. Do not
+   "tidy" these two into portDisp(); the split is the point. */
+function portDispCodeFirst(p){
+  if(!p) return "";
+  return (p.n && p.n!==p.c) ? p.c+" – "+p.n : (p.c||"");
+}
+/* the same, with the country appended — this is the Legs/Voyages hover tooltip. Those two tables
+   do NOT show the country in the cell (owner instruction); Report-Wise already prints it on its
+   own second line, so it does not use this. */
+function portTipCodeFirst(p){
+  const base = portDispCodeFirst(p);
+  const cn = p && p.c ? portCountryName(p.c) : "";
+  return cn ? base+", "+cn : base;
+}
 function composeLabel(row){
   if(row.kind==="voyage"){
     if(row.fromPort||row.toPort){
@@ -807,6 +834,16 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
 
   /* ---- pass 1: parse every report row ---- */
   const recs=[], used={}; let lastPort="", nBunker=0, nInferred=0, nNegRemainder=0;
+  /* 2026-08-10 (Aurvin, FURE VIKEN): source-data cross-check. Many OVD/MDA files carry the
+     producer's OWN EU_ETS_% per report. We never CONSUME it — coverage is always derived from
+     the UN/LOCODEs so one consistent rule applies to every file — but a disagreement is worth
+     surfacing, because it is usually a bug on one side. In the FURE VIKEN file three
+     2026-08-09 reports state 50% for an Akureyri→Reykjavik leg that is intra-Iceland, i.e.
+     intra-EEA, i.e. 100% under EU ETS. Only reports with two real, resolvable locodes are
+     compared; voyage-continuity bridging across a non-call stay can legitimately move the
+     calculator's final figure away from this naive port-pair reading, which is why the note
+     is phrased as "verify", not "wrong". */
+  let nEtsPct=0; const etsPctEg=[];
   for(let i=hi+1;i<rows.length;i++){
     const r=rows[i]; if(!r) continue;
     const dtRaw=G(r,dtName); if(String(dtRaw).trim()==="") continue;
@@ -828,6 +865,21 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     let vFrom, vTo;
     if(rt==="IN_PORT"){ const p=cur||lastPort||dst; if(!cur) nInferred++; vFrom=vTo=p; if(p) lastPort=p; }
     else { vFrom=org||lastPort; vTo=dst||cur; if(!org) nInferred++; if(rt==="ARRIVAL-EOSP"&&(cur||dst)) lastPort=cur||dst; }
+    /* EU_ETS_% cross-check — see the note at nEtsPct above. Display-only; never consumed. */
+    {
+      const raw=String(G(r,"EU_ETS_%")).trim();
+      if(raw!=="" && vFrom && vTo && vFrom.length===5 && vTo.length===5){
+        const stated=Number(raw);
+        if(isFinite(stated)){
+          const derived = (rt==="IN_PORT") ? (zoneOfLocode(vFrom)==="EEA"?100:0)
+                                           : covVoyEU(zoneOfLocode(vFrom), zoneOfLocode(vTo))*100;
+          if(Math.abs(stated-derived)>0.5){
+            nEtsPct++;
+            if(etsPctEg.length<3) etsPctEg.push((dt?iso(dt).slice(0,10):"row "+(i+1))+" "+vFrom+"→"+vTo+" file "+stated+"% vs derived "+derived+"%");
+          }
+        }
+      }
+    }
     const fuels=parseFuels(G(r,"FUEL_CONSUMPTION"), i+1, true);
     /* machinery split (2026-07-16): same fuel-grade mapping per machine; per fuel type,
        Other = total − (ME+AE+Boiler), clamped at 0 (negatives counted and flagged) */
@@ -1406,6 +1458,7 @@ function mdaToOVD(rows, dwtOpt){ /* rows: array of arrays (from parseCSV or xlsx
     fuels:c.fuels||{}, mach:c.mach||null, rob:c.rob||{}, bunker:c.bunker||undefined }));
   if(nBunker) notes.push(nBunker+" FUEL_OIL_BUNKER event(s) skipped — bunkering is a stock movement, not consumption.");
   if(nInferred) notes.push(nInferred+" row(s) had a missing UN/LOCODE — the last known port was carried forward.");
+  if(nEtsPct) notes.push("⚠ VERIFY SOURCE DATA — "+nEtsPct+" report(s) carry an EU_ETS_% that disagrees with the coverage derived from their own UN/LOCODEs ("+etsPctEg.join(" · ")+(nEtsPct>etsPctEg.length?" · …":"")+"). The calculator IGNORES the file's column and always derives coverage from the port pair, so its own figures are unaffected — but a disagreement usually means a bug on one side. Note that EU ETS and EU MRV cover the whole EEA (Norway and Iceland included), whereas FuelEU does NOT yet: NO/IS are third countries for FuelEU until the EEA Joint Committee incorporates Reg. (EU) 2023/1805. Voyage-continuity bridging across a non-call stay can also legitimately explain a difference.");
   if(hasMachines) notes.push("Per-machine consumption (ME / AE / Boiler) imported; per fuel type the unassigned remainder went to 'Other'"+(nNegRemainder? " — "+nNegRemainder+" report(s) had ME+AE+Boiler exceeding the fuel-type total (Other clamped to 0 — verify the source data)":"")+". Toggle 'Machinery split' in the workspace to view or edit it.");
   if(hasOC){
     /* TEMPORARY V1 compatibility notes (2026-07-28b) — remove with the V1 branch. */
@@ -2267,8 +2320,12 @@ function renderLive(){
          These three had no unit touching the big number itself (the unit sits in the small
          caption below), unlike €/£ cost figures which keep the currency symbol inline — those
          are unchanged. Any already-2dp figure (EEOI above) is also left alone. -->
-    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${(f.cbFinal??0)>=0?"var(--green)":"var(--red)"}">${fmt((f.cbFinal??0)/1e6,1)}</div><div class="l">FEU-CB <b>tCO₂eq</b></div></div>
-    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${f.penalty>0?"var(--red)":"var(--green)"}">${f.penalty>0?"€"+fmtI(f.penalty):"OK"}</div><div class="l">FEU PENALTY <b>€</b></div></div>
+    ${/* 2026-08-10f (Aurvin, owner instruction): the hero CB number gains an explicit "+" when it
+         is a surplus. The colour was already right here; the sign was implicit, and an unsigned
+         green number next to a red one elsewhere in the app was what made the whole thing
+         ambiguous. The penalty box says what the surplus is WORTH instead of a bare "OK". */""}
+    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${(f.cbFinal??0)>=0?"var(--green)":"var(--red)"}" title="${esc(feuCBTip(f.cbFinal))}">${feuCBText((f.cbFinal??0)/1e6,1)}</div><div class="l">FEU-CB <b>tCO₂eq</b></div></div>
+    <div class="sbox" style="grid-column:span 3"><div class="v" style="color:${f.penalty>0?"var(--red)":"var(--green)"}" title="${esc(f.penalty>0?"Annex IV B penalty — money owed for a FuelEU deficit.":f.surplusValue>0?"No penalty. Indicative value of the surplus at the Annex IV B rate — what it is worth banked (Art 20(1)) or pooled (Art 21). Not cash.":"No penalty — the balance is not in deficit.")}">${f.penalty>0?"€"+fmtI(f.penalty):(f.surplusValue>0?"+€"+fmtI(f.surplusValue):"—")}</div><div class="l">${f.penalty>0?"FEU PENALTY":"FEU SURPLUS VALUE"} <b>€</b></div></div>
   </div>
 
   <div class="card">
@@ -2339,6 +2396,9 @@ function renderLive(){
         <option value="optimal" ${f.allocMethod==="optimal"?"selected":""}>Optimal — cleanest-first (ESSF WS1 §2.5)</option>
         <option value="proportional" ${f.allocMethod==="proportional"?"selected":""}>Proportional (comparison)</option>
       </select></b></div>
+    <div class="kv"><span>Norway / Iceland in FuelEU scope ${info("<b>FuelEU geography &ne; EU ETS geography.</b><br><br>EU MRV (2015/757) and EU ETS (2003/87 as amended) are incorporated into the EEA Agreement, so Norwegian and Icelandic ports count as EEA for both. <b>FuelEU (Reg. (EU) 2023/1805) is NOT yet incorporated</b> — the EEA Joint Committee has not acted and Iceland additionally needs parliamentary approval. Norway confirmed in Dec-2025 that it could not apply FuelEU from 1 Jan 2026; entry into force is expected later in 2026.<br><br>Until then NO/IS/LI ports are <b>third countries for FuelEU only</b>: a Norway&rlarr;Iceland trade is 100% EU ETS but 0% FuelEU, and an EU-27 &rlarr; NO/IS voyage is a 50% FuelEU voyage.<br><br>Leave this blank until the incorporation date is known. Set it to <b>1 January</b> of the first reporting year FuelEU applies in NO/IS. A mid-year date leaves that whole year out of scope — partial-year pro-rating is deliberately not guessed here, because the transitional provisions do not exist yet.")}</span>
+      <b><input type="date" value="${esc(f.eftaEEAFrom||"")}" onchange="upd('fueleuEEAFrom',this.value)" style="font-size:12px;padding:2px 4px" title="EEA incorporation date — blank = not yet incorporated">
+        <span class="note" style="margin-left:6px;color:${f.eftaEEA?"var(--green)":"var(--red)"}">${f.eftaEEA?"in scope":"third country"}</span></b></div>
     <div class="kv"><span>GHGIE<sub>actual</sub>${f.fwind<1?` (f<sub>wind</sub>=${f.fwind})`:""}</span><b>${fmtF(f.ghgie,2)} gCO₂eq/MJ</b></div>
     <div class="kv"><span>Target (91.16 − ${f.targetPct}%)</span><b>${fmtF(f.target,2)}</b></div>
     ${f.ghgieAlt!=null && Math.abs((f.ghgieAlt??0)-(f.ghgie??0))>1e-9?`<div class="kv"><span>${f.allocMethod==="optimal"?"Proportional":"Optimal"} method would give</span><b>${fmtF(f.ghgieAlt,2)} g/MJ · CB ${fmt((f.cbAlt??0)/1e6,0)} mt</b></div>`:""}
@@ -2347,12 +2407,14 @@ function renderLive(){
     ${f.terms&&f.terms.length?`<table class="scctable" style="margin-top:6px"><tr><th>Fuel × consumer</th><th class="num">Pool (mt)</th><th class="num">Allocated (mt)</th><th class="num">Allocated ×10⁶ MJ</th><th class="num">WtW g/MJ</th></tr>
       ${f.terms.map(t=>`<tr${t.E<=0?' style="color:#999"':''}><td>${esc(t.name)}${t.m?` <span class="note">· ${t.m==="BLR"?"Boiler":t.m==="OTH"?"Other":esc(t.m)}${(t.m==="ME"||t.m==="AE")?" — "+esc(t.engine):""}</span>`:""}${t.rfnbo?' <span class="note">×2 RWD</span>':""}</td><td class="num">${fmt(t.tonnesPool)}</td><td class="num">${fmt(t.tonnes)}</td><td class="num">${fmtF(t.E/1e6,2)}</td><td class="num">${fmtF(t.wtt+t.ttw,2)}</td></tr>`).join("")}</table>
     <p class="note">Allocated mix per essf-ws1 ch.2 worked examples — grey rows are in the MRV pool but not allocated to the scope (they carry the highest intensity). WtW = WtT + TtW incl. CH₄ slip for the row's consumer class.</p>`:""}
-    <div class="kv"><span>Compliance balance</span><b style="color:${f.cb>=0?"var(--green)":"var(--red)"}">${fmt(f.cb/1e6)} tCO₂eq</b></div>
+    ${/* 2026-08-10f: signed. Both this and "Balance after flexibility" below were already
+         green/red; the "+" makes a surplus unmistakable rather than inferred from a colour. */""}
+    <div class="kv"><span>Compliance balance</span><b style="color:${f.cb>=0?"var(--green)":"var(--red)"}" title="${esc(feuCBTip(f.cb))}">${feuCBText(f.cb/1e6)} tCO₂eq</b></div>
     ${f.banked? `<div class="kv"><span>+ banked (Art 20)</span><b>${fmt(f.banked/1e6)} mt</b></div>`:""}
     ${f.poolCB? `<div class="kv"><span>+ pool partner (Art 21)</span><b>${fmt(f.poolCB/1e6)} mt</b></div>`:""}
     ${f.borrowUsed? `<div class="kv"><span>+ borrowed (→ debt ${fmt(f.borrowDebt/1e6)} mt next period)</span><b>${fmt(f.borrowUsed/1e6)} mt</b></div>`:""}
-    <div class="kv"><span><b>Balance after flexibility</b></span><b style="color:${f.cbFinal>=0?"var(--green)":"var(--red)"}">${fmt(f.cbFinal/1e6)} tCO₂eq</b></div>
-    <div class="big" style="color:${f.penalty>0?"var(--red)":"var(--green)"}">${f.penalty>0?`€ ${fmt(f.penalty,0)} penalty`:(f.surplusValue>0?`€ ${fmt(f.surplusValue,0)} surplus value*`:"Compliant")}</div>
+    <div class="kv"><span><b>Balance after flexibility</b></span><b style="color:${f.cbFinal>=0?"var(--green)":"var(--red)"}" title="${esc(feuCBTip(f.cbFinal))}">${feuCBText(f.cbFinal/1e6)} tCO₂eq</b></div>
+    <div class="big" style="color:${f.penalty>0?"var(--red)":"var(--green)"}">${f.penalty>0?`€ ${fmt(f.penalty,0)} penalty`:(f.surplusValue>0?`+€ ${fmt(f.surplusValue,0)} surplus value*`:"Compliant — no penalty")}</div>
     ${f.mult>1?`<div class="note">Includes ×${f.mult.toFixed(1)} consecutive-deficit multiplier (Art 23(2)).</div>`:""}
     ${f.surplusValue>0?`<div class="note">*Indicative pooling/banking value ceiling at the Annex IV penalty rate.</div>`:""}
   </div>
@@ -2510,15 +2572,22 @@ function downloadBreakdownXlsx(){
   const maxFuels = Math.max(1, ...picked.map(d=>(d.fuels&&d.fuels.length)||1));
   const fuelHdr=[];
   for(let k=1;k<=maxFuels;k++){
-    fuelHdr.push("Fuel "+k,"Tonnes "+k,"LCV MJ/g "+k,"Eligible EU mt "+k,"Eligible energy MJ "+k,
+    /* 2026-08-10j (Aurvin, owner instruction — "fix the export too"): the eligible-mass column
+       was the EU ETS mass under a FuelEU heading, the same defect as on screen. It is now the
+       FuelEU-scoped mass and is RENAMED so an already-downloaded file cannot be confused with a
+       new one, and a GHGIE column is added beside it so an exported statement carries the
+       intensity the balance was built from. COLUMN COUNT CHANGES 9 -> 10 per fuel block. */
+    fuelHdr.push("Fuel "+k,"Tonnes "+k,"LCV MJ/g "+k,"Eligible FuelEU mt "+k,"Eligible energy MJ "+k,"GHGIE gCO2eq/MJ "+k,
                  "SCC TtW tCO2e (fuel) "+k,"SCC WtW tCO2e (fuel) "+k,
                  "SCC Table 8 factor row (fuel) "+k,"SCC biogenic CO2 t (fuel) "+k);
   }
   const rows=[eventHdr.concat(fuelHdr)];
   for(const d of picked){
-    const fs=d.fuels.length?d.fuels:[{id:"",name:"",tonnes:"",eligibleEU:""}];
+    const fs=d.fuels.length?d.fuels:[{id:"",name:"",tonnes:"",eligibleEU:"",eligibleFEU:""}];
     const eventVals=[d.label||"—", d.kind, d.tStart||"", d.tEnd||"", d.hours||"", d.dist||"", d.cargo||"",
-                 d.covEU*100, d.covUK*100, d.covEU*100,
+                 /* 2026-08-10b: the 3rd value is the FuelEU eligibility column and must use
+                    covFEU, not covEU — see the note above fueleuZone() in js/engine.js. */
+                 d.covEU*100, d.covUK*100, (d.covFEU??d.covEU)*100,
                  (R.year>=2026? d.totalCO2e : d.totalCO2), d.euas, d.ukCO2e, (d.feuCB!=null? d.feuCB/1e6 : ""), (d.feuPenalty||0),
                  (d.kind==="voyage"? d.cargo : ""), (d.kind==="voyage"? (d.cargoSOSP?"SOSP report":"max per leg (no departure report)") : ""),
                  (d.tw||""),
@@ -2527,10 +2596,13 @@ function downloadBreakdownXlsx(){
     const fuelVals=[];
     for(let k=0;k<maxFuels;k++){
       const fu=fs[k];
-      if(!fu){ fuelVals.push("","","","","","","","",""); continue; }
+      if(!fu){ fuelVals.push("","","","","","","","","",""); continue; }
       const f=FUEL_BY_ID[fu.id]||{};
-      fuelVals.push(f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"", fu.eligibleEU===""?"":fu.eligibleEU,
-                 (f.lcv&&fu.eligibleEU!=="")? fu.eligibleEU*1e6*f.lcv : "",
+      const gEx = feuFuelGhgie(fu);
+      fuelVals.push(f.id? fuelShortName(f) : (fu.name||fu.id), fu.tonnes===""?"":fu.tonnes, f.lcv??"",
+                 fu.eligibleFEU==null||fu.eligibleFEU===""?"":fu.eligibleFEU,
+                 (fu.E!=null? fu.E : ""),
+                 (gEx==null? "" : gEx),
                  fu.sccTtW==null?"":fu.sccTtW, fu.sccWtW==null?"":fu.sccWtW,
                  fu.sccLabel||"", fu.sccBio||"");
     }
@@ -2797,9 +2869,14 @@ function trMatchRow(r){
   }
   return null;
 }
-/* EU ETS / UK ETS / FuelEU eligibility for one report, reusing the engine's own coverage rule
-   (euCoverage/ukCoverage, js/engine.js) via the matched row — FuelEU's in-scope-energy fraction
-   is identical to EU ETS's by regulation (fueleu-art2 mirrors euets-art3ga), so it reuses covEU. */
+/* EU ETS / UK ETS / FuelEU eligibility for one report, reusing the engine's own coverage rules
+   (euCoverage / fueleuCoverage / ukCoverage, js/engine.js) via the matched row.
+   2026-08-10b (Aurvin, FURE VIKEN follow-up): this function USED to return `feu: eu`, under a
+   comment claiming "FuelEU's in-scope-energy fraction is identical to EU ETS's by regulation
+   (fueleu-art2 mirrors euets-art3ga)". The ARTICLE text does mirror it — the GEOGRAPHY does not.
+   EU ETS is incorporated into the EEA Agreement, FuelEU is not, so Norwegian and Icelandic ports
+   are EEA for EU ETS and third countries for FuelEU. Reusing covEU here made the FEU badge read
+   100% on a Mongstad⇄Reykjavik trade whose FuelEU energy in scope is zero. Never reuse `eu`. */
 function trCoverage(r){
   const row = trMatchRow(r);
   if(!row) return { eu:null, uk:null, feu:null };
@@ -2817,7 +2894,7 @@ function trCoverage(r){
   const tMs = _utcms(r.t || r.te || r.ts);
   const inUk = uy<2026 ? false : uy>2026 ? true : (isFinite(tMs) ? tMs>=cutMs : true);
   const uk = inUk ? ukCoverage(row)*100 : null;
-  return { eu, uk, feu:eu };
+  return { eu, uk, feu: fueleuCoverage(row, S, uy)*100 };
 }
 /* 2026-07-20: coverage depends on the voyage-continuity annotations (non-call stays);
    computeAll() sets them, but re-annotate before rendering the trace so the badges are
@@ -2992,8 +3069,14 @@ function reportTraceTable(reps){
     const subTitle = subParts.join(' · ');
     const portHtml = port? `<div style="display:flex;flex-direction:column;gap:2px;font-size:11px;max-width:25ch;overflow:hidden">
           <span style="display:flex;align-items:baseline;font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden">
+            ${/* 2026-08-10e (Aurvin, owner instruction): LOCODE moved BEFORE the name — "INHZR – Hazira".
+                 Styling of both spans is unchanged (the code was already the light 10px/400 #94a3b8 this
+                 reorder standardised onto Legs and Voyages); only the order and which side of the en dash
+                 each sits on changed. The code stays flex:none and the name keeps the ellipsis, so the
+                 LOCODE is still never clipped and the name is still what truncates. The country line
+                 below is untouched — it already showed the country, so nothing was added here. */""}
+            ${(r.portN&&r.cur)?`<span style="flex:none;font-size:10px;font-weight:400;color:#94a3b8">${esc(r.cur)} – </span>`:""}
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" title="${esc(port)}">${esc(port)}</span>
-            ${(r.portN&&r.cur)?`<span style="flex:none;font-size:10px;font-weight:400;color:#94a3b8"> – ${esc(r.cur)}</span>`:""}
           </span>
           ${(subParts.length||zone)?`<div style="display:flex;align-items:center;gap:6px;overflow:hidden">
             ${subParts.length?`<span style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" title="${esc(subTitle)}">${subInner}</span>`:""}
@@ -3361,6 +3444,20 @@ function elVoySide(row, port, rawKey, covKey){
    transit stay with no _covFrom/_covTo at all (no surrounding voyage rows to inherit from)
    scores 0% in the engine and gets no caption here either — nothing meaningful to explain. A
    voyage leg reads its zone pair via elVoySide() (POC to POC, skipping any transit in between). */
+/* 2026-08-10b (Aurvin, FURE VIKEN follow-up): the caption above describes ONE zone pair, but it
+   sits under THREE badges, and since the FuelEU/EEA split the FuelEU badge can legitimately
+   disagree with the EU ETS one. Left alone, a Mongstad→Reykjavik leg would read "EU → EU" beside
+   a 0% FEU badge — which looks like a bug rather than the regulation. When (and only when) the
+   two coverages differ, a short clause is appended naming the reason. Returns "" otherwise, so
+   every all-EU-27 caption is byte-identical to before. */
+function elFeuCaveat(row){
+  if(!row || typeof fueleuCoverage!=="function") return "";
+  const y = Number(S.year)||2026;
+  let a, b;
+  try { a = euCoverage(row); b = fueleuCoverage(row, S, y); } catch(e){ return ""; }
+  if(Math.abs(a-b) < 1e-9) return "";
+  return " · FuelEU "+Math.round(b*100)+"%: NO/IS not yet EEA-incorporated";
+}
 function elReasonText(row){
   if(!row) return "";
   /* 2026-07-26 (Aurvin, owner instruction): separator changed from a bare "-" to " → "
@@ -3369,23 +3466,223 @@ function elReasonText(row){
      read as ambiguous/garbled rather than "from -> to". An arrow is unambiguous regardless of
      how many hyphens the zone labels themselves contain (Non-EU, EU/EEA, etc.). Display-only —
      does not touch the FROZEN arrival/departure/POC derivation this text merely describes. */
-  if(row.kind==="voyage") return elVoySide(row,row.fromPort,"from","_covFrom")+" → "+elVoySide(row,row.toPort,"to","_covTo");
+  if(row.kind==="voyage") return elVoySide(row,row.fromPort,"from","_covFrom")+" → "+elVoySide(row,row.toPort,"to","_covTo")+elFeuCaveat(row);
   if(row.poc===false){
     if(!row._covFrom && !row._covTo) return "";
     const a = row._covFrom ? elBucketLabel(row._covFrom) : elZoneLabel(row.port, row.zone);
     const b = row._covTo   ? elBucketLabel(row._covTo)   : elZoneLabel(row.port, row.zone);
-    return a+" → "+b;
+    return a+" → "+b+elFeuCaveat(row);
   }
-  return "At "+elZoneLabel(row.port, row.zone);
+  return "At "+elZoneLabel(row.port, row.zone)+elFeuCaveat(row);
 }
 /* strict percentage — max 2 dp, integers show no decimals (SPEC §4) */
 function brPct(frac){ const r=Math.round(frac*10000)/100; return (r%1===0?r.toFixed(0):r.toFixed(2))+"%"; }
 /* muted em-dash for empty / no-obligation cells (SPEC §5) */
 const brDash = '<span style="color:#94a3b8">—</span>';
+
+/* ---------------------------------------------------------------------------
+   THE TOTAL ROW'S FuelEU FIGURE (2026-08-10h, Aurvin, owner instruction)
+
+     "total will show the Optimal of legs selected … Total to show annual till
+      leg is clicked."
+
+   So the TOTAL row has two modes, and which one is showing depends entirely on
+   whether anything is ticked:
+
+     NOTHING TICKED  -> the ANNUAL balance, exactly as before. The default view is
+                        unchanged, and it agrees with the KPI cards.
+     SOMETHING TICKED-> the ticked rows priced as their OWN compliance period,
+                        cleanest-first, via R.fueleu.forRows().
+
+   WHY forRows() AND NOT A SUM: cleanest-first is not additive. Two legs assessed
+   together can beat the same two assessed apart, because the cleaner leg's fuel is
+   allowed to cover the dirtier leg's in-scope energy (measured at up to 25 t on the
+   owner's own NJORD data). So a selection's value has to be computed for the actual
+   set — it cannot be looked up from its parts. This is also why the leg rows do NOT
+   sum to this TOTAL, and must not be "fixed" to.
+   --------------------------------------------------------------------------- */
+function feuTotalFor(kind, R){
+  const sel = (ROWSEL[kind] && ROWSEL[kind].sel) || new Set();
+  const F = R && R.fueleu;
+  if(!F) return null;
+  if(!sel.size){
+    /* whole period — the legal, annual position */
+    return { mode:"annual", cb:F.cb, penalty:F.penalty, surplusValue:F.surplusValue,
+             ghgie:F.ghgie, E:F.E_total };
+  }
+  if(typeof F.forRows !== "function") return null;
+  const own = F.forRows(Array.from(sel));
+  return own ? Object.assign({ mode:"selection" }, own) : null;
+}
+/* the tooltip that keeps the two modes from being confused for one another */
+function feuTotalTip(t, nSel){
+  if(!t) return "";
+  return t.mode==="annual"
+    ? "Whole reporting period — the annual FuelEU compliance balance and penalty. This is the legal position and it matches the KPI card. Tick one or more rows to price just those instead."
+    : "SETTLEMENT ESTIMATE for the "+nSel+" ticked row"+(nSel===1?"":"s")+", priced as their own compliance period: cleanest-first allocation over only their own fuel, attained intensity "
+      +fmtF(t.ghgie,2)+" gCO₂e/MJ, no Art 23(2) multiplier and no banking / borrowing / pooling."
+      +"\n\nThis is NOT a share of the annual balance, and the individual rows below will NOT add up to it — cleanest-first pools across whatever is selected, so legs assessed together differ from the same legs assessed apart."
+      +"\n\nFuelEU is assessed annually in law; this is an indicative mid-period figure.";
+}
 /* SCC has no Appendix 6 factor for this fuel — shown distinctly from a plain "no obligation"
    dash, because it means "we will not guess", not "nothing to report" (2026-07-22c) */
 const brNoFactor = '<span style="color:#c2864a;cursor:help" title="No SCC Technical Guidance v5.2 Appendix 6 well-to-wake factor for this fuel in the knowledge base. Appendix 6 covers HSHFO, VLSFO and MGO (and FAME/HVO blends of them). Enter the certified WtW factor for this fuel to complete the calculation — the FuelEU factor is deliberately NOT substituted.">n/a</span>';
 function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp??2); }
+
+/* ---------------------------------------------------------------------------
+   FuelEU compliance balance & penalty — SIGNED DISPLAY (2026-08-10f, Aurvin,
+   owner instruction after a screenshot review of the 2026 NJORD DF year).
+
+   THE DEFECT THIS FIXES. A compliance balance is a signed quantity: positive is
+   a SURPLUS (the good outcome), negative is a DEFICIT. Three of the four places
+   that printed one hard-coded it red (#b91c1c) regardless of sign — the Leg-Wise
+   TOTAL row, the Voyage-Wise TOTAL row and the Voyage-Wise per-fuel rows — so a
+   +469.18 t surplus was painted in exactly the colour this app uses everywhere
+   else for money owed. Only the Leg-Wise per-fuel rows were sign-aware. The
+   NUMBERS were right the whole time; the colour was lying about them.
+
+   THE RULES the owner set:
+     CB  > 0    "+469.18"   GREEN     surplus — bankable (Art 20(1)) or poolable (Art 21)
+     CB == 0    "0.00"      NEUTRAL   exactly on target
+     CB  < 0    "−12.34"    RED       deficit
+     penalty > 0            RED       Annex IV B — money owed
+     penalty = 0 and CB > 0 "+326,662" GREEN  the INDICATIVE VALUE of the surplus
+                                       at the Annex IV B rate. Not cash, not a
+                                       receivable — a ceiling on what the surplus
+                                       is worth banked or pooled.
+     penalty = 0 and CB ≤ 0 "—"       GREEN     compliant, nothing to pay
+     no FuelEU obligation   "—"       GREY      out of scope, or the OMR derogation
+
+   THE TWO DASHES ARE THE SAME GLYPH IN DIFFERENT COLOURS and that is deliberate:
+   grey has always meant "no obligation" in these tables (brDash) and keeps that
+   meaning untouched; green is the new one and means "there IS an obligation and
+   it costs nothing". Both carry a title= spelling out which they are, because a
+   colour alone is not an accessible distinction.
+
+   DISPLAY ONLY. Nothing below changes a computed value. None of it reaches the
+   Excel / OVD exports either — those keep bare signed numbers, so a "+" prefix
+   can never land in a downstream spreadsheet formula (owner decision, 2026-08-10f).
+   --------------------------------------------------------------------------- */
+const FEU_POS = "#15803d";   /* green  — surplus / nothing to pay */
+const FEU_NEG = "#b91c1c";   /* red    — deficit */
+const FEU_NIL = "#475569";   /* slate  — exactly zero */
+const FEU_PEN = "#9a3412";   /* the long-standing penalty colour, unchanged */
+
+/* colour for a compliance balance given in gCO₂eq */
+function feuCBColor(g){ const v = Number(g)||0; return v>0 ? FEU_POS : v<0 ? FEU_NEG : FEU_NIL; }
+/* "+469.18" / "-12.34" / "0.00" — argument in TONNES (i.e. already ÷1e6) */
+function feuCBText(t,dp){ const v = Number(t)||0; return (v>0?"+":"")+fmtF(v,dp??2); }
+/* the inline style fragment for a CB cell, for call sites that pass style strings */
+function feuCBStyle(g){ return "color:"+feuCBColor(g)+";"; }
+/* tooltip explaining which side of the target this balance sits on */
+function feuCBTip(g){
+  const v = Number(g)||0;
+  return v>0 ? "SURPLUS — attained GHG intensity is BELOW the Art 4(2) target. No penalty is due. A surplus may be banked to a later year (Art 20(1)) or pooled with other ships (Art 21)."
+     : v<0 ? "DEFICIT — attained GHG intensity is ABOVE the Art 4(2) target. A penalty is due under Annex IV B unless banking, borrowing or pooling covers it."
+           : "Exactly on the Art 4(2) target — no surplus and no deficit.";
+}
+/* a whole CB cell as coloured, signed HTML (used where the call site cannot style) */
+function feuCBHtml(g,dp){
+  if(g==null) return brDash;
+  return '<span style="color:'+feuCBColor(g)+'" title="'+esc(feuCBTip(g))+'">'+feuCBText((Number(g)||0)/1e6,dp)+'</span>';
+}
+
+/* The Penalty / Surplus cell.
+     penEur  — the € penalty attributed to whatever this cell covers (row, fuel, total)
+     cbG     — the matching compliance balance in gCO₂eq, used only when penEur is 0
+     ghgie   — the period's attained GHG intensity, for valuing a surplus
+     hasObl  — false when the row carries no FuelEU obligation at all
+   The surplus figure is this cell's OWN balance valued at the Annex IV B rate
+   (CB ÷ (GHGIE × 41 000) × €2 400). With no banking / borrowing / pooling in play
+   these sum exactly to engine.js's R.fueleu.surplusValue; with flexibility applied
+   they describe the rows' own balance rather than the post-flexibility one, which
+   is the more honest per-row statement. */
+/* The per-FUEL Penalty / Surplus cell (2026-08-10i, Aurvin, owner instruction).
+   ONE signed euro figure: + is credit this fuel added to its leg, − is credit it destroyed
+   (on a surplus leg) or bill it added (on a deficit leg). Coloured like the CB column beside
+   it — green positive, red negative — so a row reads consistently across the two columns.
+
+   RED HERE DOES NOT ALWAYS MEAN MONEY OWED, and the tooltip says so: on a leg that is overall
+   in surplus, a red fuel line means that fuel ate into the credit. The owner chose the plain
+   red/green pair over a third "amber" state for exactly one reason — the CB column next door
+   already uses red/green for the same underlying sign, and two colour languages side by side
+   would be worse than one explained in a tooltip.
+
+   These sum to their leg's own € figure exactly (see js/engine.js), which is what makes the
+   column reconcile with the TOTAL row when a single leg is ticked. */
+/* The per-FUEL attained GHG intensity (2026-08-10j, Aurvin, owner instruction).
+   Energy-weighted mean of that fuel's own well-to-wake intensities across the CONSUMERS it was
+   burned in, weighted by each consumer's in-scope energy. Read straight off the engine's working
+   tape (fu.parts), so it is the same wtt/ttw the balance itself was built from — display-only,
+   nothing recomputed.
+
+   WHY PER CONSUMER MATTERS: the same LNG is 75.18 gCO₂eq/MJ in a boiler and 89.20 in a
+   medium-speed Otto main engine, because of methane slip. A fuel-level average that ignored the
+   consumer split would hide the single biggest driver of this ship's balance. */
+/* 2026-08-10j (Aurvin, owner instruction): the year's Art 4(2) target rides in the FUELEU
+   MARITIME group header rather than taking a column of its own — it is identical on every row
+   of a given year, so a column would be pure repetition, but without it the GHGIE column beside
+   it has nothing to be measured against and CB = (target − GHGIE) × E is unreadable.
+   Rendered small and light so it reads as a caption on the group, not as another heading. */
+function feuTargetTag(R){
+  const t = R && R.fueleu && R.fueleu.target;
+  if(t == null) return "";
+  return ' <span style="font-weight:600;letter-spacing:0;text-transform:none;color:#94a3b8">'
+       + '· target ' + fmtF(t,4) + ' gCO₂eq/MJ</span>';
+}
+function feuFuelGhgie(fu){
+  const parts = (fu && fu.parts && fu.parts.size) ? Array.from(fu.parts.values()) : ((fu&&fu.parts)||[]);
+  let num=0, den=0;
+  for(const p of parts){
+    const e = Number(p.Ecov)||0;
+    if(!(e>0) || p.wtt==null) continue;
+    num += e*((Number(p.wtt)||0)+(Number(p.ttw)||0));
+    den += e;
+  }
+  return den>0 ? num/den : null;
+}
+/* a GHGIE cell: 2 dp, and RED when the value is above the year's target (that fuel is dragging
+   the balance down), otherwise neutral. Green is deliberately NOT used — a fuel below target is
+   the normal case and colouring it green would make every clean row shout. */
+function feuGhgieHtml(g, target){
+  if(g==null) return brDash;
+  const over = (target!=null && g>target);
+  const tip = target==null ? "Attained well-to-wake GHG intensity."
+    : over ? "ABOVE the "+fmtF(target,4)+" g/MJ target — this pulls the compliance balance DOWN."
+           : "Below the "+fmtF(target,4)+" g/MJ target — this pushes the compliance balance UP.";
+  return '<span style="color:'+(over?FEU_NEG:"#334155")+'" title="'+esc(tip)+'">'+fmtF(g,2)+'</span>';
+}
+function feuFuelEurHtml(eur, hasObl, legInSurplus){
+  if(hasObl===false) return brDash;
+  const v = Number(eur)||0;
+  if(!v) return '<span style="color:'+FEU_POS+'" title="This fuel neither added to nor reduced the leg&#39;s balance.">—</span>';
+  const pos = v>0;
+  const tip = pos
+    ? "This fuel ADDED €"+fmtF(Math.abs(v),0)+" of credit to this leg — its own balance, valued at the leg's attained intensity."
+    : (legInSurplus
+        ? "This fuel DESTROYED €"+fmtF(Math.abs(v),0)+" of the leg's credit. It is NOT money owed — the leg is in surplus overall; this fuel simply pulled against it."
+        : "This fuel ADDED €"+fmtF(Math.abs(v),0)+" to the leg's penalty.");
+  return '<span style="color:'+(pos?FEU_POS:FEU_NEG)+'" title="'+esc(tip)
+       + ' These per-fuel figures sum exactly to the leg&#39;s own figure.">'
+       + (pos?"+":"−")+fmtF(Math.abs(v),0)+'</span>';
+}
+function feuPenaltyHtml(penEur, cbG, ghgie, hasObl, surplusOverride){
+  if(hasObl===false) return brDash;
+  const p = Number(penEur)||0;
+  if(p>0) return '<span style="color:'+FEU_PEN+'" title="Annex IV B penalty — money owed for a FuelEU deficit.">'+fmtF(p,0)+'</span>';
+  const cb = Number(cbG)||0, gi = Number(ghgie)||0;
+  /* 2026-08-10h: surplusOverride lets a caller pass a surplus value that has ALREADY been
+     computed on the right basis — the per-leg settlement figures use the leg's own attained
+     intensity, not the period's, so re-deriving it here from a period ghgie would be wrong. */
+  if(surplusOverride!=null && Number(surplusOverride)>0){
+    return '<span style="color:'+FEU_POS+'" title="No penalty is due on this leg. This is the INDICATIVE VALUE of its surplus at the Annex IV B rate (€2,400 per tonne of VLSFO-equivalent energy), computed on the leg&#39;s OWN attained intensity. Not cash and not a receivable.">+'+fmtF(Number(surplusOverride),0)+'</span>';
+  }
+  if(cb>0 && gi>0){
+    const sv = cb/(gi*41000)*2400;
+    return '<span style="color:'+FEU_POS+'" title="No penalty is due. This is the INDICATIVE VALUE of the surplus at the Annex IV B rate (€2,400 per tonne of VLSFO-equivalent energy, 41,000 MJ): a ceiling on what the surplus is worth if banked to a later year (Art 20(1)) or pooled with other ships (Art 21). It is NOT cash and NOT a receivable.">+'+fmtF(sv,0)+'</span>';
+  }
+  return '<span style="color:'+FEU_POS+'" title="No penalty — the FuelEU compliance balance for these rows is not in deficit.">—</span>';
+}
 
 /* build the {label,juris} ports for a leg from its aligned source row */
 /* 2026-07-23 (Aurvin, owner instruction): each entry now also carries the port NAME and the
@@ -3393,8 +3690,11 @@ function brNum(v,dp){ return (v==null||isNaN(v)||v===0) ? brDash : fmtF(v,dp??2)
    ellipsis while ALWAYS showing the LOCODE in full. `label` is unchanged (name + code) and
    is still what every other caller and the hover title use. */
 function legPortEntry(p, fallbackLabel, juris){
-  if(p && p.c) return { label: portDisp(p), name: (p.n && p.n!==p.c) ? p.n : "", code: p.c, juris: juris||null };
-  return { label: fallbackLabel||"", name: fallbackLabel||"", code: "", juris: juris||null };
+  /* 2026-08-10e: `disp`/`tip` are the LOCODE-first screen string and the hover tooltip (tooltip
+     adds the country). `label` is deliberately LEFT name-first — downloadVoyageXlsx reads it for
+     the "From port"/"To port" columns, and exports were out of scope for the reorder. */
+  if(p && p.c) return { label: portDisp(p), disp: portDispCodeFirst(p), tip: portTipCodeFirst(p), name: (p.n && p.n!==p.c) ? p.n : "", code: p.c, juris: juris||null };
+  return { label: fallbackLabel||"", disp: fallbackLabel||"", tip: fallbackLabel||"", name: fallbackLabel||"", code: "", juris: juris||null };
 }
 function legPorts(det, row){
   if(det.kind==="voyage"){
@@ -4178,7 +4478,7 @@ function breakdownGrid(R, tips){
       <div style="grid-column:11 / span 3;grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">Fuel metrics ${tips.lcv}</div>
       ${P.on(14)?`<div style="grid-column:${P.m(14)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>`:""}
       ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>`:""}
-      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;${sccOn?EMC_WALL:""}border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(16,5))}${sccHdrTag}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;${sccOn?EMC_WALL:""}border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime${feuTargetTag(R)} ${tips.feu}</div>`:"")(P.span(16,5))}${sccHdrTag}
       <!-- sub-header row (row 2): same three eligibility labels/styling as Report-Wise's thSub
            cells (10px, #94a3b8, centered, asymmetric 8/1/1/8 padding so the gap between the
            three badges is smaller than the gap to the group's own outer wall). -->
@@ -4205,11 +4505,13 @@ function breakdownGrid(R, tips){
       <div style="grid-column:13;grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right;white-space:nowrap" title="${R.year>=2026?"Total CO₂e of ALL fuel consumed on this leg (CO₂+CH₄/N₂O, "+euEUAsUnit+") — the full amount burned, NOT scaled by EU ETS coverage. See EUAs (EU ETS group) for the EU-ETS-eligible/scoped figure.":"Total CO₂ of ALL fuel consumed on this leg (CO₂ only before 2026) — the full amount burned, NOT scaled by EU ETS coverage."}">${colHdr(R.year>=2026?"Total CO₂e":"Total CO₂", euEUAsUnit)}</div>
       ${P.on(14)?`<div style="grid-column:${P.m(14)};grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("EUAs",euEUAsUnit)}</div>`:""}
       ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:2;padding:6px 10px;background:#f8fafc;border-right:1px solid #e2e8f0;font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("UKAs","tCO₂e (AR5)")}</div>`:""}
-      ${P.on(16)?`<div style="grid-column:${P.m(16)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===16?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible mass under regulation scope (tonnes)">${colHdr("Elig.","mt")}</div>`:""}
-      ${P.on(17)?`<div style="grid-column:${P.m(17)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===17?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Energy","10⁶ MJ")}</div>`:""}
-      ${P.on(18)?`<div style="grid-column:${P.m(18)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===18?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Elig. energy","10⁶ MJ")}</div>`:""}
+      ${P.on(16)?`<div style="grid-column:${P.m(16)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===16?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Fuel mass inside the FuelEU energy scope = consumption x the FuelEU eligibility % (the FEU badge), NOT the EU ETS %. These differ on Norway/Iceland/Liechtenstein calls, which are not yet EEA-incorporated for FuelEU.">${colHdr("Elig.","mt")}</div>`:""}
+      ${P.on(17)?`<div style="grid-column:${P.m(17)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===17?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Eligible energy = eligible mass x LCV. This is the E in CB = (target - GHGIE) x E.">${colHdr("Elig. energy","10⁶ MJ")}</div>`:""}
+      ${P.on(18)?`<div style="grid-column:${P.m(18)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===18?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Attained well-to-wake GHG intensity. On a fuel row it is that fuel's own intensity across the consumers it was burned in (LNG differs between boiler and main engine because of methane slip); on the TOTAL row it is the attained intensity of whatever is selected. Red = above the year's target.">${colHdr("GHGIE","gCO₂eq/MJ")}</div>`:""}
       ${P.on(19)?`<div style="grid-column:${P.m(19)};grid-row:2;padding:6px 10px;background:#f8fafc;${feuWallAt===19?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Compliance balance (tCO₂eq)">${colHdr("CB","tCO₂eq (AR4)")}</div>`:""}
-      ${P.on(20)?`<div style="grid-column:${P.m(20)};grid-row:2;padding:6px 10px;background:#f8fafc;${sccOn?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right">${colHdr("Penalty","€")}</div>`:""}${sccHdrCells}
+      ${/* 2026-08-10f: "Penalty" alone would mislabel the green surplus-value figure this column
+           now shows when the balance is positive, so the header names both sides. */""}
+      ${P.on(20)?`<div style="grid-column:${P.m(20)};grid-row:2;padding:6px 10px;background:#f8fafc;${sccOn?EMC_WALL:""}font-size:11px;font-weight:600;color:#475569;text-align:right" title="Penalty (red) — money owed under Annex IV B for a FuelEU deficit.&#10;Surplus value (green, with a +) — the INDICATIVE value of a positive compliance balance at the same Annex IV B rate, i.e. what it is worth banked (Art 20(1)) or pooled (Art 21). Not cash.&#10;— in green means there is an obligation but nothing to pay; — in grey means no FuelEU obligation at all.">${colHdr("Penalty / Surplus","€")}</div>`:""}${sccHdrCells}
     </div>`;
 
   let zi=0;
@@ -4265,14 +4567,19 @@ function breakdownGrid(R, tips){
       const nameSpan = p.name
         ? `<span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>`
         : "";
-      /* brackets only make sense AFTER a name — a port we know only by its UN/LOCODE shows
-         the bare code, not "(UAPIV)" (2026-07-23) */
+      /* 2026-08-10e (Aurvin, owner instruction): LOCODE FIRST, then an en dash, then the name —
+         "INHZR – Hazira". The code carries the lighter Report-Wise treatment (#94a3b8, 10px,
+         weight 400) so all three tables render it identically; Leg-Wise previously inherited the
+         parent's dark #0f172a here, so this is a deliberate new colour on this tab.
+         A port known ONLY by its UN/LOCODE keeps the normal dark treatment — when the code is the
+         cell's only content, shrinking it to light 10px grey would just make it hard to read, and
+         the light shade exists to contrast against a name that isn't there. */
       const codeSpan = p.code
-        ? (p.name ? `<span style="flex:none;margin-left:4px">(${esc(p.code)})</span>`
+        ? (p.name ? `<span style="flex:none;font-size:10px;font-weight:400;color:#94a3b8">${esc(p.code)} – </span>`
                   : `<span style="flex:none">${esc(p.code)}</span>`)
         : (p.name ? "" : `<span style="flex:none">${esc(p.label)}</span>`);
-      const nameCodeCap = `<span style="display:flex;align-items:baseline;min-width:0;max-width:25ch;overflow:hidden;flex:0 1 auto">${nameSpan}${codeSpan}</span>`;
-      return `<div title="${esc(p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameCodeCap}${arrow}</div>`;
+      const nameCodeCap = `<span style="display:flex;align-items:baseline;min-width:0;max-width:25ch;overflow:hidden;flex:0 1 auto">${codeSpan}${nameSpan}</span>`;
+      return `<div title="${esc(p.tip||p.label)}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameCodeCap}${arrow}</div>`;
     }).join("");
     /* 2026-07-24 (Aurvin, owner instruction): a stay where cargo happened but a report was
        OUTSIDE_PORT_LIMIT is scored as transit (row.poc===false) — but the owner wants it to
@@ -4344,15 +4651,27 @@ function breakdownGrid(R, tips){
     const fromS = esc(fmtTs(d.tStart))||"…", toS = esc(fmtTs(d.tEnd))||"…";
     const dist = d.kind==="voyage" ? brNum(d.dist,0) : brDash;
     const voyNo = brVoyNos(segs, d);        // 2026-07-23f: canonical voyage number(s) for this leg
-    const covEU = d.covEU, covUK = d.covUK;
+    /* 2026-08-10b: covFEU is FuelEU's OWN coverage — NOT covEU. They diverge on Norwegian and
+       Icelandic ports, which are EEA for EU ETS but third countries for FuelEU until Reg. (EU)
+       2023/1805 is incorporated into the EEA Agreement. The FuelEU energy and CB cells below,
+       and the middle Eligibility badge, must all be gated on covFEU. See js/engine.js. */
+    const covEU = d.covEU, covUK = d.covUK, covFEU = (d.covFEU??d.covEU);
 
     /* one grid line per fuel (+ optional bold leg-total line), every column filled */
     const fuelCells = lines.map((fu,fi)=>{
       const bb = fi===lines.length-1 ? "transparent" : "#eef2f5";
       const rr = fi+1;
       const tw = fu.isTotal ? "font-weight:700;" : "";
-      const cbC = fu.isTotal ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d")
-                             : (covEU>0 ? ((fu.feuCB??0)<0 ? "#b91c1c" : "#15803d") : "#94a3b8");
+      /* 2026-08-10f: the two branches used to differ only in that the non-total one greyed a
+         row with no FuelEU coverage. That is preserved; the sign logic now comes from the one
+         shared feuCBColor() so this can never drift from the TOTAL row or the other table. */
+      /* 2026-08-10h: the CB / Penalty columns now show the STANDALONE per-leg settlement
+         figure (js/engine.js, feuOwn*), not the old pro-rata share of the annual balance.
+         Owner instruction: a voyage charterer needs what is due for THEIR leg, mid-year,
+         before the annual position exists. A leg that burned MGO now shows a real deficit
+         and a real penalty instead of a flattering slice of the ship's LNG surplus. */
+      const cbOwn = fu.feuOwnCB;
+      const cbC = covFEU>0 ? feuCBColor(cbOwn) : "#94a3b8";
       const cell = (col,extra,val)=>`<div style="grid-column:${col+1};grid-row:${rr};padding:${cellPad};border-bottom:1px solid ${bb};text-align:right;font-variant-numeric:tabular-nums;${tw}${extra||""}">${val}</div>`;
       /* 2026-08-01c: same as cell(), but for the hideable regulation columns 14-20 — drops the
          cell entirely when hidden and renumbers it when something to its left went. `col` keeps
@@ -4373,11 +4692,28 @@ function breakdownGrid(R, tips){
         ${cell(12,"border-right:1px solid #e2e8f0;", brNum(R.year>=2026? fu.totalCO2e : fu.totalCO2))}
         ${rcell(13,"border-right:1px solid #e2e8f0;font-weight:600;color:#3652a3;", covEU>0? fmtF(fu.euas,2) : brDash)}
         ${rcell(14,"border-right:1px solid #e2e8f0;font-weight:600;color:#6d4fa3;", covUK>0? fmtF(fu.ukCO2e,2) : brDash)}
-        ${rcell(15,"", brNum(fu.eligibleEU,1))}
-        ${rcell(16,"", brNum(fu.energy))}
-        ${rcell(17,"", covEU>0? fmtF(fu.E/1e6,2) : brDash)}
-        ${rcell(18,"font-weight:600;color:"+cbC+";", (covEU>0&&fu.feuCB!=null)? fmtF(fu.feuCB/1e6,2) : brDash)}
-        ${rcell(19,"border-right:1px solid #e2e8f0;font-weight:600;color:#9a3412;", fu.feuPenalty? fmtF(fu.feuPenalty,0) : brDash)}`;
+        ${/* 2026-08-10j (Aurvin, owner instruction). TWO changes here:
+             (1) BUG FIX — "Elig. mt" showed fu.eligibleEU, the EU ETS eligible mass, inside the
+                 FUELEU MARITIME group. The engine has computed the right value (eligibleFEU =
+                 tonnes x covFEU) since 2026-08-10, when FuelEU got its own coverage for the NO/IS
+                 rule; the UI was never rewired. Invisible on any all-EU-27 trade, because covFEU
+                 === covEU there — it only shows on a NO/IS/LI leg, which is where the owner found
+                 it. On his file it overstated the column by 61%.
+             (2) "Energy" is REPLACED by GHGIE. Once (1) is fixed, Energy (= eligible mass x LCV)
+                 is arithmetically identical to Elig. energy, so it was a duplicate column. GHGIE
+                 is the term that was missing: CB = (target - GHGIE) x Elig. energy, and nothing
+                 on a leg row showed the intensity that drives it. */""}
+        ${/* 2026-08-10k: all three on the ALLOCATION basis, so (target − GHGIE) × Elig. energy
+             === CB on this very line. Explicit zeros (fmtF, not brNum) for a fuel cleanest-first
+             claimed nothing from — a dash there would read as "not applicable" when the truth is
+             "considered, allocated none". A row with no FuelEU obligation at all still dashes. */""}
+        ${rcell(15,"", covFEU>0? fmtF(fu.feuOwnMt||0,1) : brDash)}
+        ${rcell(16,"", covFEU>0? fmtF((fu.feuOwnE||0)/1e6,2) : brDash)}
+        ${rcell(17,"", covFEU>0? (fu.feuOwnGhgie!=null? feuGhgieHtml(fu.feuOwnGhgie, R.fueleu&&R.fueleu.target)
+                                                      : '<span style="color:#94a3b8" title="Cleanest-first allocated none of this fuel to the obligation, so it has no attained intensity of its own here. It was still burned — see the Cons. column.">—</span>')
+                                : brDash)}
+        ${rcell(18,"font-weight:600;color:"+cbC+";", (covFEU>0&&cbOwn!=null)? feuCBText(cbOwn/1e6) : brDash)}
+        ${rcell(19,"border-right:1px solid #e2e8f0;font-weight:600;", feuFuelEurHtml(fu.feuOwnEur, covFEU>0&&cbOwn!=null, (d.feuOwn&&d.feuOwn.cb)>0))}`;
     }).join("");
 
     /* 2026-07-26c (Task 2, Aurvin, owner instruction): the Sea Cargo Charter leg-level block
@@ -4444,7 +4780,7 @@ function breakdownGrid(R, tips){
     const elText = elReasonText(row);
     const eligLeg = `
         <div style="grid-column:6 / span 3;grid-row:1 / span ${span};position:relative;min-height:70px;border-right:1px solid #e2e8f0">
-          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${elFusedPill([covEU*100, covEU*100, covUK*100])}</div>
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">${elFusedPill([covEU*100, covFEU*100, covUK*100])}</div>
           ${elText?`<div style="position:absolute;top:calc(50% + 22px);left:50%;transform:translateX(-50%);font-size:9px;font-weight:600;color:#94a3b8;white-space:nowrap;line-height:1.2" title="Zone pair (or single zone for a port stay) that this leg's EU ETS / UK ETS / FuelEU coverage is judged on.">${esc(elText)}</div>`:""}
         </div>`;
     /* 2026-07-26w (Aurvin, owner instruction, this session): SUPERSEDES the 2026-07-26v
@@ -4641,8 +4977,19 @@ function brFuelLines(d){
     const fb = FUEL_BY_ID[fu.id]||{};
     return { label: cleanFuelName(fb.id?fb:{id:fu.id,name:fu.name}),
              tonnes: fu.tonnes, eligibleEU: fu.eligibleEU,
+             /* 2026-08-10j: the FuelEU-scoped mass (eligibleFEU) and the engine's per-consumer
+                working tape (parts) are what the FuelEU columns now read. eligibleEU stays only
+                because the Excel export and the EU ETS audit card still reference it. */
+             eligibleFEU: fu.eligibleFEU, parts: fu.parts,
+             /* 2026-08-10k: the ALLOCATION basis — what cleanest-first actually claimed. */
+             feuOwnMt: fu.feuOwnMt, feuOwnGhgie: fu.feuOwnGhgie, feuOwnE: fu.feuOwnE,
              energy: (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0,   // 10⁶ MJ = t × LCV(MJ/g)
              E: fu.E||0, feuCB: fu.feuCB, feuPenalty: fu.feuPenalty||0,
+             /* 2026-08-10h: the STANDALONE charterer-settlement figures (js/engine.js) —
+                this fuel's share of the LEG's own balance, cleanest-first over the leg's own
+                burn. These are what the CB / Penalty columns now display; feuCB above is the
+                old pro-rata share of the annual balance, kept for the Excel export. */
+             feuOwnCB: fu.feuOwnCB, feuOwnEur: fu.feuOwnEur||0,
              co2: fu.co2||0, etsCO2: fu.etsCO2||0, etsCO2e: fu.etsCO2e||0, euas: fu.euas||0, ukCO2e: fu.ukCO2e||0,
              /* 2026-07-26p (Aurvin, owner instruction): Fuel metrics' own "Total CO2e" — full
                 fuel burned, not EU ETS coverage-scoped. See js/engine.js. */
@@ -4729,7 +5076,7 @@ function emkFuels(dets){
     if(!a){
       const fb = FUEL_BY_ID[fu.id] || {};
       a = { id:fu.id, label:cleanFuelName(fb.id?fb:{id:fu.id,name:fu.name}), lcv:fb.lcv||0,
-            cfCII:Number(fu.cfCII)||0, tonnes:0, eligibleEU:0, eligibleUK:0, energy:0, E:0,
+            cfCII:Number(fu.cfCII)||0, tonnes:0, eligibleEU:0, eligibleFEU:0, eligibleUK:0, energy:0, E:0,
             co2:0, etsCO2:0, etsCO2e:0, totalCO2:0, totalCO2e:0, euas:0, ukCO2e:0,
             feuCB:0, feuPenalty:0, hfoEq:0, parts:new Map() };
       acc.set(fu.id, a);
@@ -4737,6 +5084,7 @@ function emkFuels(dets){
     const fb = FUEL_BY_ID[fu.id] || {};
     a.tonnes += Number(fu.tonnes)||0;
     a.eligibleEU += Number(fu.eligibleEU)||0;
+    a.eligibleFEU += Number(fu.eligibleFEU)||0;      /* 2026-08-10j */
     a.eligibleUK += Number(fu.eligibleUK)||0;
     a.energy += (fb.lcv && fu.eligibleEU) ? fu.eligibleEU*fb.lcv : 0;
     a.hfoEq += (fb.lcv && fu.tonnes) ? Number(fu.tonnes)*fb.lcv : 0;   // ÷ HFO LCV later
@@ -4955,25 +5303,35 @@ const EMK_CARDS = {
 
   /* ---------- FuelEU ---------- */
   elig: {
-    t: () => "FuelEU eligible mass — tonnes",
+    t: () => "FuelEU allocated mass — tonnes",
     build(ctx, fuels){
+      /* 2026-08-10k: the CELL now shows the mass cleanest-first ALLOCATED, so the card must too
+         — verify_total_tooltips.js reconciles the two character-for-character. The "Burned" and
+         "In scope" columns are kept beside it because the gap between them is the whole story:
+         a fuel can be burned, be inside the scope, and still be allocated nothing. */
+      const t = feuTotalFor(ctx.view, ctx.R);
+      const alloc = new Map();
+      for(const x of (t && t.terms) || []) if(x.E>0) alloc.set(x.id, (alloc.get(x.id)||0) + x.tonnes);
+      if(!t || t.cb == null) return emkNote("No FuelEU obligation on these rows — nothing falls inside the FuelEU energy scope.");
       const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.tonnes,1),
-        f.tonnes>0 ? emkPct(f.eligibleEU/f.tonnes) : "—", fmtF(f.eligibleEU,1)]));
-      const T = fuels.reduce((a,f)=>a+f.tonnes,0), E = fuels.reduce((a,f)=>a+f.eligibleEU,0);
-      rows.push(emkTR(["All fuels", fmtF(T,1), T>0?emkPct(E/T):"—", fmtF(E,1)], "tot"));
+        fmtF(f.eligibleFEU,1), fmtF(alloc.get(f.id)||0,1)]));
+      const T = fuels.reduce((a,f)=>a+f.tonnes,0);
+      const E = Array.from(alloc.values()).reduce((a,v)=>a+v,0);
+      rows.push(emkTR(["All fuels", fmtF(T,1), fmtF(fuels.reduce((a,f)=>a+f.eligibleFEU,0),1), fmtF(E,1)], "tot"));
       /* 2026-08-10d: the "Row mix behind the coverage" preamble was removed with the other two
          (owner instruction). The per-fuel "Effective" column already carries the information the
          mix was there to justify, and this is the one card where that column is the subject. */
-      return emkTable(["Fuel","Burned t","Effective","Eligible t"], rows);
+      return emkTable(["Fuel","Burned t","In scope t","Allocated t"], rows)
+        + emkNote("<b>In scope</b> is consumption × the FuelEU eligibility %. <b>Allocated</b> is what cleanest-first actually claimed to meet the obligation — it fills the scope energy with the lowest-intensity fuel first, so a dirtier fuel can be in scope and still be allocated nothing. The CB is built from the allocated column.");
     }
   },
 
   energy: {
     t: () => "Energy — 10⁶ MJ",
     build(ctx, fuels){
-      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.eligibleEU,1),
+      const rows = fuels.map(f=>emkTR([esc(f.label), fmtF(f.eligibleFEU,1),
         f.lcv?fmtF(f.lcv,5):"—", fmtF(f.energy,2)]));
-      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.eligibleEU,0),1), "",
+      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.eligibleFEU,0),1), "",
                        fmtF(fuels.reduce((a,f)=>a+f.energy,0),2)], "tot"));
       return emkTable(["Fuel","Elig. t","LCV MJ/g","10⁶ MJ"], rows);
     }
@@ -4987,8 +5345,48 @@ const EMK_CARDS = {
         rows.push(emkTR([esc(f.label), fmtF(f.E/1e6,2)], f.split?"g":""));
         if(f.split) for(const p of f.list) rows.push(emkTR([esc(emkConsLabel(p)), fmtF(p.Ecov/1e6,2)], "s"));
       }
-      rows.push(emkTR(["All fuels", fmtF(fuels.reduce((a,f)=>a+f.E,0)/1e6,2)], "tot"));
-      return emkTable(["Fuel / consumer","10⁶ MJ"], rows);
+      /* 2026-08-10k: total from the ALLOCATION, matching the cell. The per-fuel lines above are
+         the in-scope energy; the note explains why the two can differ. */
+      const t = feuTotalFor(ctx.view, ctx.R);
+      if(!t || t.cb == null) return emkNote("No FuelEU obligation on these rows.");
+      rows.push(emkTR(["Allocated to the obligation", fmtF(t.E/1e6,2)], "tot"));
+      return emkTable(["Fuel / consumer","10⁶ MJ"], rows)
+        + emkNote("The lines above are each fuel's energy <b>inside the scope</b>; the total is the energy <b>allocated</b> to meet the obligation. They are the same number in total, but cleanest-first decides WHICH fuel supplies it — see the allocated-mass card.");
+    }
+  },
+
+  /* 2026-08-10j: the GHGIE column replaced "Energy" and so needs its own audit card — a TOTAL
+     cell that offers a card key and has none renders an empty popover (caught by
+     verify_total_tooltips.js's "every TOTAL cell that offers a card actually renders one").
+     This card is also the natural place to show the per-fuel intensities that produce the
+     weighted mean, which is what explains a leg's balance. */
+  ghgie: {
+    t: () => "FuelEU attained GHG intensity — gCO₂eq/MJ",
+    build(ctx, fuels){
+      const F = ctx.R.fueleu || {};
+      const t = feuTotalFor(ctx.view, ctx.R);
+      const g = t ? t.ghgie : F.ghgie;
+      if(g == null) return emkNote("No attained intensity — nothing in this selection falls inside the FuelEU energy scope.");
+      const E = t ? t.E : F.E_total;
+      const pre = emkPre(t && t.mode==="selection"
+            ? "Attained by the ticked rows, as their own period"
+            : "Attained over the whole compliance period", [
+        ["Target, "+ctx.R.year+" (Art 4(2))", fmtF(F.target,4)+" gCO₂e/MJ"],
+        ["Energy in scope", fmtF(E/1e6,2)+" ×10⁶ MJ"],
+        (F.fwind && F.fwind !== 1) ? ["Wind reward factor", fmtF(F.fwind,2)] : null,
+        ["Attained GHG intensity", fmtF(g,2), "key"],
+        ["Margin against target", feuCBText(F.target-g)+" gCO₂e/MJ"]
+      ]);
+      const rows = [];
+      for(const f of fuels){
+        const fg = feuFuelGhgie(f);
+        if(fg == null || !(f.E > 0)) continue;
+        rows.push(emkTR([esc(f.label), fmtF(f.E/1e6,2),
+          '<span style="color:'+(fg>F.target?FEU_NEG:"#334155")+'">'+fmtF(fg,2)+'</span>',
+          fg>F.target ? "above" : "below"]));
+      }
+      return pre + (rows.length ? emkTable(["Fuel","Scoped 10⁶ MJ","WtW gCO₂e/MJ","vs target"], rows) : "")
+        + emkNote("Each fuel's intensity is energy-weighted across the <b>consumers</b> it was burned in — the same LNG is ~75 gCO₂e/MJ in a boiler and ~89 in a medium-speed Otto main engine, because of methane slip. The attained figure above is the weighted mean of these.");
     }
   },
 
@@ -4996,8 +5394,31 @@ const EMK_CARDS = {
     t: () => "FuelEU compliance balance — tCO₂eq",
     build(ctx, fuels){
       const F = ctx.R.fueleu || {};
-      const cellTot = fuels.reduce((a,f)=>a+f.feuCB, 0);          // g, ticked rows only
       if(F.cb == null) return emkNote("No compliance balance — nothing in the selected period falls inside the FuelEU energy scope.");
+      /* 2026-08-10h: the card's headline MUST be the number in the cell it explains, and since
+         that cell is now annual-until-ticked (feuTotalFor), the card follows the same rule.
+         Before this the card kept summing the rows while the cell had already switched — the
+         two disagreed, which verify_fueleu_signs.js caught. */
+      const tSel = feuTotalFor(ctx.view, ctx.R);
+      if(tSel && tSel.mode==="selection"){
+        const per = new Map();
+        for(const t of tSel.terms||[]){ if(!(t.E>0)) continue;
+          const a = per.get(t.name) || { cb:0, E:0 };
+          a.cb += (F.target-(t.wtt+t.ttw))*t.E; a.E += t.E; per.set(t.name, a); }
+        const rws = Array.from(per.entries()).map(([nm,a])=>
+          emkTR([esc(nm), fmtF(a.E/1e6,2), tSel.E>0?emkPct(a.E/tSel.E):"—", feuCBHtml(a.cb)]));
+        rws.push(emkTR(["These rows, as their own period", fmtF(tSel.E/1e6,2), "100%", feuCBHtml(tSel.cb)], "tot"));
+        return emkPre("Priced as their OWN compliance period (settlement estimate)", [
+            ["Target GHG intensity, "+ctx.R.year, fmtF(F.target,4)+" gCO₂e/MJ"],
+            ["Attained by THESE rows alone", fmtF(tSel.ghgie,4)+" gCO₂e/MJ"],
+            ["Their in-scope energy", fmtF(tSel.E/1e6,2)+" ×10⁶ MJ"],
+            ["CB = ("+fmtF(F.target,4)+" − "+fmtF(tSel.ghgie,4)+") × "+fmtF(tSel.E/1e6,2)+"×10⁶",
+             feuCBText(tSel.cb/1e6)+" t"+(tSel.cb>=0?" surplus":" deficit")]
+          ])
+          + emkTable(["Fuel","Scoped 10⁶ MJ","Share","CB t"], rws)
+          + emkNote("Cleanest-first allocation over <b>only these rows' own fuel</b>, no Art 23(2) multiplier and no banking / borrowing / pooling. <b>Not a share of the annual balance</b> — and because cleanest-first pools across whatever is selected, these rows assessed together differ from the same rows assessed apart. FuelEU is assessed annually in law.");
+      }
+      const cellTot = fuels.reduce((a,f)=>a+f.feuCB, 0);          // g, ticked rows only
       const shareOfYear = F.E_total>0 ? fuels.reduce((a,f)=>a+f.E,0)/F.E_total : 0;
       const pre = emkPre("How the balance is built (whole compliance period, not per fuel)", [
         [`Target GHG intensity, ${ctx.R.year}`, fmtF(F.target,4)+" gCO₂e/MJ"],
@@ -5005,30 +5426,73 @@ const EMK_CARDS = {
         (F.fwind && F.fwind !== 1) ? ["Wind reward factor applied", fmtF(F.fwind,2)] : null,
         ["Energy in scope, whole period", fmtF(F.E_total/1e6,2)+" ×10⁶ MJ"],
         [`CB = (${fmtF(F.target,4)} − ${fmtF(F.ghgie,4)}) × ${fmtF(F.E_total/1e6,2)}×10⁶`,
-         fmtF(F.cb/1e6,2)+" t"+(F.cb>=0?" surplus":" deficit")],
+         feuCBText(F.cb/1e6)+" t"+(F.cb>=0?" surplus":" deficit")],
         ["These rows' share of that scoped energy", emkPct(shareOfYear)]
       ]);
+      /* 2026-08-10f: the card's CB figures are signed and coloured the same way the cells are.
+         The reconciliation check in verify_total_tooltips.js compares this table's TOTAL cell
+         character-for-character with the grid cell that was hovered, so the two formattings
+         are not merely consistent by convention — they are pinned to each other by a test. */
       const rows = [];
       for(const f of fuels){
         rows.push(emkTR([esc(f.label), fmtF(f.E/1e6,2),
-          F.E_total>0?emkPct(f.E/F.E_total):"—", fmtF(f.feuCB/1e6,2)]));
+          F.E_total>0?emkPct(f.E/F.E_total):"—", feuCBHtml(f.feuCB)]));
       }
-      rows.push(emkTR(["All fuels, these rows", fmtF(fuels.reduce((a,f)=>a+f.E,0)/1e6,2),
-                       emkPct(shareOfYear), fmtF(cellTot/1e6,2)], "tot"));
+      /* 2026-08-10h: the TOTAL line is the CELL's figure (the annual balance), not the sum of
+         the fuel lines above it. On Voyage-Wise those differ, because that tab counts a voyage
+         by its END date and shows prior-year voyages in full — so its rows carry more energy
+         than the reporting year does. The card must state what the cell states. */
+      rows.push(emkTR(["Annual compliance balance", fmtF(F.E_total/1e6,2),
+                       "100%", feuCBHtml(tSel? tSel.cb : cellTot)], "tot"));
       return pre + emkTable(["Fuel","Scoped 10⁶ MJ","Share","CB t"], rows);
     }
   },
 
   penalty: {
-    t: () => "FuelEU penalty — €",
+    t: () => "FuelEU penalty / surplus value — €",
     build(ctx, fuels){
       const F = ctx.R.fueleu || {};
+      /* 2026-08-10h: same rule as the CB card — follow the cell, which is annual until rows
+         are ticked and then the ticked rows priced as their own compliance period. */
+      const tSel = feuTotalFor(ctx.view, ctx.R);
+      if(tSel && tSel.mode==="selection"){
+        return emkPre(tSel.penalty>0 ? "Penalty due, priced as their OWN compliance period"
+                                     : "No penalty, priced as their OWN compliance period", [
+            ["Attained by these rows alone", fmtF(tSel.ghgie,4)+" gCO₂e/MJ"],
+            ["Target, "+ctx.R.year, fmtF(F.target,4)+" gCO₂e/MJ"],
+            ["Their compliance balance", feuCBText(tSel.cb/1e6)+" t"],
+            ["Annex IV B rate", "€2,400 per t VLSFO-eq (41,000 MJ)"],
+            tSel.penalty>0
+              ? ["Penalty = |CB| ÷ (GHGIE × 41 000) × €2 400", "€ "+fmtF(tSel.penalty,0), "key"]
+              : ["Surplus value = CB ÷ (GHGIE × 41 000) × €2 400", "€ +"+fmtF(tSel.surplusValue,0), "key"]
+          ])
+          + emkNote("Settlement estimate. <b>No Art 23(2) consecutive-deficit multiplier</b> (that reflects the owner's history across years, not this voyage) and <b>no banking, borrowing or pooling</b> (whole-ship, whole-period, and the owner's to apply). FuelEU is assessed annually in law.");
+      }
       const cellTot = fuels.reduce((a,f)=>a+f.feuPenalty, 0);
-      if(!(F.penalty > 0)) return emkPre("No penalty", [
-          ["Compliance balance", F.cbFinal==null?"—":fmtF(F.cbFinal/1e6,2)+" t"],
-          ["Status", (F.cbFinal||0) >= 0 ? "In surplus" : "Deficit"],
-          ["Penalty for these rows", "€ "+fmtF(0,0), "key"]
-        ]);
+      /* 2026-08-10f: the no-penalty branch used to end on a flat "€ 0", which told the reader
+         nothing about WHY there is no penalty or what the surplus is worth. It now values the
+         cell's own balance at the Annex IV B rate, matching the green figure in the cell. The
+         b.key marker is load-bearing: verify_total_tooltips.js reconciles THAT figure against
+         the hovered cell, so it must be the same number the cell shows, not the €0 above it. */
+      if(!(F.penalty > 0)){
+        const cbCell = tSel ? tSel.cb : fuels.reduce((a,f)=>a+(Number(f.feuCB)||0), 0);
+        const gi = Number(F.ghgie)||0;
+        const surplus = (cbCell>0 && gi>0) ? cbCell/(gi*41000)*2400 : 0;
+        return emkPre("No penalty is due", [
+          ["Compliance balance, whole period", F.cbFinal==null?"—":feuCBText(F.cbFinal/1e6)+" t"],
+          ["Status", (F.cbFinal||0) >= 0 ? "In surplus — attained intensity is below the Art 4(2) target" : "Deficit covered by banking / borrowing / pooling"],
+          ["Compliance balance", feuCBText(cbCell/1e6)+" t"],
+          surplus>0 ? ["Annex IV B rate", "€2,400 per t VLSFO-eq (41,000 MJ)"] : null,
+          surplus>0
+            /* "€ +1,234", not "+€ 1,234": verify_total_tooltips.js's norm() strips the € and
+               collapses whitespace, so the marked figure must read exactly as the cell does
+               ("+1,234") once the currency mark is gone. Ordering here is load-bearing. */
+            ? ["Surplus value = CB ÷ (GHGIE × 41 000) × €2 400", "€ +"+fmtF(surplus,0), "key"]
+            : ["Penalty for these rows", "—", "key"]
+        ]) + emkNote(surplus>0
+            ? "This is an <b>indicative value, not cash</b> — a ceiling on what the surplus is worth if banked to a later year (Art 20(1)) or pooled with other ships (Art 21). FuelEU is period-based in law, so the per-row split is indicative attribution."
+            : "There is a FuelEU obligation on these rows, but nothing to pay.");
+      }
       const shareOfYear = F.E_total>0 ? fuels.reduce((a,f)=>a+f.E,0)/F.E_total : 0;
       const pre = emkPre("How the penalty is built (whole compliance period, not per fuel)", [
         ["Balance after banking / pooling / borrowing", fmtF(F.cbFinal/1e6,2)+" t deficit"],
@@ -5371,11 +5835,33 @@ function brTotalsHtml(){
       ${cell(12,"border-right:1px solid #e2e8f0;", fmtF(sum(R.year>=2026?"totalCO2e":"totalCO2"),2), "co2e")}
       ${rcell(13,"border-right:1px solid #e2e8f0;color:#3652a3;", fmtF(sum("euas"),2), "euas")}
       ${rcell(14,"border-right:1px solid #e2e8f0;color:#6d4fa3;", fmtF(sum("ukCO2e"),2), "ukas")}
-      ${rcell(15,"", fmtF(sumF("eligibleEU"),1), "elig")}
-      ${rcell(16,"", fmtF(sumEnergy,2), "energy")}
-      ${rcell(17,"", fmtF(sum("E")/1e6,2), "eligEnergy")}
-      ${rcell(18,"color:#b91c1c;", fmtF(sum("feuCB")/1e6,2), "cb")}
-      ${rcell(19,"border-right:1px solid #e2e8f0;color:#9a3412;", fmtF(sum("feuPenalty"),0), "penalty")}${sccTotCells}
+      ${/* 2026-08-10j: eligible mass on FuelEU coverage (was EU ETS), Elig. energy moves left,
+           and GHGIE takes the third slot — the selection's own attained intensity, which is what
+           the CB beside it was actually built from. */""}
+      ${/* 2026-08-10k: the TOTAL's mass and energy are the ALLOCATION's, matching the fuel rows
+           and the CB beside them. The mass legitimately differs from "physical tonnes in scope" —
+           the same energy costs fewer tonnes of a higher-LCV fuel. */""}
+      ${(()=>{ const t=feuTotalFor("br", R);
+               const mt=(t&&t.terms)? t.terms.reduce((a,x)=>a+(x.E>0?x.tonnes:0),0) : 0;
+               return rcell(15,"", t? fmtF(mt,1) : brDash, "elig")
+                    + rcell(16,"", t? fmtF(t.E/1e6,2) : brDash, "eligEnergy")
+                    + rcell(17,"", t? feuGhgieHtml(t.ghgie, R.fueleu&&R.fueleu.target) : brDash, "ghgie"); })()}
+      ${/* 2026-08-10f: these two were the worst of the sign-blind cells — the TOTAL row is the
+           one most people read, and it painted a SURPLUS red. Now signed and coloured through
+           the shared helpers, exactly like the per-fuel rows above. */""}
+      ${/* 2026-08-10h: annual until a leg is ticked, then the ticked rows priced as their own
+           period. See feuTotalFor() for the full rule and why this is not a sum of the rows.
+           The 4th argument to feuPenaltyHtml is "does a FuelEU obligation exist at all" — a
+           workspace whose rows are ALL outside the FuelEU energy scope keeps the GREY
+           no-obligation dash, not the green "obligation exists and costs nothing" one. */""}
+      ${(()=>{ const t=feuTotalFor("br", R), nSel=ROWSEL.br.sel.size;
+               const tip=esc(feuTotalTip(t,nSel));
+               if(!t) return rcell(18,feuCBStyle(0), brDash, "cb")+rcell(19,"border-right:1px solid #e2e8f0;", brDash, "penalty");
+               return rcell(18,feuCBStyle(t.cb)+(t.mode==="selection"?"text-decoration:underline dotted #94a3b8;text-underline-offset:3px;":""),
+                            '<span title="'+tip+'">'+feuCBText(t.cb/1e6)+'</span>', "cb")
+                    + rcell(19,"border-right:1px solid #e2e8f0;",
+                            '<span title="'+tip+'">'+feuPenaltyHtml(t.penalty, t.cb, t.ghgie, !!(R.fueleu&&R.fueleu.cb!=null), t.surplusValue)+'</span>', "penalty");
+             })()}${sccTotCells}
     </div>`;
 }
 
@@ -5597,10 +6083,14 @@ function vwFuelLines(g){
   for(const d of g.dets) for(const fu of d.fuels){
     let a=acc.get(fu.id);
     if(!a){ a={ id:fu.id, label:cleanFuelName(FUEL_BY_ID[fu.id]||{id:fu.id,name:fu.name}),
-                tonnes:0, eligibleEU:0, energy:0, E:0, feuCB:0, feuPenalty:0,
+                tonnes:0, eligibleEU:0, eligibleFEU:0, parts:[], energy:0, E:0, feuCB:0, feuPenalty:0,
                 co2:0, etsCO2:0, etsCO2e:0, totalCO2:0, totalCO2e:0, euas:0, ukCO2e:0, sccTtW:0, sccWtW:0, noFactor:false }; acc.set(fu.id,a); }
     const fb=FUEL_BY_ID[fu.id]||{};
     a.tonnes+=Number(fu.tonnes)||0; a.eligibleEU+=Number(fu.eligibleEU)||0;
+    /* 2026-08-10j: FuelEU-scoped mass, and the per-consumer tapes concatenated so a voyage's
+       fuel line can report the same energy-weighted WtW intensity a leg row does. */
+    a.eligibleFEU+=Number(fu.eligibleFEU)||0;
+    if(fu.parts){ const pl = fu.parts.size? Array.from(fu.parts.values()) : fu.parts; for(const pp of pl) a.parts.push(pp); }
     a.energy += (fb.lcv&&fu.eligibleEU)? fu.eligibleEU*fb.lcv : 0;
     a.E+=Number(fu.E)||0; a.feuCB+=Number(fu.feuCB)||0; a.feuPenalty+=Number(fu.feuPenalty)||0;
     /* 2026-07-26p: totalCO2/totalCO2e — Fuel metrics' full-fuel figure, see js/engine.js */
@@ -5872,6 +6362,42 @@ function vwVoyCell(g){
 function voyageGrid(R, tips){
   const cellPad="7px 10px";
   const G=R.groups;
+  /* 2026-08-10h (Aurvin, owner instruction — charterer settlement): price EACH VOYAGE as its
+     own compliance period. A voyage is the unit a voyage charterer settles on, so this is the
+     most directly useful place for the figure. Uses the row indices the engine stamped on each
+     rowDetail (`ri`), so the voyage is priced from exactly the rows it contains — sea legs and
+     the port stays inside it — with cleanest-first over that voyage's own burn only.
+     Per fuel, the voyage's own balance is split by each fuel's share of it, taken from the
+     allocation's own terms (NOT re-derived), so the fuel lines sum to the voyage line exactly. */
+  if(R.fueleu && typeof R.fueleu.forRows === "function"){
+    for(const g of G||[]){
+      const idx = (g.dets||[]).map(d=>d.ri).filter(i=>i!=null);
+      const own = idx.length ? R.fueleu.forRows(idx) : null;
+      g.feuOwn = own;
+      if(!own){ for(const f of g.fuels||[]) f.feuOwnCB = null; continue; }
+      const per = new Map();
+      for(const t of own.terms||[]){
+        if(!(t.E>0)) continue;
+        const a = per.get(t.id) || { cb:0, E:0, mt:0, gNum:0 };
+        a.cb   += (R.fueleu.target - (t.wtt+t.ttw)) * t.E;
+        a.E    += t.E; a.mt += t.tonnes; a.gNum += t.E*(t.wtt+t.ttw);
+        per.set(t.id, a);
+      }
+      for(const f of g.fuels||[]){
+        const a = per.get(f.id);
+        if(!a){ f.feuOwnCB = 0; f.feuOwnMt = 0; f.feuOwnE = 0; f.feuOwnGhgie = null; f.feuOwnEur = 0; continue; }
+        /* 2026-08-10i: one SIGNED figure, same rule and same reason as js/engine.js's per-fuel
+           split — see the long note there. Negative shares must be VISIBLE, or the fuel lines
+           silently fail to reconcile with the voyage line above them. */
+        const shr = own.cb !== 0 ? a.cb/own.cb : 0;
+        f.feuOwnCB    = a.cb;
+        f.feuOwnMt    = a.mt;                          /* 2026-08-10k: allocation basis */
+        f.feuOwnE     = a.E;
+        f.feuOwnGhgie = a.E>0 ? a.gNum/a.E : null;
+        f.feuOwnEur = (own.surplusValue>0 ? own.surplusValue : -own.penalty) * shr;
+      }
+    }
+  }
   VW_LAST={ R, cellPad };
   rowselReset("vw", G.length);
   const th=(col,txt,extra,title)=>`<div style="grid-column:${col+1};grid-row:2;padding:6px 10px;background:#f8fafc;font-size:11px;font-weight:600;color:#475569;text-align:right;${extra||""}"${title?` title="${title}"`:""}>${txt}</div>`;
@@ -5933,7 +6459,7 @@ function voyageGrid(R, tips){
       ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f2e8d9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#9a6b1f;white-space:nowrap">Sea Cargo Charter ${tips.scc}</div>`:"")(P.span(10,5))}
       ${P.on(15)?`<div style="grid-column:${P.m(15)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">EU ETS ${tips.euets}</div>`:""}
       ${P.on(16)?`<div style="grid-column:${P.m(16)};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">UK ETS ${tips.ukets}</div>`:""}
-      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime ${tips.feu}</div>`:"")(P.span(17,5))}
+      ${(sp=>sp?`<div style="grid-column:${sp.start} / span ${sp.span};grid-row:1;padding:6px 10px;background:#f1f5f9;border-right:1px solid #e2e8f0;border-bottom:1px solid #cbd5e1;text-align:center;font-size:10.5px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#475569;white-space:nowrap">FuelEU Maritime${feuTargetTag(R)} ${tips.feu}</div>`:"")(P.span(17,5))}
       ${/* 2026-07-26e: IMO pair, identical treatment to Leg-Wise, now LEFT of Fuel metrics. Both
            are VOYAGE-level and span the fuel sub-rows. See the IMO info icon for the caveat. */""}
       ${/* 2026-07-26 (Task, Aurvin): header text centred over this column instead of the
@@ -5980,11 +6506,12 @@ function voyageGrid(R, tips){
       ${rth(13,colHdr("EEOI","gCO₂/t·nm"),"border-right:1px solid #e2e8f0;","IMO EEOI (MEPC.1/Circ.684): TANK-TO-WAKE, CO₂ only — the SAME value as the IMO EEOI at columns 5-6, shown again here next to the Sea Cargo Charter's own EEOI (WtW) for easy comparison. NOT the Sea Cargo Charter figure, which is well-to-wake CO₂e with ballast carry-in.")}
       ${rth(14,colHdr("EUAs",euEUAsUnit),"border-right:1px solid #e2e8f0;")}
       ${rth(15,colHdr("UKAs","tCO₂e (AR5)"),"border-right:1px solid #e2e8f0;")}
-      ${rth(16,colHdr("Elig.","mt"),"","Eligible mass under regulation scope (tonnes)")}
-      ${rth(17,colHdr("Energy","10⁶ MJ"))}
-      ${rth(18,colHdr("Elig. energy","10⁶ MJ"))}
+      ${rth(16,colHdr("Elig.","mt"),"","Fuel mass inside the FuelEU energy scope = consumption × the FuelEU eligibility %, NOT the EU ETS %. The two differ on Norway / Iceland / Liechtenstein calls.")}
+      ${rth(17,colHdr("Elig. energy","10⁶ MJ"),"","Eligible energy = eligible mass × LCV. This is the E in CB = (target − GHGIE) × E.")}
+      ${rth(18,colHdr("GHGIE","gCO₂eq/MJ"),"","Attained well-to-wake GHG intensity. Red = above the year's target.")}
       ${rth(19,colHdr("CB","tCO₂eq (AR4)"),"","Compliance balance (tCO₂eq)")}
-      ${rth(20,colHdr("Penalty","€"),"border-right:1px solid #e2e8f0;")}
+      ${/* 2026-08-10f — see the matching note on the Leg-Wise header. */""}
+      ${rth(20,colHdr("Penalty / Surplus","€"),"border-right:1px solid #e2e8f0;","Penalty (red) — money owed under Annex IV B for a FuelEU deficit. Surplus value (green, with a +) — the INDICATIVE value of a positive compliance balance at the same Annex IV B rate, i.e. what it is worth banked (Art 20(1)) or pooled (Art 21). Not cash. A green — means there is an obligation but nothing to pay; a grey — means no FuelEU obligation at all.")}
     </div>`;
 
   let zi=0;
@@ -6034,12 +6561,15 @@ function voyageGrid(R, tips){
       const nameSpan = p.name
         ? `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(p.name)}</span>`
         : (p.code? "" : `<span style="flex:none">${esc(p.label||"")}</span>`);
+      /* 2026-08-10e (Aurvin, owner instruction): LOCODE first + en dash, and the code's existing
+         light grey is resized to the Report-Wise treatment (12px/500 → 10px/400) so the three
+         tables match exactly. See the matching note in breakdownGrid's portHtml. */
       const codeSpan = p.code
-        ? (p.name ? `<span style="flex:none;margin-left:4px;color:#94a3b8;font-weight:500">(${esc(p.code)})</span>`
+        ? (p.name ? `<span style="flex:none;font-size:10px;font-weight:400;color:#94a3b8">${esc(p.code)} – </span>`
                   : `<span style="flex:none;color:#94a3b8;font-weight:500">${esc(p.code)}</span>`)
         : "";
       const arr = arrow? `<span style="flex:none;margin-left:5px;color:#94a3b8">→</span>` : "";
-      return `<div title="${esc(p.label||"")}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${nameSpan}${codeSpan}${arr}</div>`;
+      return `<div title="${esc(p.tip||p.label||"")}" style="display:flex;align-items:baseline;min-width:0;font-weight:600;color:#0f172a;line-height:1.45">${codeSpan}${nameSpan}${arr}</div>`;
     };
     const fromS = esc(fmtTs(g.tStart))||"…", toS = esc(fmtTs(g.tEnd))||"…";
     const flags=[];
@@ -6118,11 +6648,18 @@ function voyageGrid(R, tips){
                eeoiCellHtml(vwGroupEEOI(g),"No transport work on this voyage — no cargo was carried on any of its legs, so there are no tonne-miles to divide by."))}
         ${rfl(14,f=>f.euas?`<span style="color:#3652a3">${fmtF(f.euas,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
         ${rfl(15,f=>f.ukCO2e?`<span style="color:#6d4fa3">${fmtF(f.ukCO2e,2)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
-        ${rfl(16,f=>brNum(f.eligibleEU,1))}
-        ${rfl(17,f=>brNum(f.energy,2))}
-        ${rfl(18,f=>brNum(f.E/1e6,2))}
-        ${rfl(19,f=>f.feuCB?`<span style="color:#b91c1c">${fmtF(f.feuCB/1e6,2)}</span>`:brDash)}
-        ${rfl(20,f=>f.feuPenalty?`<span style="color:#9a3412">${fmtF(f.feuPenalty,0)}</span>`:brDash,"border-right:1px solid #e2e8f0;")}
+        ${/* 2026-08-10j — same two changes as Leg-Wise; see the long note there. */""}
+        ${/* 2026-08-10k — allocation basis, same as Leg-Wise; see the note in js/engine.js. */""}
+        ${rfl(16,f=>f.feuOwnMt!=null? fmtF(f.feuOwnMt,1) : brDash)}
+        ${rfl(17,f=>f.feuOwnE!=null? fmtF(f.feuOwnE/1e6,2) : brDash)}
+        ${rfl(18,f=>f.feuOwnGhgie!=null? feuGhgieHtml(f.feuOwnGhgie, R.fueleu&&R.fueleu.target)
+                  : '<span style="color:#94a3b8" title="Cleanest-first allocated none of this fuel to the obligation.">—</span>')}
+        ${/* 2026-08-10h: the VOYAGE's own standalone balance, split across its fuels — the unit
+             a voyage charterer actually settles on. gOwn is computed once per group below and
+             its per-fuel split is proportional to each fuel's share of the group's own CB. A
+             fuel with no balance at all keeps the grey no-obligation dash. */""}
+        ${rfl(19,f=>f.feuOwnCB!=null?feuCBHtml(f.feuOwnCB):(f.feuCB?feuCBHtml(f.feuCB):brDash))}
+        ${rfl(20,f=>feuFuelEurHtml(f.feuOwnEur, f.feuOwnCB!=null||!!f.feuCB, (g.feuOwn&&g.feuOwn.cb)>0),"border-right:1px solid #e2e8f0;")}
       </div>`;
     return head;
   }).join("");
@@ -6255,11 +6792,40 @@ function vwTotalsHtml(){
       ${rcell(13,"border-right:1px solid #e2e8f0;color:#1d7a5f;",eeoiImoTot!=null? fmtF(eeoiImoTot,2):brDash,"eeoiImo")}
       ${rcell(14,"border-right:1px solid #e2e8f0;color:#3652a3;",fmtF(sum("euas"),2),"euas")}
       ${rcell(15,"border-right:1px solid #e2e8f0;color:#6d4fa3;",fmtF(sum("ukCO2e"),2),"ukas")}
-      ${rcell(16,"",fmtF(sumFu("eligibleEU"),1),"elig")}
-      ${rcell(17,"",fmtF(sumFu("energy"),2),"energy")}
-      ${rcell(18,"",fmtF(sum("E")/1e6,2),"eligEnergy")}
-      ${rcell(19,"color:#b91c1c;",fmtF(sum("feuCB")/1e6,2),"cb")}
-      ${rcell(20,"border-right:1px solid #e2e8f0;color:#9a3412;",fmtF(sum("feuPenalty"),0),"penalty")}
+      ${/* 2026-08-10j — see the Leg-Wise TOTAL note. */""}
+      ${(()=>{ const selG=Array.from(ROWSEL.vw.sel), F=R.fueleu; let t=null;
+               if(F){ if(!selG.length) t={E:F.E_total,terms:F.terms};
+                      else if(typeof F.forRows==="function"){
+                        const idx=[]; for(const gi of selG){ const gg=G[gi]; if(gg) for(const d of gg.dets||[]) if(d.ri!=null) idx.push(d.ri); }
+                        t=F.forRows(idx); } }
+               const mt=(t&&t.terms)? t.terms.reduce((a,x)=>a+(x.E>0?x.tonnes:0),0) : 0;
+               return rcell(16,"", t? fmtF(mt,1) : brDash, "elig")
+                    + rcell(17,"", t? fmtF(t.E/1e6,2) : brDash, "eligEnergy"); })()}
+      ${(()=>{ const selG=Array.from(ROWSEL.vw.sel), F=R.fueleu; let g=null;
+               if(F){ if(!selG.length) g=F.ghgie;
+                      else if(typeof F.forRows==="function"){
+                        const idx=[]; for(const gi of selG){ const gg=G[gi]; if(gg) for(const d of gg.dets||[]) if(d.ri!=null) idx.push(d.ri); }
+                        const own=F.forRows(idx); if(own) g=own.ghgie; } }
+               return rcell(18,"", feuGhgieHtml(g, F&&F.target), "ghgie"); })()}
+      ${/* 2026-08-10h — annual until a voyage is ticked, then the ticked voyages priced as
+           their own period. Same rule as the Leg-Wise TOTAL; see feuTotalFor(). The ticked
+           set here is voyage GROUPS, so their rows are expanded to row indices first. */""}
+      ${(()=>{ const selG=Array.from(ROWSEL.vw.sel), F=R.fueleu;
+               let t=null;
+               if(F){
+                 if(!selG.length) t={ mode:"annual", cb:F.cb, penalty:F.penalty, surplusValue:F.surplusValue, ghgie:F.ghgie };
+                 else if(typeof F.forRows==="function"){
+                   const idx=[]; for(const gi of selG){ const g=G[gi]; if(g) for(const d of g.dets||[]) if(d.ri!=null) idx.push(d.ri); }
+                   const own=F.forRows(idx); if(own) t=Object.assign({mode:"selection"},own);
+                 }
+               }
+               if(!t) return rcell(19,feuCBStyle(0),brDash,"cb")+rcell(20,"border-right:1px solid #e2e8f0;",brDash,"penalty");
+               const tip=esc(feuTotalTip(t, selG.length));
+               return rcell(19,feuCBStyle(t.cb)+(t.mode==="selection"?"text-decoration:underline dotted #94a3b8;text-underline-offset:3px;":""),
+                            '<span title="'+tip+'">'+feuCBText(t.cb/1e6)+'</span>',"cb")
+                    + rcell(20,"border-right:1px solid #e2e8f0;",
+                            '<span title="'+tip+'">'+feuPenaltyHtml(t.penalty, t.cb, t.ghgie, !!(F&&F.cb!=null), t.surplusValue)+'</span>',"penalty");
+             })()}
     </div>`;
 }
 function downloadVoyageXlsx(){
@@ -6764,7 +7330,28 @@ function renderVoyage(){
      not a re-run of the whole compute pipeline, so this is safe to add here without recomputing
      anything voyage-specific. Label and unit now read off the exact same euAR value, so they
      can never disagree again. */
-  const R={ groups:vg.groups, year:Number(S.year)||2026, ets:{ gwp: euetsGwp(S) } };
+  /* 2026-08-10f (Aurvin, owner instruction — FuelEU sign/surplus work): `fueleu` added, for
+     the SAME reason and by the same precedent as the 2026-07-27 `ets` addition above.
+
+     This R was missing R.fueleu, and two things quietly depended on it:
+       • the CB hover card (EMK_CARDS.cb) reads ctx.R.fueleu and, finding nothing, returned
+         its "No compliance balance — nothing in the selected period falls inside the FuelEU
+         energy scope" note. On a ship that HAS a balance that message is simply wrong, and it
+         has been wrong on this tab since the cards were added. PRE-EXISTING, found by
+         tools/verify_fueleu_signs.js, fixed here because the same field fixes both.
+       • the Penalty / Surplus cell needs the attained GHG intensity to value a surplus at the
+         Annex IV B rate; without it the cell degraded to a plain dash.
+
+     COST, honestly: unlike euetsGwp(S) this IS a full computeAll(S). The Leg-Wise tab already
+     runs one on every render, so the order of magnitude is not new to the app — but this tab
+     did not, and now does. It is called once per render, not per row.
+
+     SINGLE VOYAGE VIEW: this is deliberately the YEAR's intensity, not the voyage's. A per-
+     voyage GHG intensity has no meaning in law (FuelEU is period-based), and the per-row CB
+     figures beside it are already the annual balance shared out by in-scope energy — so the
+     valuation and the balance it values are computed on the same basis. */
+  const R={ groups:vg.groups, year:Number(S.year)||2026, ets:{ gwp: euetsGwp(S) },
+            fueleu: computeAll(S).fueleu };
   const iVoy=info(`The <b>VOYAGE_NUMBER</b> from the MDA file, with the change point corrected.<br><br>Vessel staff type this by hand, so the number often flips a report or two <b>after</b> the departure it belongs to — sometimes on an SOSP report. Rule applied here (owner instruction, 2026-07-23):<br><br>• When the number changes, the calculator looks back for a derived <b>DEPARTURE</b> on the <b>same day or the day before</b>. If it finds one, the change is re-timed to that departure and the row is marked <i>re-timed to departure</i>.<br><br>• If there is no such departure, the charterer genuinely changed mid-passage — that is accepted as a new voyage starting at that report, and the sea leg is <b>split</b> at that point (marked <i>leg split</i>).<br><br>• Either way the report at the boundary keeps its own consumption on the <b>old</b> voyage; the new voyage accumulates from the next report onward.<br><br>Blank voyage numbers (bunkering and fuel-stock reports carry none) are ignored rather than treated as a change.`);
   const iLCV=info("<b>LCV</b> (lower calorific value, MJ/g) per FuelEU Annex II column 1: HFO 0.0405 · LFO 0.041 · MGO 0.0427 · LNG 0.0491 · methanol 0.0199 — full list on the Calculations tab. Eligible energy = eligible mass × 10⁶ × LCV.");
   const iFEU=info("<b>FuelEU</b> per fueleu-annexi with GWP 25/298 (prescribed) and CH₄ slip per consumer class. The annual balance/penalty is shared out by each row's in-scope energy and then summed to the voyage — <b>indicative only</b>, FuelEU is period-based in law.<br><br>Per Task 4 the coverage-% columns are not shown on this tab; they remain on the ⛵ Leg-Wise and 📋 Report-Wise tabs.");
@@ -8636,6 +9223,101 @@ function runSelfTests(){
     const awOut=awLegs.find(l=>l.fromPort && l.toPort && l.fromPort.c==="FRFOS" && l.toPort.c==="GIGIB");
     ckT("AWAIT: whole post-Fos stretch (incl. OPL drifting window) is ONE FRFOS→GIGIB leg at 50% EU",
         !!awOut && awOut.from==="EEA" && awOut.to==="OTHER" && Math.abs(euCoverage(awOut)-0.5)<1e-9);
+    /* ---- FuelEU ≠ EU ETS geography (2026-08-10, Aurvin — FURE VIKEN / Equinor, Mongstad ⇄ Iceland)
+       EU MRV and EU ETS are incorporated into the EEA Agreement, so NO/IS are EEA for both.
+       FuelEU (Reg. (EU) 2023/1805) is NOT yet incorporated, so NO/IS are THIRD COUNTRIES for
+       FuelEU only. Before the fix a single euCoverage() served both regimes and a Norway⇄Iceland
+       trade was scored 100% FuelEU instead of 0%. These tests pin the divergence AND pin that
+       nothing changed for an all-EU-27 trade. */
+    {
+      const noSwitch = { fueleuEEAFrom:"" };                       // as of Aug-2026: not incorporated
+      const voy = (a,b)=>({ kind:"voyage", from:zoneOfLocode(a), to:zoneOfLocode(b), _from:a, _to:b });
+      const call = c =>({ kind:"port", poc:true, zone:zoneOfLocode(c), _locode:c });
+      const eu = r=>euCoverage(r), fe = (r,st,y)=>fueleuCoverage(r, st||noSwitch, y||2026);
+
+      ckT("FEU-EEA: NOMON/ISREY are EEA to the zone resolver (EU ETS + MRV geography unchanged)",
+          zoneOfLocode("NOMON")==="EEA" && zoneOfLocode("ISREY")==="EEA");
+      ckT("FEU-EEA: fueleuZone downgrades NO/IS/LI to OTHER while FuelEU is not EEA-incorporated",
+          fueleuZone("EEA","NOMON",noSwitch,2026)==="OTHER" && fueleuZone("EEA","ISREY",noSwitch,2026)==="OTHER"
+          && fueleuZone("EEA","LIVAD",noSwitch,2026)==="OTHER" && fueleuZone("EEA","DEHAM",noSwitch,2026)==="EEA");
+      ckT("FEU-EEA: Mongstad→Reykjavik = 100% EU ETS but 0% FuelEU (the reported bug)",
+          Math.abs(eu(voy("NOMON","ISREY"))-1)<1e-9 && Math.abs(fe(voy("NOMON","ISREY"))-0)<1e-9);
+      ckT("FEU-EEA: intra-Iceland Akureyri→Reykjavik = 100% EU ETS, 0% FuelEU",
+          Math.abs(eu(voy("ISAKU","ISREY"))-1)<1e-9 && Math.abs(fe(voy("ISAKU","ISREY"))-0)<1e-9);
+      ckT("FEU-EEA: a port call at Mongstad is 100% EU ETS, 0% FuelEU",
+          Math.abs(eu(call("NOMON"))-1)<1e-9 && Math.abs(fe(call("NOMON"))-0)<1e-9);
+      ckT("FEU-EEA: EU-27 ⇄ Norway = 100% EU ETS but only 50% FuelEU (NO is a third country)",
+          Math.abs(eu(voy("DEHAM","NOMON"))-1)<1e-9 && Math.abs(fe(voy("DEHAM","NOMON"))-0.5)<1e-9);
+      ckT("FEU-EEA CONTROL: all-EU-27 leg and call are identical under both regimes — no regression",
+          Math.abs(eu(voy("DEHAM","NLRTM"))-1)<1e-9 && Math.abs(fe(voy("DEHAM","NLRTM"))-1)<1e-9
+          && Math.abs(eu(voy("DEHAM","SGSIN"))-0.5)<1e-9 && Math.abs(fe(voy("DEHAM","SGSIN"))-0.5)<1e-9
+          && Math.abs(eu(call("NLRTM"))-1)<1e-9 && Math.abs(fe(call("NLRTM"))-1)<1e-9);
+      ckT("FEU-EEA CONTROL: a hand-entered EU/EEA row with no locode is NOT reinterpreted",
+          Math.abs(fe({kind:"port",poc:true,zone:"EEA"})-1)<1e-9
+          && Math.abs(fe({kind:"voyage",from:"EEA",to:"EEA"})-1)<1e-9);
+
+      /* the switch: whole-reporting-year granularity, mid-year pro-rating deliberately deferred */
+      const on27 = { fueleuEEAFrom:"2027-01-01" }, mid27 = { fueleuEEAFrom:"2027-06-01" };
+      ckT("FEU-EEA switch: once incorporated (1-Jan-2027) Mongstad→Reykjavik becomes 100% FuelEU",
+          Math.abs(fe(voy("NOMON","ISREY"), on27, 2027)-1)<1e-9
+          && Math.abs(fe(voy("NOMON","ISREY"), on27, 2026)-0)<1e-9);
+      ckT("FEU-EEA switch: a MID-year date leaves that whole year out of scope (no guessed pro-rating)",
+          Math.abs(fe(voy("NOMON","ISREY"), mid27, 2027)-0)<1e-9
+          && Math.abs(fe(voy("NOMON","ISREY"), mid27, 2028)-1)<1e-9);
+
+      /* end-to-end: the whole FuelEU block must collapse to nothing on a pure NO/IS trade,
+         while EU ETS still charges the full intra-EEA obligation */
+      const noIsState = { year:2026, ship:{typeId:"tanker",capacity:17945}, fueleuEEAFrom:"",
+        rows:[ call("NOMON"), voy("NOMON","ISREY"), call("ISREY") ] };
+      for(const r of noIsState.rows) r.fuels=[{fuelId:"MDO",tonnes:100}];
+      noIsState.rows[1].dist=1200; noIsState.rows[1].cargo=15000;
+      const Rno = computeAll(noIsState);
+      /* cb/ghgie are null (not 0) when nothing is in scope — the engine declines to compute an
+         intensity over a zero denominator, and the UI already renders that as "no obligation". */
+      ckT("FEU-EEA end-to-end: Norway⇄Iceland trade has ZERO FuelEU energy in scope, no CB, no penalty",
+          Rno.fueleu.E_total===0 && Rno.fueleu.cb===null && Rno.fueleu.ghgie===null
+          && Rno.fueleu.penalty===0 && Rno.fueleu.eftaEEA===false);
+      ckT("FEU-EEA end-to-end: the SAME trade still carries a full EU ETS obligation (intra-EEA, 100%)",
+          Rno.ets.basis_t>0 && Math.abs(Rno.ets.basis_t - Rno.fuelTotals.basis_t)<1e-6);
+      const Reu = computeAll(Object.assign({}, noIsState, { rows:[ call("NLRTM"), Object.assign({},voy("NLRTM","DEHAM"),{dist:1200,cargo:15000,fuels:[{fuelId:"MDO",tonnes:100}]}), call("DEHAM") ] }));
+      ckT("FEU-EEA end-to-end CONTROL: the identical trade between EU-27 ports still has FuelEU energy in scope",
+          Reu.fueleu.E_total>0);
+
+      /* ---- 2026-08-10b: the SECOND-PASS misses, pinned ----------------------------------
+         (a) The first cut of this fix read only the TEMPORARY _from/_to/_locode fields, which
+             parseOVD deletes once it has folded them into port{}/fromPort{}/toPort{}. Every
+             real import therefore fell through to "no locode → leave the zone alone" and the
+             bug survived, invisible to the hand-built rows above. rowLocode() must read the
+             PERSISTED objects.
+         (b) trCoverage() returned `feu: eu`, so the on-screen FEU badge showed the EU ETS
+             number even after the engine was right. The badge and the engine must agree. */
+      const persisted = { kind:"voyage", from:"EEA", to:"EEA",
+                          fromPort:{c:"NOMON",n:"Mongstad"}, toPort:{c:"ISREY",n:"Reykjavík"} };
+      ckT("FEU-EEA persisted-fields: rowLocode reads fromPort/toPort/port, not just the deleted temporaries",
+          rowLocode(persisted,"from")==="NOMON" && rowLocode(persisted,"to")==="ISREY"
+          && rowLocode({kind:"port",port:{c:"NOMON"}})==="NOMON");
+      ckT("FEU-EEA persisted-fields: a leg carrying ONLY fromPort/toPort is still 100% EU ETS / 0% FuelEU",
+          Math.abs(euCoverage(persisted)-1)<1e-9 && Math.abs(fueleuCoverage(persisted,noSwitch,2026)-0)<1e-9);
+      ckT("FEU-EEA persisted-fields: an EU-27 leg carrying only fromPort/toPort is unchanged at 100/100",
+          Math.abs(fueleuCoverage({kind:"voyage",from:"EEA",to:"EEA",fromPort:{c:"NLRTM"},toPort:{c:"DEHAM"}},noSwitch,2026)-1)<1e-9);
+
+      /* the display layer: trCoverage() feeds the ELIGIBILITY badges. Its `feu` must come from
+         fueleuCoverage(), never from `eu`. Driven through a real matched row via trMatchRow. */
+      {
+        const savedRows=S.rows, savedYear=S.year, savedFrom=S.fueleuEEAFrom;
+        S.rows=[persisted]; S.year=2026; S.fueleuEEAFrom="";
+        annotateVoyageContinuity(S.rows);
+        const cNo = { eu: euCoverage(persisted)*100, feu: fueleuCoverage(persisted,S,2026)*100 };
+        ckT("FEU-EEA badge: the FEU eligibility badge is NOT a copy of the EU ETS badge",
+            cNo.eu===100 && cNo.feu===0);
+        ckT("FEU-EEA caption: the Leg-Wise reason line explains the divergence instead of reading 'EU → EU' alone",
+            /FuelEU 0%/.test(elReasonText(persisted)));
+        ckT("FEU-EEA caption CONTROL: an EU-27 leg's caption is byte-identical to before (no clause added)",
+            elFeuCaveat({kind:"voyage",from:"EEA",to:"EEA",fromPort:{c:"NLRTM"},toPort:{c:"DEHAM"}})==="");
+        S.rows=savedRows; S.year=savedYear; S.fueleuEEAFrom=savedFrom;
+        annotateVoyageContinuity(S.rows);
+      }
+    }
     ckT("AWAIT: reports branch agrees — awaiting-orders AT_SEA report carries dst GIGIB",
         (maw.reports||[]).some(r=>r.rt==="AT_SEA" && r.t==="2026-07-09T10:00" && r.org==="FRFOS" && r.dst==="GIGIB"));
   }catch(e){ fail++; out.push("FAIL  MDA derivation tests threw: "+e.message); }
