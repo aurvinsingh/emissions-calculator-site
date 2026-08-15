@@ -8,7 +8,15 @@ const DEFAULT_STATE = {
   arSet: "AR5",
   ship: { name:"", imo:"", typeId:"bulk", capacity:45000 },
   distIce: 0, showDates: false, showSplit: false,
-  lngEngineDefault: "LNG Otto (dual fuel medium speed)",
+  /* 2026-08-15b, OWNER DECISION — ME defaults to the 2-stroke DIESEL cycle (ME-GI type, slip
+     0.2%); AE stays 4-stroke Otto medium speed (3.1%), because there is no such thing as a
+     slow-speed auxiliary and a slow-speed AE default would describe machinery that cannot exist.
+     ⚠ Note what this default costs: 0.2% is the LOWEST of the four Annex II slip values, so an
+     X-DF ship (2-stroke Otto, 1.7%) imported and left untouched is under-reported ~8× on methane
+     until someone sets the class in Settings. The owner accepted that trade for his fleet. The
+     MDA file carries no engine-cycle field (only MAIN_/AUXILIARY_ENGINE_CONSUMPTION), so the
+     cycle CANNOT be derived from the import — a default is the only option available. */
+  lngEngineDefault: "LNG Diesel (dual fuel slow speed)",
   lngEngineDefaultAux: "LNG Otto (dual fuel medium speed)",
   fueleuAlloc: "optimal",
   /* 2026-08-10: EEA incorporation date for FuelEU (Reg. (EU) 2023/1805). "" = NOT yet
@@ -39,15 +47,43 @@ function loadState(){
   }catch(e){}
   return JSON.parse(JSON.stringify(DEFAULT_STATE));
 }
-/* Saved-state migration: before 2026-07-15 LNG was one fuel with a per-row consumer
-   selector (fr.engine). Map old LNG rows to the matching engine-class fuel id. */
+/* 2026-08-15b (owner instruction). The LNG main-engine consumer class an MDA import assumes for a
+   ship it has not seen before. 2-stroke diesel cycle (ME-GI type) = Annex II slip 0.2%.
+   ⚠ 0.2% is the LOWEST of the four Annex II values, so this default under-reports methane on any
+   X-DF / 2-stroke Otto ship (1.7%) until the class is corrected in Settings. Owner's accepted
+   trade-off for his fleet — do not change it back without asking. */
+const ME_DEFAULT_CLASS = "LNG Diesel (dual fuel slow speed)";
+/* Should an MDA import reset the ME consumer class? Only for a vessel we have not already got in
+   Settings — re-importing the SAME ship must never overwrite a class the user fixed by hand.
+   Pure function so it can be unit-tested without the DOM. Rules:
+     no IMO in Settings yet            → yes, this is a fresh setup
+     file has an IMO and it differs    → yes, different ship
+     file has the same IMO             → no, keep the user's choice
+     file has NO IMO but Settings does → no, cannot prove it is a different ship */
+function isNewVesselForEngineDefault(prevImo, newImo){
+  const p = String(prevImo==null?"":prevImo).trim(), n = String(newImo==null?"":newImo).trim();
+  if(!p) return true;
+  return !!n && n !== p;
+}
+
+/* Saved-state migration.
+   2026-08-15 (owner instruction) REVERSES the 2026-07-15 migration that used to live here.
+   Between 2026-07-15 and 2026-08-15 LNG was four fuel ids, one per engine cycle, and this
+   function upgraded older saved rows INTO those ids. The ids are gone again — slip is now a
+   property of the machinery split alone — so every LNG-family id collapses back to "LNG".
+   Note what this means for a returning user: their saved slip no longer comes from the fuel
+   name, it comes from the split + the Settings ME/AE consumer classes, so an old workspace
+   can compute a different CH4 figure than it did before. That is the intended effect.
+   fr.engine is left on the row untouched: harmless, and it preserves what the file said. */
 function migrateState(s){
-  const map = { "LNG Otto (dual fuel medium speed)":"LNG", "LNG Otto (dual fuel slow speed)":"LNGOS",
-                "LNG Diesel (dual fuel slow speed)":"LNGDS", "LBSI":"LNGBSI" };
   for(const row of s.rows||[]) for(const fr of row.fuels||[])
-    if(fr.fuelId==="LNG" && fr.engine && map[fr.engine]) fr.fuelId = map[fr.engine];
+    if(fr.fuelId) fr.fuelId = normFuelId(fr.fuelId);
   /* 2026-07-16 additions: AE consumer class, FuelEU allocation method, machinery split */
-  if(!s.lngEngineDefaultAux) s.lngEngineDefaultAux = s.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+  /* 2026-08-15b: this used to COPY the ME class into a legacy state that had no AE class. With the
+     ME default now slow-speed diesel that copy could produce a slow-speed AUXILIARY, which cannot
+     exist. Legacy states therefore land on 4-stroke Otto medium speed — the near-universal
+     auxiliary — rather than inheriting whatever the main engine is. */
+  if(!s.lngEngineDefaultAux) s.lngEngineDefaultAux = "LNG Otto (dual fuel medium speed)";
   if(!s.fueleuAlloc) s.fueleuAlloc = "optimal";
   /* 2026-08-10: sessions saved before the FuelEU/EEA split default to "not incorporated",
      which is both the correct position today AND the one that changes their numbers — a
@@ -1854,6 +1890,14 @@ function applyImport(res, label, extraNotes, reports, vessel){
          a valid type). Applies to both REPLACE and APPEND — same physical ship either way. */
       if(vessel){
         S.ship = S.ship || {};
+        /* 2026-08-15b (owner instruction): a NEW ship also resets the LNG main-engine consumer
+           class to the 2-stroke diesel cycle (0.2%). "New" = the file's IMO differs from the one
+           already in Settings, or Settings has no vessel yet. Deliberately NOT done on every
+           import: re-importing the SAME ship must never overwrite a class the user corrected by
+           hand in Settings. The AE class is left alone (auxiliaries are 4-stroke medium-speed
+           Otto — a slow-speed auxiliary does not exist). The MDA file has no engine-cycle column,
+           so this is a default, not a derivation. Compare IMO before the overwrite below. */
+        if(isNewVesselForEngineDefault(S.ship.imo, vessel.imo)) S.lngEngineDefault = ME_DEFAULT_CLASS;
         S.ship.name = vessel.name || "";
         S.ship.imo  = vessel.imo  || "";
         S.ship.capacity = (vessel.dwt!=null) ? vessel.dwt : "";
@@ -1878,11 +1922,11 @@ function applyImport(res, label, extraNotes, reports, vessel){
 
 /* ---------- shared input widgets ---------- */
 /* short display labels for the fuel picker + breakdown Excel export only (2026-07-19, Aurvin) —
-   drops the regulation/pathway suffix (RED II, RFNBO, fossil/natural-gas) and collapses the four
-   LNG engine-cycle entries to their CH4 slip %; engine.js FUELS[].name (used for calculations,
-   the Calculations tab and everywhere else) is untouched. */
+   drops the regulation/pathway suffix (RED II, RFNBO, fossil/natural-gas); engine.js FUELS[].name
+   (used for calculations, the Calculations tab and everywhere else) is untouched.
+   2026-08-15: the four "LNG (x%)" entries are gone — there is one LNG, and its slip % is decided
+   by the machinery split, not by the fuel name. Do not reintroduce a slip % into this label. */
 const FUEL_SHORT = {
-  LNGDS:"LNG (0.2%)", LNGOS:"LNG (1.7%)", LNG:"LNG (3.1%)", LNGBSI:"LNG (2.6%)",
   METH:"Methanol", NH3:"Ammonia", H2:"Hydrogen",
   BDSL:"Bio-diesel", HVO:"HVO", BLNG:"Bio-LNG", BMET:"Bio-methanol", ETOH:"Ethanol",
   EDSL:"e-diesel", EMET:"e-methanol", ELNG:"e-LNG", ENH3:"e-ammonia", EH2:"e-hydrogen"
@@ -1917,9 +1961,14 @@ function updTonnes(ri, fi, v){
 
 function fuelLineHtml(ri, fi, fr){
   const f = FUEL_BY_ID[fr.fuelId]||{};
-  const needE = f.bio, needW = f.rfnbo||f.custom, needEng = f.slip && !f.engineClass, isCustom = f.custom;
+  const needE = f.bio, needW = f.rfnbo||f.custom, isCustom = f.custom;
   let extra = "";
-  if(needEng) extra += `<div><label>Fuel consumer (slip)</label><select onchange="upd('rows.${ri}.fuels.${fi}.engine',this.value)">${engineOptions(fr.engine||S.lngEngineDefault)}</select></div>`;
+  /* 2026-08-15: the per-row "Fuel consumer (slip)" dropdown that used to sit here (on bio-LNG
+     and e-LNG) is REMOVED. It was a second place to declare an engine class, competing with the
+     machinery split, and the split already wins in machineParts(). Slip now has exactly one
+     input: the ME/AE/BLR/OTH boxes on the line (⚙ Machinery split in Settings shows them),
+     with the ME and AE cycles set once per vessel in Settings. Do not add a per-row engine
+     selector back — that is the conflict this change was made to remove. */
   if(needE) extra += `<div><label>E value gCO₂eq/MJ ${f.eNote?'<span class="flag" title="'+esc(f.eNote)+'">check</span>':""}</label><input type="number" step="any" value="${fr.E??f.eDefault??""}" placeholder="${f.eDefault??"certified E"}" oninput="upd('rows.${ri}.fuels.${fi}.E',num(this.value))"></div>`;
   if(needW) extra += `<div><label>WtT gCO₂eq/MJ (cert)</label><input type="number" step="any" value="${fr.wtt??""}" placeholder="certificate" oninput="upd('rows.${ri}.fuels.${fi}.wtt',num(this.value))"></div>`;
   if(isCustom) extra += `<div><label>LCV MJ/g</label><input type="number" step="any" value="${fr.lcv??""}" oninput="upd('rows.${ri}.fuels.${fi}.lcv',num(this.value))"></div>
@@ -7712,8 +7761,8 @@ function renderVessel(){
         <div><label>Capacity (${type.capUnit})</label><input type="number" step="any" min="0" value="${S.ship.capacity??""}" oninput="upd('ship.capacity',num(this.value))"></div>
       </div>
       <div class="inline">
-        <div><label>Main-engine consumer class (LNG slip) ${info("Drives the CH₄-slip class for the <b>main-engine share</b> of LNG-family fuels whenever a machinery split is present (MDA imports / the ⚙ Machinery split editor), and remains the default for bio-LNG / e-LNG lines without a picked consumer. Fossil LNG lines without a split keep the engine cycle chosen in the fuel name itself.")}</label><select onchange="upd('lngEngineDefault',this.value)">${engineOptions(S.lngEngineDefault)}</select></div>
-        <div><label>Auxiliary-engine consumer class (LNG slip) ${info("Drives the CH₄-slip class for the <b>auxiliary-engine share</b> of LNG-family fuels whenever a machinery split is present. Boiler and 'Other' shares are slip-free — Annex II slip factors apply to engines only (agreed 2026-07-16).")}</label><select onchange="upd('lngEngineDefaultAux',this.value)">${engineOptions(S.lngEngineDefaultAux||S.lngEngineDefault)}</select></div>
+        <div><label>Main-engine consumer class (LNG slip) ${info("The engine cycle of this ship's <b>main engine</b>. It sets the CH₄-slip factor for the <b>ME share</b> of every LNG-family fuel line (LNG, bio-LNG, e-LNG).<br><br>Since 2026-08-15 this is the <b>only</b> place the main-engine cycle is set — the fuel dropdown no longer carries a slip %, because one bunkered LNG line feeds ME and AE at once and those are often different cycles.<br><br>Set it once per vessel; it rarely changes.")}</label><select onchange="upd('lngEngineDefault',this.value)">${engineOptions(S.lngEngineDefault)}</select></div>
+        <div><label>Auxiliary-engine consumer class (LNG slip) ${info("The engine cycle of this ship's <b>auxiliary engines</b>, setting the CH₄-slip factor for the <b>AE share</b> of LNG-family fuel lines.<br><br><b>Boiler</b> and <b>Other</b> shares are slip-free — Annex II slip factors apply to engines only (agreed 2026-07-16).<br><br>⚠ A fuel line with <b>no machinery split at all</b> is treated as 100% Other, so it carries <b>no slip</b> (owner decision, 2026-08-15). MDA/OVD imports always bring a split; hand-entered lines do not, so enter the ME/AE tonnes on the line if you want slip counted. Tick <b>⚙ Machinery split</b> below to show those boxes.")}</label><select onchange="upd('lngEngineDefaultAux',this.value)">${engineOptions(S.lngEngineDefaultAux||S.lngEngineDefault)}</select></div>
       </div>
       <div class="inline">
         <div><label>Wind-assist P<sub>Wind</sub>/P<sub>Prop</sub></label><input type="number" step="0.01" min="0" max="1" value="${S.windRatio??0}" oninput="upd('windRatio',num(this.value))" title="0.05→fwind 0.99 · 0.10→0.97 · ≥0.15→0.95 (fueleu-annexi)"></div>
@@ -7762,7 +7811,7 @@ function renderVessel(){
       <div class="inline">
         ${FUEL_BY_ID[S.breakevenFuelId]?.bio?`<div><label>E value gCO₂eq/MJ</label><input type="number" step="any" value="${S.breakevenE??""}" placeholder="${FUEL_BY_ID[S.breakevenFuelId].eDefault??"certified"}" oninput="upd('breakevenE',num(this.value))"></div>`:""}
         ${FUEL_BY_ID[S.breakevenFuelId]?.rfnbo?`<div><label>WtT gCO₂eq/MJ (cert)</label><input type="number" step="any" value="${S.breakevenWtt??""}" oninput="upd('breakevenWtt',num(this.value))"></div>`:""}
-        ${(FUEL_BY_ID[S.breakevenFuelId]?.slip && !FUEL_BY_ID[S.breakevenFuelId]?.engineClass)?`<div><label>Fuel consumer</label><select onchange="upd('breakevenEngine',this.value)">${engineOptions(S.breakevenEngine||S.lngEngineDefault)}</select></div>`:""}
+        ${FUEL_BY_ID[S.breakevenFuelId]?.slip?`<div><label>Fuel consumer</label><select onchange="upd('breakevenEngine',this.value)">${engineOptions(S.breakevenEngine||S.lngEngineDefault)}</select></div>`:""}
         <div></div>
       </div>
     </div>
@@ -8283,7 +8332,10 @@ HVO + MGO
     </tr>
     ${FUELS.filter(f=>!f.custom).map(f=>{
       const AR4={ch4:25,n2o:298}, AR5={ch4:28,n2o:265};
-      const cls = f.engineClass || S.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+      /* 2026-08-15: no fuel carries an engineClass any more, so this reference table shows the
+         slip a line WOULD get on the main engine, i.e. the Settings ME consumer class. The note
+         under the table says so. Actual per-line slip comes from the machinery split. */
+      const cls = S.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
       const s = (f.slip? (SLIP[cls]??0) : 0)/100;
       const ttwF = g => (1-s)*(f.cf + g.ch4*f.ch4 + g.n2o*f.n2o) + s*g.ch4;
       const ttw4=ttwF(AR4), ttw5=ttwF(AR5);
@@ -8294,7 +8346,7 @@ HVO + MGO
       const wttFCell= wttF!=null? n(wttF,4) : "—";
       const wtw = (t,w)=> w!=null? n(t+w,4) : "—";
       const wtwI= (t,w)=> w!=null? n(t/f.lcv+w,2) : "—";
-      const slipNote = f.slip && !f.engineClass ? ' <span class="note" title="bio-/e-LNG: slip follows the consumer selected on the row; shown here for the current default class">*</span>' : "";
+      const slipNote = f.slip ? ' <span class="note" title="slip follows the machinery split on each line: ME → Main-engine class, AE → Auxiliary-engine class, Boiler and Other → 0%. Shown here for the Main-engine class.">*</span>' : "";
       return `<tr><td>${esc(f.name)}${(f.lcvNote&&f.lcvNote.indexOf("FILL-IN")===0)?' <span class="flag" title="'+esc(f.lcvNote)+'">LCV FILL-IN</span>':""}${f.eNote?' <span class="flag" title="'+esc(f.eNote)+'">E illustrative</span>':""}</td><td>${f.cls}</td>
       <td class="num">${n(f.lcv,4)}</td><td class="num">${f.slip? n(s*100,1)+slipNote : "—"}</td>
       <td class="num">${n(f.cf,3)}</td><td class="num">${n(f.ch4,5)}${f.tbm&&f.tbm.includes("ch4")?" †":""}</td><td class="num">${n(f.n2o,5)}${f.tbm&&f.tbm.includes("n2o")?" †":""}</td>
@@ -8305,8 +8357,7 @@ HVO + MGO
       <td class="num">${wtwI(ttw4,wttI)}</td><td class="num">${wtwI(ttw5,wttI)}</td></tr>`;}).join("")}
     </table></div>
     <p class="note">† TBM/N-A in the source table — resolved per the Annex II rule: “the highest default value of the fuel class in the same column shall be used” (fossil class: CH₄ 0.00005, N₂O 0.00018).
-    * Bio-LNG / e-LNG slip depends on the fuel consumer chosen on each row — the table shows the current default class (${esc(S.lngEngineDefault||"LNG Otto (dual fuel medium speed)")}).
-    Fossil LNG rows carry their engine cycle in the fuel itself: slip 0.2% (Low speed diesel) · 1.7% (Low speed Otto) · 3.1% (Medium speed Otto) · 2.6% (LBSI).
+    * CH₄ slip is a property of the <b>consumer</b>, not of the fuel (changed 2026-08-15). On every line the ME share takes the Main-engine consumer class, the AE share the Auxiliary-engine class, and the Boiler and Other shares are slip-free. The Slip % column above is therefore illustrative — it shows the current Main-engine class (${esc(S.lngEngineDefault||"LNG Otto (dual fuel medium speed)")}); Annex II values are 0.2% (LNG diesel, slow speed) · 1.7% (Otto, slow speed) · 3.1% (Otto, medium speed) · 2.6% (LBSI). A line with <b>no machinery split</b> counts as 100% Other and so carries <b>no slip</b>.
     Biofuel WtT uses the illustrative default E where shown — replace with the certified BDN value on the row. FuelEU compliance always uses AR4-basis GWPs (25/298, locked); UK ETS uses AR5-basis (28/265, locked); the AR4/AR5 columns here are for reference and Scope-inventory comparison.</p>
   </div>
 
@@ -8959,10 +9010,16 @@ function runSelfTests(){
   ck("EU ETS phase-in 2024", etsPhaseIn(2024), 0.4, 0);
   const s3={year:2025,ship:{typeId:"tanker",capacity:50000},rows:[{kind:"voyage",from:"EEA",to:"OTHER",dist:1000,cargo:0,fuels:[{fuelId:"HFO",tonnes:1000}]}]};
   ck("EU ETS 50% leg: 1000t HFO → 1557 tCO2", computeAll(s3).ets.covered_t_co2, 1557, 0.001);
-  const s4={year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LNG Otto (dual fuel medium speed)",rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100}]}]};
+  /* 2026-08-15: these two fixtures gained an explicit all-ME machinery split. They exist to test
+     the AR4/AR5 GWP selector, which only bites on the CH4 SLIP term — and since this session slip
+     comes solely from the split, a split-free fixture would have silently become a 0% test and
+     stopped exercising the selector at all. Expected values are UNCHANGED (100 t on a medium-speed
+     Otto ME = 3.1% slip, exactly what these lines asserted before). */
+  const meSplit100 = { ME:100, AE:0, BLR:0, OTH:0 };
+  const s4={year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LNG Otto (dual fuel medium speed)",rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100,split:meSplit100}]}]};
   ck("UK ETS ME_ETS: 100t LNG Otto MS", computeAll(s4).ukets.tco2e, 96.9*2.75+28*3.1+265*(96.9*0.00011), 0.001);
   /* AR4/AR5 GWP selector — affects EU ETS 2026+ CO2e ONLY; FuelEU & UK ETS locked */
-  const sAR={year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LNG Otto (dual fuel medium speed)",rows:[{kind:"voyage",from:"EEA",to:"EEA",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100}]}]};
+  const sAR={year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LNG Otto (dual fuel medium speed)",rows:[{kind:"voyage",from:"EEA",to:"EEA",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100,split:meSplit100}]}]};
   const rAR5=computeAll(Object.assign({},sAR,{arSet:"AR5"})), rAR4=computeAll(Object.assign({},sAR,{arSet:"AR4"})), rARdef=computeAll(sAR);
   ck("EU ETS CO2e AR5 (default): 100t LNG", rAR5.ets.covered_t_co2e, 96.9*2.75+28*3.1+265*(96.9*0.00011), 0.001);
   ck("EU ETS CO2e AR4: 100t LNG", rAR4.ets.covered_t_co2e, 96.9*2.75+25*3.1+298*(96.9*0.00011), 0.001);
@@ -9080,16 +9137,48 @@ function runSelfTests(){
   /* ---- empty start / LNG engine classes / POC scope (added 2026-07-15) ---- */
   try{
     ckT("Default state starts EMPTY (no rows) and computes without error", DEFAULT_STATE.rows.length===0 && !!computeAll(JSON.parse(JSON.stringify(DEFAULT_STATE))));
-    const lngUK = id => computeAll({year:2026,ship:{typeId:"lng",capacity:80000},rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:id,tonnes:100}]}]}).ukets.tco2e;
-    ck("LNG Low-speed diesel (slip 0.2%): UK ETS CO2e for 100 t", lngUK("LNGDS"), 282.9592, 0.001);
+    /* 2026-08-15 REWRITTEN (owner instruction, same session). These tests used to drive slip by
+       picking one of four LNG fuel ids. Those ids are gone: slip is now a property of the
+       machinery split, so the same regulatory assertions are made by putting all 100 t on the
+       MAIN ENGINE and varying the Settings ME consumer class. The Annex II values under test
+       (0.2 / 1.7 / 2.6 / 3.1 %) and the expected 282.9592 t are UNCHANGED — only the input path
+       changed. Justification for touching expectations: the owner's decision this session to
+       make the machinery split the single source of slip. */
+    const allME = t => ({ ME:t, AE:0, BLR:0, OTH:0 });
+    const lngUK = cls => computeAll({year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:cls,
+      rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100,split:allME(100)}]}]}).ukets.tco2e;
+    ck("LNG on ME, diesel-slow class (slip 0.2%): UK ETS CO2e for 100 t", lngUK("LNG Diesel (dual fuel slow speed)"), 282.9592, 0.001);
     ckT("LNG class slip ordering: diesel-slow < Otto-slow < LBSI < Otto-medium (UK CO2e)",
-        lngUK("LNGDS")<lngUK("LNGOS") && lngUK("LNGOS")<lngUK("LNGBSI") && lngUK("LNGBSI")<lngUK("LNG"));
-    const lngGhgie = id => computeAll({year:2026,ship:{typeId:"lng",capacity:80000},rows:[{kind:"voyage",from:"EEA",to:"EEA",dist:500,cargo:0,fuels:[{fuelId:id,tonnes:100}]}]}).fueleu.ghgie;
-    ckT("FuelEU intensity follows the LNG engine class (diesel-slow cleanest)",
-        lngGhgie("LNGDS")<lngGhgie("LNGOS") && lngGhgie("LNGOS")<lngGhgie("LNGBSI") && lngGhgie("LNGBSI")<lngGhgie("LNG"));
-    ckT("engineClass wins over lngEngineDefault", Math.abs(computeAll({year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LBSI",rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"LNGDS",tonnes:100}]}]}).ukets.tco2e - 282.9592) < 0.001);
-    ckT("saved-state migration maps old LNG+engine to new fuel id",
-        migrateState({rows:[{kind:"voyage",fuels:[{fuelId:"LNG",engine:"LNG Diesel (dual fuel slow speed)"}]}]}).rows[0].fuels[0].fuelId==="LNGDS");
+        lngUK("LNG Diesel (dual fuel slow speed)")<lngUK("LNG Otto (dual fuel slow speed)") &&
+        lngUK("LNG Otto (dual fuel slow speed)")<lngUK("LBSI") && lngUK("LBSI")<lngUK("LNG Otto (dual fuel medium speed)"));
+    const lngGhgie = cls => computeAll({year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:cls,
+      rows:[{kind:"voyage",from:"EEA",to:"EEA",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100,split:allME(100)}]}]}).fueleu.ghgie;
+    ckT("FuelEU intensity follows the ME consumer class (diesel-slow cleanest)",
+        lngGhgie("LNG Diesel (dual fuel slow speed)")<lngGhgie("LNG Otto (dual fuel slow speed)") &&
+        lngGhgie("LNG Otto (dual fuel slow speed)")<lngGhgie("LBSI") && lngGhgie("LBSI")<lngGhgie("LNG Otto (dual fuel medium speed)"));
+    /* THE core rule of 2026-08-15: no split data at all ⇒ 100% Other ⇒ NO slip, regardless of
+       what the Settings ME class says. If this test ever fails, the single-source-of-truth rule
+       has been broken — read the machineParts() header before changing anything. */
+    const lngNoSplit = computeAll({year:2026,ship:{typeId:"lng",capacity:80000},lngEngineDefault:"LNG Otto (dual fuel medium speed)",
+      rows:[{kind:"voyage",from:"UK",to:"UK",dist:500,cargo:0,fuels:[{fuelId:"LNG",tonnes:100}]}]}).ukets.tco2e;
+    ck("No machinery split ⇒ all LNG to Other ⇒ zero slip (100 t)", lngNoSplit, 100*(2.750+265*0.00011), 0.001);
+    ckT("ME class cannot override a missing split", Math.abs(lngNoSplit - lngUK("LNG Otto (dual fuel medium speed)")) > 50);
+    /* ---- 2026-08-15b (owner instruction): ME default = 2-stroke diesel cycle ---- */
+    ckT("Factory default: ME class is LNG Diesel (dual fuel slow speed), 0.2%",
+        DEFAULT_STATE.lngEngineDefault==="LNG Diesel (dual fuel slow speed)" && SLIP[DEFAULT_STATE.lngEngineDefault]===0.2);
+    ckT("Factory default: AE class stays Otto medium speed 3.1% (no slow-speed auxiliary exists)",
+        DEFAULT_STATE.lngEngineDefaultAux==="LNG Otto (dual fuel medium speed)" && SLIP[DEFAULT_STATE.lngEngineDefaultAux]===3.1);
+    ckT("Legacy state with no AE class lands on Otto medium speed, NOT a copy of the ME class",
+        migrateState({lngEngineDefault:"LNG Diesel (dual fuel slow speed)",rows:[]}).lngEngineDefaultAux==="LNG Otto (dual fuel medium speed)");
+    ckT("MDA import resets ME class for a FRESH setup (no IMO in Settings)", isNewVesselForEngineDefault("", "9407500")===true);
+    ckT("MDA import resets ME class for a DIFFERENT ship", isNewVesselForEngineDefault("9266906","9407500")===true);
+    ckT("Re-importing the SAME ship does NOT overwrite a hand-corrected ME class", isNewVesselForEngineDefault("9407500","9407500")===false);
+    ckT("Same IMO with stray whitespace still counts as the same ship", isNewVesselForEngineDefault(" 9407500 ","9407500")===false);
+    ckT("File with NO IMO cannot prove a new ship — ME class left alone", isNewVesselForEngineDefault("9407500","")===false);
+    /* The 2026-07-15 migration (LNG+engine → per-cycle id) is REVERSED as of 2026-08-15. */
+    ckT("saved-state migration collapses retired LNG ids back to LNG",
+        migrateState({rows:[{kind:"voyage",fuels:[{fuelId:"LNGDS"},{fuelId:"LNGOS"},{fuelId:"LNGBSI"},{fuelId:"HFO"}]}]})
+          .rows[0].fuels.map(fr=>fr.fuelId).join(",")==="LNG,LNG,LNG,HFO");
     const pocState = poc => ({year:2026,ship:{typeId:"bulk",capacity:45000},rows:[{kind:"port",zone:"EEA",poc,fuels:[{fuelId:"MDO",tonnes:10}]}]});
     const rON=computeAll(pocState(true)), rOFF=computeAll(pocState(false)), rDEF=computeAll(pocState(undefined));
     ckT("POC on: EEA berth in EU ETS + FuelEU scope", rON.ets.basis_t>31 && rON.fueleu.E_total>0);

@@ -33,14 +33,18 @@ const FUELS = [
   { id:"HFO",  name:"HFO",  cls:"Fossil", lcv:0.0405, wtt:13.5, cf:3.114, ch4:0.00005, n2o:0.00018 },
   { id:"LFO",  name:"LFO",  cls:"Fossil", lcv:0.041,  wtt:13.2, cf:3.151, ch4:0.00005, n2o:0.00018 },
   { id:"MDO",  name:"MGO", cls:"Fossil", lcv:0.0427, wtt:14.4, cf:3.206, ch4:0.00005, n2o:0.00018 },
-  /* LNG split by fuel-consumer class (Annex II col.9 slip values) — engineClass fixes the
-     slip per fuel so the engine cycle is chosen directly in the fuel dropdown (2026-07-15).
-     id "LNG" stays on Medium speed Otto (highest slip 3.1%) = conservative default for
-     imports that only say "LNG". */
-  { id:"LNGDS",  name:"LNG (Low speed diesel cycle)",  cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Diesel (dual fuel slow speed)" },
-  { id:"LNGOS",  name:"LNG (Low speed Otto cycle)",    cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Otto (dual fuel slow speed)" },
-  { id:"LNG",    name:"LNG (Medium speed Otto cycle)", cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LNG Otto (dual fuel medium speed)" },
-  { id:"LNGBSI", name:"LNG (LBSI)",                    cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true, engineClass:"LBSI" },
+  /* LNG — ONE fuel, no engine cycle baked into the fuel name (2026-08-15, owner instruction).
+     WHY: CH4 slip is a property of the BURNER, not of the fuel. One bunkered LNG line feeds ME
+     and AE simultaneously and those are routinely different cycles (e.g. 2-stroke Otto ME 1.7%
+     + 4-stroke Otto medium-speed AE 3.1%), so a slip% attached to the fuel cannot describe the
+     line at all. Before this date the four ids below (LNGDS/LNGOS/LNG/LNGBSI) each pinned an
+     engineClass, which machineParts() then IGNORED for the ME/AE shares whenever a split was
+     present — two competing sources of truth, with the dropdown silently losing. Deleting the
+     fuel-level property removes the conflict by construction rather than arbitrating it.
+     Slip now comes only from the machinery split: ME → Settings ME consumer class, AE →
+     Settings AE consumer class, Boiler and Other → 0% (Annex II slip applies to engines only).
+     Old ids are aliased to "LNG" on load/import by LNG_ALIAS below. */
+  { id:"LNG",    name:"LNG", cls:"Fossil", lcv:0.0491, wtt:18.5, cf:2.750, ch4:0, n2o:0.00011, slip:true },
   { id:"LPGP", name:"LPG (Propane)", cls:"Fossil", lcv:0.046, wtt:7.8, cf:3.000, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
   { id:"LPGB", name:"LPG (Butane)",  cls:"Fossil", lcv:0.046, wtt:7.8, cf:3.030, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
   { id:"METH", name:"Methanol (fossil, natural gas)", cls:"Fossil", lcv:0.0199, wtt:31.3, cf:1.375, ch4:0.00005, n2o:0.00018, tbm:["ch4","n2o"] },
@@ -64,6 +68,15 @@ const FUELS = [
   { id:"CUST", name:"Custom fuel (enter all factors)", cls:"Custom", custom:true, lcv:0.040, wtt:0, cf:0, ch4:0, n2o:0 }
 ];
 const FUEL_BY_ID = Object.fromEntries(FUELS.map(f=>[f.id,f]));
+
+/* Backward compatibility (2026-08-15): saved workspaces (localStorage emcalc_state) and
+   OVD/MDA imports written before the LNG collapse carry the retired per-cycle ids. They all
+   map to the single "LNG" fuel; the slip that used to be pinned by the id now comes from the
+   machinery split + the Settings consumer classes, so an old file may compute a different CH4
+   figure than it did before — that is the intended effect of the change, not a bug.
+   CLAUDE.md requires old workspaces stay loadable, so never delete this map. */
+const LNG_ALIAS = { LNGDS:"LNG", LNGOS:"LNG", LNGBSI:"LNG" };
+function normFuelId(id){ return LNG_ALIAS[id] || id; }
 
 /* ---------- CII: G2 reference-line parameters (chunk imo-g2-s4, MEPC.353(78) Table 1)
    and G4 dd vectors (chunk imo-g4-s4, MEPC.354(78) Table 1). ---------- */
@@ -150,11 +163,14 @@ const SCC_FACTORS = {
                    VLSFO:{ wtt:0.615, ttw:3.257, label:"MDO/MGO (VLSFO), sulphur 0.1–0.5%" } } },
   LPGP: { def:{ wtt:0.361, ttw:3.051, label:"LPG (propane)" } },
   LPGB: { def:{ wtt:0.361, ttw:3.081, label:"LPG (butane)" } },
-  /* LNG: granular by propulsion plant — the methane-slip driven rows of Table 8 */
-  LNG:     { def:{ wtt:0.888, ttw:3.726, label:"LNG — Otto dual fuel (medium speed)" }, lng:true },
-  LNGOS:   { def:{ wtt:0.888, ttw:3.239, label:"LNG — Otto dual fuel (slow speed)" },   lng:true },
-  LNGDS:   { def:{ wtt:0.888, ttw:2.821, label:"LNG — LNG diesel" },                    lng:true },
-  LNGBSI:  { def:{ wtt:0.888, ttw:3.483, label:"LNG — LBSI" },                          lng:true },
+  /* LNG: granular by propulsion plant — the methane-slip driven rows of Table 8.
+     Re-keyed 2026-08-15 from four fuel ids onto ONE id + per-cycle variants, because the
+     retired ids (LNGOS/LNGDS/LNGBSI) no longer exist; the cycle now arrives as the engine
+     class from the machinery split, exactly as it already did for BLNG. Same four Table 8
+     rows, same numbers — only the lookup key changed. */
+  LNG:     { def:{ wtt:0.888, ttw:3.726, label:"LNG — Otto dual fuel (medium speed)" }, lng:true,
+             slowSpeed:{ wtt:0.888, ttw:3.239 }, diesel:{ wtt:0.888, ttw:2.821 },
+             lbsi:{ wtt:0.888, ttw:3.483 } },
   BLNG:    { def:{ wtt:1.445, ttw:0.981, label:"Bio-LNG — Otto dual fuel (medium speed)" }, bio:2.86, lng:true,
              slowSpeed:{ wtt:1.445, ttw:0.492 }, diesel:{ wtt:1.445, ttw:0.071 },
              lbsi:{ wtt:1.445, ttw:0.736 }, boiler:{ wtt:1.445, ttw:0.033 } },
@@ -169,6 +185,15 @@ const SCC_FACTORS = {
 /* LNG burned in a boiler / steam plant takes Table 8's "steam turbine & boilers" row */
 const SCC_LNG_BOILER = { wtt:0.888, ttw:2.783, label:"LNG — steam turbine & boilers" };
 const SCC_BLNG_BOILER = { wtt:1.445, ttw:0.033, label:"Bio-LNG — steam turbine & boilers" };
+/* App engine-class string → Table 8's own wording for the propulsion plant, so a granular label
+   reads "LNG — LNG diesel" the way the guidance names the row rather than echoing our internal
+   class string back ("LNG — LNG Diesel (dual fuel slow speed)"). Cosmetic only. 2026-08-15. */
+const SCC_PLANT_LABEL = {
+  "LNG Otto (dual fuel medium speed)":"Otto dual fuel (medium speed)",
+  "LNG Otto (dual fuel slow speed)":"Otto dual fuel (slow speed)",
+  "LNG Diesel (dual fuel slow speed)":"LNG diesel",
+  "LBSI":"LBSI"
+};
 /* Table 8 row for one fuel in one consumer. `machine` is ME/AE/BLR/OTH, `engine` the app's
    engine-class string. Granular where the data exists (the guidance's cascade: use the
    granular factor if you have the information, the default row if you do not), default
@@ -183,12 +208,21 @@ function sccFactor(fuel, engine, machine){
   let row = e.def, granular = false;
   if(e.lng){
     if(machine==="BLR"){ row = (fuel.id==="BLNG")? SCC_BLNG_BOILER : SCC_LNG_BOILER; granular = true; }
-    else if(fuel.id==="BLNG" && engine){
+    else if(engine){
+      /* 2026-08-15: this cycle match now runs for EVERY lng-family fuel, not just BLNG.
+         Fossil LNG used to skip it because its four fuel ids encoded the plant; they are gone,
+         so the engine class from the machinery split is the only source of the cycle. */
       const g = /slow speed/i.test(engine) && /otto/i.test(engine) ? e.slowSpeed
               : /diesel/i.test(engine) ? e.diesel
               : /lbsi/i.test(engine) ? e.lbsi : null;
-      if(g){ row = Object.assign({ label:e.def.label.replace(/—.*/,"— "+engine) }, g); granular = true; }
-    } else granular = true;      // the LNG ids already encode the propulsion plant
+      if(g){ row = Object.assign({ label:e.def.label.replace(/—.*/,"— "+(SCC_PLANT_LABEL[engine]||engine)) }, g); granular = true; }
+      else if(/medium speed/i.test(engine) && /otto/i.test(engine)) granular = true;   // def row IS that plant
+      /* else: "Other (no slip)" / unknown consumer → e.def, granular=false. SCC's own cascade
+         says use the default row when the machinery is not known, so this is deliberate — and
+         it means the Other share is slip-free under FuelEU/ETS but carries the default row's
+         embedded slip under SCC. The two regimes prescribe different cascades; do not "align"
+         them without an owner decision. Raised to owner 2026-08-15. */
+    }
   }
   return { wtt:row.wtt, ttw:row.ttw, bio:e.bio||0, label:row.label, granular };
 }
@@ -401,22 +435,39 @@ function ukSchemeFraction(row, y){
   return (E-cut)/(E-S);                                    // straddles 1 Jul → time-pro-rated
 }
 
-/* ---------- machinery split (2026-07-16, Aurvin) ----------
+/* ---------- machinery split (2026-07-16, Aurvin; rule changed 2026-08-15) ----------
    Imported MDA/OVD fuel lines may carry a per-consumer split fr.split = {ME, AE, BLR, OTH}
    in tonnes. For slip fuels, the ME share follows the Main-engine consumer class and the
    AE share the Auxiliary-engine class (both set in Settings); boiler and Other
    are slip-free (Annex II slip applies to engines only; agreed: Other treated like a
    boiler). Unallocated remainder → Other; an over-allocated split is scaled down
    pro-rata to the line total. Non-slip fuels are computed as one part (split retained
-   for display/OVD export only). */
+   for display/OVD export only).
+
+   ⚠ 2026-08-15, EXPLICIT OWNER DECISION — do not "fix" this back without asking.
+   A slip fuel with NO machinery split data now goes 100% to Other, i.e. 0% CH4 slip.
+   Until today it fell back to the fuel's own engineClass, or failing that the Settings
+   ME class (3.1% medium-speed Otto, the conservative default). The owner chose the 0%
+   behaviour so that slip has exactly ONE source of truth — the split — and no value can
+   ever contradict it. Consequence the owner accepted: a hand-entered LNG line with the
+   split boxes left empty reports zero methane, which understates FuelEU/UK ETS CH4 and
+   (from 2026) EU ETS CO2e. MDA/OVD imports always arrive with a split, so in practice
+   this only affects manual entry.
+
+   ⚠ The Settings checkbox S.showSplit is a DISPLAY toggle only (ui.js ~2103). It decides
+   whether the ME/AE/BLR/OTH boxes are visible; imports populate fr.split regardless of it.
+   This function must therefore key off the split DATA, never off that checkbox — otherwise
+   ticking a view option would silently move a compliance number. */
 function machineParts(fr, f, t, state){
-  const legacy = f.engineClass || fr.engine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
-  if(!f.slip || !fr.split) return [{ t, engine: legacy, m: null }];
+  const legacy = fr.engine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+  if(!f.slip) return [{ t, engine: legacy, m: null }];
+  const noSplit = [{ t, engine:"Other (no slip)", m:"OTH" }];   // 2026-08-15 owner rule, see above
+  if(!fr.split) return noSplit;
   const sp = fr.split;
   const me=Math.max(0,Number(sp.ME)||0), ae=Math.max(0,Number(sp.AE)||0),
         blr=Math.max(0,Number(sp.BLR)||0), oth0=Math.max(0,Number(sp.OTH)||0);
   const s = me+ae+blr+oth0;
-  if(s<=0) return [{ t, engine: legacy, m: null }];
+  if(s<=0) return noSplit;
   const k = s>t && s>0 ? t/s : 1;
   const oth = oth0*k + Math.max(0, t - s);            // unallocated remainder → Other (no slip)
   const meEng = state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
@@ -1121,7 +1172,11 @@ function computeAll(state){
   if(ghgie!=null && ghgie>T && state.breakevenFuelId){
     const bf = FUEL_BY_ID[state.breakevenFuelId];
     if(bf){
-      const engine = bf.engineClass || state.breakevenEngine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
+      /* 2026-08-15: bf.engineClass dropped (fuels no longer carry a cycle). The breakeven KPI is
+         a hypothetical substitute blend with no machinery split to read, so it keeps its own
+         consumer selector, defaulting to the vessel's ME class. This is not a second source of
+         truth for a real line — nothing here feeds S.rows. */
+      const engine = state.breakevenEngine || state.lngEngineDefault || "LNG Otto (dual fuel medium speed)";
       const bwtt = wttOf(bf, state.breakevenE, state.breakevenWtt);
       const bttw = ttwIntensity(bf, engine);
       const brwd = (bf.rfnbo && y>=2025 && y<=2033)?2:1;
