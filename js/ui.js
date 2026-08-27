@@ -425,6 +425,25 @@ function portSearch(q, limit){
   return starts.concat(contains).slice(0,limit);
 }
 const OVD_FUEL_MAP = { HFO:"HFO", LFO:"LFO", MGO:"MDO", MDO:"MDO", LPGP:"LPGP", LPGB:"LPGB", LNG:"LNG", M:"METH", E:"ETOH" };
+/* ---- THE TWO FUEL CODE SPACES (helper added 2026-08-28, after the third bug caused by them) --
+   A REPORT record (S.mdaReports) keys its `fuels` and its `mach.ME/AE/BLR` sub-objects by the
+   code the FILE uses — "MGO", "HFO", "M" — straight out of mdaFuel() in mdaToOVD().
+   A WORKSPACE ROW (S.rows) keys its fuel entries by the APP's fuel id, which parseOVD() derives
+   from those codes through OVD_FUEL_MAP above: MGO→MDO, M→METH, E→ETOH.
+   They coincide for HFO and diverge for everything else, so looking a report total up by a row's
+   fuelId returns undefined and the code silently does the wrong thing. That has now happened
+   THREE times: in fullscreen.js (fixed 2026-07-30), in vwPartWeight() below (found 2026-08-28,
+   silently time-prorated every non-HFO fuel on a Voyage-Wise split row), and in
+   clipRowToRange() in js/engine.js (found 2026-08-28 on the owner's BULLDOG file — every clipped
+   leg lost its MGO consumption, CO2e and EUAs entirely).
+   USE THIS FUNCTION whenever a report-side fuel code has to meet a row-side fuel id. An
+   unmapped code returns itself, so a fuel the map has never heard of is at least traceable
+   rather than turning into `undefined`. The in-app self-test "30-07 T4b: EVERY OVD_FUEL_MAP
+   target is a real engine fuel with a Cf" guards the map's targets. */
+function ovdFuelId(code){
+  const c = String(code==null?"":code).toUpperCase();
+  return OVD_FUEL_MAP[c] || c;
+}
 
 function parseCSV(text){
   const rows=[]; let row=[], cell="", q=false;
@@ -6331,7 +6350,19 @@ function vwPartWeight(reps, row, a, b){
   const all=(reps||[]).filter(r=>inWin(r.t,row.tStart,row.tEnd));
   const part=all.filter(r=>inWin(r.t,a,b));
   const sumD=l=>l.reduce((s,r)=>s+(Number(r.dist)||0),0);
-  const sumF=(l,id)=>l.reduce((s,r)=>s+(Number((r.fuels||{})[id])||0),0);
+  /* 2026-08-28 (bug fix): `id` arrives as the ROW's fuel id (vwSplitRows passes f.fuelId), but a
+     report keys its fuels by the FILE's code — so this used to return 0 for MDO/METH/ETOH etc.
+     (everything except HFO), the `t>0` test below then failed, and the fuel silently took the
+     TIME-proration fallback while `fallback:false` claimed it had been report-weighted. No mass
+     was lost — unlike the clipRowToRange sibling of this bug — but the split was not the
+     report-based one the comment above promises. Sum over every report code that maps to the id
+     asked for (MGO and MDO both map to MDO, so a file using both is added up, not picked from).
+     See ovdFuelId() next to OVD_FUEL_MAP for the two code spaces. */
+  const sumF=(l,id)=>l.reduce((s,r)=>{
+    const fs=r.fuels||{};
+    for(const k in fs) if(ovdFuelId(k)===id) s+=Number(fs[k])||0;
+    return s;
+  },0);
   const tf=()=>{ const t0=Date.parse(row.tStart), t1=Date.parse(row.tEnd), pa=Date.parse(a), pb=Date.parse(b);
                  return (isFinite(t0)&&isFinite(t1)&&t1>t0)? Math.max(0,Math.min(1,(pb-pa)/(t1-t0))) : 0.5; };
   if(!all.length) return { dist:tf(), fuel:()=>tf(), fallback:true };
@@ -9221,6 +9252,81 @@ function runSelfTests(){
                  dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
                const d=(r.rowDetails||[]).find(x=>x.kind==="voyage" && Math.abs(x.dist-80)<0.01);
                return !!d && !d.rangePart; })());
+    /* ---- 2026-08-28 (Aurvin, owner-reported defect): THE TWO FUEL CODE SPACES ----------------
+       On the owner's BULLDOG file, a clipped leg lost its MGO entirely — no consumption, no
+       CO2e, no EUAs — while HFO on the same leg was correct. Cause: a REPORT keys its fuels by
+       the FILE's code ("MGO") and a ROW by the APP's fuel id ("MDO"), so clipRowToRange()'s
+       report lookup by row-id returned nothing, zeroed the row's MDO entry, and then appended a
+       phantom {fuelId:"MGO"} entry that resolveFuel() rejects and the aggregation loop skips with
+       a bare `continue` — silently. See ovdFuelId() next to OVD_FUEL_MAP.
+       These checks are SYNTHETIC on purpose: the real MDA fixture used by
+       verify_workspace_rows.js burns HFO ONLY on the leg its window cuts, which is precisely why
+       the original 12 clip checks all passed while the defect was live. A guard that cannot fail
+       is not a guard — this one uses MGO, where the two code spaces disagree. */
+    ckT("30-08-28 T1: a clipped leg keeps a fuel whose FILE code differs from its APP id (MGO→MDO)",
+        (()=>{ const row={kind:"voyage", from:"OTHER", to:"EEA", tStart:"2026-03-01T00:00", tEnd:"2026-03-11T00:00",
+                          dist:1000, cargo:10000, fromPort:{c:"SGSIN",n:"Singapore"}, toPort:{c:"NLRTM",n:"Rotterdam"},
+                          fuels:[{fuelId:"HFO",tonnes:100,price:0},{fuelId:"MDO",tonnes:20,price:0}]};
+               /* 4 reports, 2 in the window; each carries the FILE's codes, MGO not MDO */
+               const reps=[{t:"2026-03-03T00:00",ts:"2026-03-01T00:00",dist:100,fuels:{HFO:10,MGO:2}},
+                           {t:"2026-03-05T00:00",ts:"2026-03-03T00:00",dist:100,fuels:{HFO:10,MGO:2}},
+                           {t:"2026-03-08T00:00",ts:"2026-03-05T00:00",dist:400,fuels:{HFO:40,MGO:8}},
+                           {t:"2026-03-10T00:00",ts:"2026-03-08T00:00",dist:400,fuels:{HFO:40,MGO:8}}];
+               const p=clipRowToRange(row, reps, "2026-03-04T00:00", "2026-03-09T00:00")[0];
+               if(!p || !p.rangePart) return false;
+               const md=(p.fuels||[]).find(f=>f.fuelId==="MDO"), hf=(p.fuels||[]).find(f=>f.fuelId==="HFO");
+               /* in-window reports are the 05th and the 08th: HFO 10+40, MGO 2+8 */
+               return !!md && Math.abs(md.tonnes-10)<0.001 && !!hf && Math.abs(hf.tonnes-50)<0.001
+                      /* and NO phantom entry under the file's own code */
+                      && !(p.fuels||[]).some(f=>f.fuelId==="MGO") && !p.rangeUnknownFuels; })());
+    ckT("30-08-28 T2: that MGO really reaches the ENGINE — consumption, CO2e and EUAs all move",
+        (()=>{ const mk=()=>({kind:"voyage", from:"OTHER", to:"EEA", tStart:"2026-03-01T00:00", tEnd:"2026-03-11T00:00",
+                          dist:1000, cargo:10000, fromPort:{c:"SGSIN",n:"Singapore"}, toPort:{c:"NLRTM",n:"Rotterdam"},
+                          fuels:[{fuelId:"HFO",tonnes:100,price:0},{fuelId:"MDO",tonnes:20,price:0}]});
+               const reps=[{t:"2026-03-03T00:00",ts:"2026-03-01T00:00",dist:100,fuels:{HFO:10,MGO:2}},
+                           {t:"2026-03-05T00:00",ts:"2026-03-03T00:00",dist:100,fuels:{HFO:10,MGO:2}},
+                           {t:"2026-03-08T00:00",ts:"2026-03-05T00:00",dist:400,fuels:{HFO:40,MGO:8}},
+                           {t:"2026-03-10T00:00",ts:"2026-03-08T00:00",dist:400,fuels:{HFO:40,MGO:8}}];
+               const df={fromISO:"2026-03-04T00:00",toISO:"2026-03-09T00:00",active:true};
+               const run=(rp)=>computeAll({year:2026, ship:{typeId:"bulk",capacity:45000}, rows:[mk()], mdaReports:rp, dateFilter:df});
+               const r=run(reps); const d=(r.rowDetails||[])[0];
+               if(!d || !d.rangePart) return false;
+               const ids=(d.fuels||[]).map(f=>f.id);
+               const md=(d.fuels||[]).find(f=>f.id==="MDO");
+               /* CONTROL: the same window over reports with the MGO key REMOVED. Note it is NOT
+                  enough to drop MDO from the row — the clip legitimately APPENDS a fuel the
+                  reports carry but the row does not (the derivation can move a fuel wholly across
+                  an arrival/departure boundary), so a row-side control would still gain MDO and
+                  the comparison would be vacuous. The reports are the only honest control. */
+               const noMgo=reps.map(x=>({t:x.t, ts:x.ts, dist:x.dist, fuels:{HFO:x.fuels.HFO}}));
+               const dn=(run(noMgo).rowDetails||[])[0];
+               return ids.indexOf("MDO")>=0 && ids.indexOf("HFO")>=0
+                      && !!md && Math.abs(md.tonnes-10)<0.001
+                      && (d.totalCO2e||0) > (dn.totalCO2e||0)+1        // MGO's CO2e is really in there
+                      && (d.euas||0)      > (dn.euas||0)+0.5           // and really in the EUAs
+                      && !r.warnings.some(w=>/FUEL NOT COUNTED/.test(w)); })());
+    ckT("30-08-28 T3: a fuel code the map has never heard of is WARNED about, not lost silently",
+        (()=>{ const row={kind:"voyage", from:"OTHER", to:"EEA", tStart:"2026-03-01T00:00", tEnd:"2026-03-11T00:00",
+                          dist:1000, cargo:10000, fromPort:{c:"SGSIN",n:"Singapore"}, toPort:{c:"NLRTM",n:"Rotterdam"},
+                          fuels:[{fuelId:"HFO",tonnes:100,price:0}]};
+               const reps=[{t:"2026-03-05T00:00",ts:"2026-03-03T00:00",dist:100,fuels:{HFO:10,ZZUNOBTAINIUM:5}},
+                           {t:"2026-03-08T00:00",ts:"2026-03-05T00:00",dist:400,fuels:{HFO:40,ZZUNOBTAINIUM:5}}];
+               const r=computeAll({year:2026, ship:{typeId:"bulk",capacity:45000}, rows:[row], mdaReports:reps,
+                         dateFilter:{fromISO:"2026-03-04T00:00",toISO:"2026-03-09T00:00",active:true}});
+               return r.warnings.some(w=>/FUEL NOT COUNTED ON A PARTIAL ROW/.test(w) && /ZZUNOBTAINIUM/.test(w)); })());
+    ckT("30-08-28 T4: vwPartWeight weights MGO BY REPORTS, not by the time fallback",
+        (()=>{ /* row runs 10 days; the part is the LAST 2 days but carries 80% of the MGO, so a
+                  report-weighted split and a time-proportional one cannot be confused (0.8 vs 0.2) */
+               const row={kind:"voyage", tStart:"2026-03-01T00:00", tEnd:"2026-03-11T00:00", dist:1000,
+                          fuels:[{fuelId:"MDO",tonnes:100,price:0}]};
+               const reps=[{t:"2026-03-05T00:00",dist:200,fuels:{MGO:20}},
+                           {t:"2026-03-10T00:00",dist:800,fuels:{MGO:80}}];
+               const w=vwPartWeight(reps, row, "2026-03-09T00:00", "2026-03-11T00:00");
+               const got=w.fuel("MDO");
+               return w.fallback===false && Math.abs(got-0.8)<0.001; })());
+    ckT("30-08-28 T5: ovdFuelId maps the file's codes to app ids and passes unknowns through",
+        ovdFuelId("MGO")==="MDO" && ovdFuelId("mgo")==="MDO" && ovdFuelId("HFO")==="HFO"
+        && ovdFuelId("M")==="METH" && ovdFuelId("E")==="ETOH" && ovdFuelId("ZZNOPE")==="ZZNOPE");
     ckT("Date range drops a leg wholly before From (leg1 excluded, only leg2 80 nm remains)",
         (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
                  dateFilter:{fromISO:"2024-05-26T12:00",toISO:"2024-05-28T00:00",active:true}});

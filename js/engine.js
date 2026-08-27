@@ -623,16 +623,37 @@ function clipRowToRange(row, reports, fromISO, toISO){
   }
   const inWin=mine.filter(r=>{ const t=_splitMs(r.t); return t>=from && t<=to; });
   if(!inWin.length) return [];         // overlaps the window but has no report dated inside it
-  /* raw sums of the in-window reports (owner's decision 3) */
+  /* raw sums of the in-window reports (owner's decision 3).
+     ⚠ TWO FUEL CODE SPACES — the defect fixed on 2026-08-28. A REPORT record keys its `fuels`
+     (and its `mach` sub-objects) by the code the FILE uses, straight out of mdaFuel() in
+     mdaToOVD: "MGO", "HFO", "LFO"…  A WORKSPACE ROW keys its fuel entries by the APP's fuel id,
+     which parseOVD() derives through OVD_FUEL_MAP: "MGO" → "MDO", "M" → "METH", "E" → "ETOH".
+     The two agree for HFO and diverge for everything else. The first version of this function
+     looked report totals up by the ROW's id, so on the owner's BULLDOG file every clipped leg
+     lost its MGO: fTot["MDO"] was undefined → the row's MDO entry was zeroed, and the leftover
+     "MGO" total was then appended as a fuel entry whose id is not in FUEL_BY_ID, which
+     resolveFuel() returns null for and the aggregation loop below SILENTLY `continue`s past
+     (js/engine.js ~810). Hence three symptoms from one cause — no consumption, no CO2e, no EUA
+     for that fuel — and no warning anywhere. Normalise report codes to app ids on the way in,
+     using the SAME map parseOVD uses, so both sides speak one language.
+     OVD_FUEL_MAP lives in js/ui.js, which loads AFTER this file; that is safe because this runs
+     at call time, long after both files are parsed. The typeof guard is for engine.js being
+     loaded on its own, where an unmapped code falls back to itself. */
+  const _repFuelId = (code)=>{
+    if(typeof ovdFuelId==="function") return ovdFuelId(code);   // the one shared converter, js/ui.js
+    const c = String(code||"").toUpperCase();                    // engine.js loaded on its own
+    const M = (typeof OVD_FUEL_MAP!=="undefined") ? OVD_FUEL_MAP : null;
+    return (M && M[c]) || c;
+  };
   const fTot={}, mTot={ ME:{}, AE:{}, BLR:{} };
   let dist=0;
   for(const r of inWin){
     dist += Number(r.dist)||0;
     const fs=r.fuels||{};
-    for(const id in fs) fTot[id]=(fTot[id]||0)+(Number(fs[id])||0);
+    for(const k in fs){ const id=_repFuelId(k); fTot[id]=(fTot[id]||0)+(Number(fs[k])||0); }
     if(r.mach) for(const m of ["ME","AE","BLR"]){
       const g=r.mach[m]||{};
-      for(const id in g) mTot[m][id]=(mTot[m][id]||0)+(Number(g[id])||0);
+      for(const k in g){ const id=_repFuelId(k); mTot[m][id]=(mTot[m][id]||0)+(Number(g[k])||0); }
     }
   }
   const rnd=v=>Math.round(v*1000)/1000;
@@ -652,7 +673,19 @@ function clipRowToRange(row, reports, fromISO, toISO){
     }
     return o;
   });
-  for(const id in fTot) if(!seen[id] && fTot[id]>0) c.fuels.push({ fuelId:id, tonnes:rnd(fTot[id]), price:0 });
+  /* 2026-08-28: a fuel the reports carry but the row does not — the derivation can move a fuel
+     wholly across an arrival/departure boundary. Only APPEND an id the fuel table actually
+     knows: an unknown id is dropped by resolveFuel() with a bare `continue` below, which is how
+     the MGO defect stayed invisible. Anything unrecognised is recorded on the row instead so
+     computeAll() can raise a real warning rather than losing the mass in silence. */
+  for(const id in fTot){
+    if(seen[id] || !(fTot[id]>0)) continue;
+    if(typeof FUEL_BY_ID!=="undefined" && !FUEL_BY_ID[id]){
+      (c.rangeUnknownFuels=c.rangeUnknownFuels||[]).push({ id, tonnes:rnd(fTot[id]) });
+      continue;
+    }
+    c.fuels.push({ fuelId:id, tonnes:rnd(fTot[id]), price:0 });
+  }
   if(row.kind==="voyage") c.dist=Math.round(dist*10)/10;      // cargo untouched — a snapshot
   /* decision 4: the part's window is its own reports' window */
   const first=inWin[0], last=inWin[inWin.length-1];
@@ -740,6 +773,9 @@ function computeAll(state){
      backing and so fell back to a time-proportional cut (clipRowToRange). Both are surfaced as
      warnings below — a partial leg must never be silent. */
   let nRangeClipped=0, nRangeFallback=0;
+  /* 2026-08-28: fuel codes the clip summed out of the reports but could not match to the fuel
+     table. Must be LOUD — this is the failure mode that hid the MGO defect. */
+  const rangeLostFuel=[];
   let ets_t_co2=0, ets_t_co2e=0, uk_co2=0, uk_ch4=0, uk_n2o=0;
   /* 2026-07-26p (Aurvin, owner instruction): "Total CO2e" — a Fuel-metrics figure, NOT an EU
      ETS eligibility number. See the per-machine block below (near the EU ETS block) for the
@@ -771,7 +807,9 @@ function computeAll(state){
       /* a dropped row is an out-of-range row — count it where rowInYear() used to, so the
          existing "row(s) fall OUTSIDE the selected From/To date range" warning still fires */
       if(!parts.length){ nOutOfYear++; continue; }
-      if(parts[0]!==r){ nRangeClipped++; if(parts[0].rangeFallback) nRangeFallback++; }
+      if(parts[0]!==r){ nRangeClipped++; if(parts[0].rangeFallback) nRangeFallback++;
+        /* 2026-08-28: fuel the clip found in the reports but could not place in the fuel table */
+        for(const u of (parts[0].rangeUnknownFuels||[])) rangeLostFuel.push(u.id+" "+u.tonnes+" t on \""+(r.label||"row")+"\""); }
       for(const p of parts) kept.push(p);
     }
     _aggRows = kept;
@@ -967,6 +1005,7 @@ function computeAll(state){
      and the resulting partial row must never be silent — every figure it carries describes part
      of a voyage, not the voyage. See clipRowToRange() for the rules. */
   if(nRangeClipped) warn.push(nRangeClipped+" row(s) are CUT BY the selected From/To range and are counted as PARTIAL legs — badged PARTIAL in the tables. Each one carries only the consumption and distance of the reports whose own time falls inside the range, and its own start/end have been moved to those reports' times, so its CII and FuelEU intensities describe that part alone. Their ports are UNCHANGED, so EU ETS / UK ETS / FuelEU coverage still comes from the full voyage's port pair (a truncated extra-EEA→EEA voyage is still 50%). Because the arrival/departure derivation moves fuel across the arrival and departure boundaries, a partial leg plus the part outside the range do NOT add back exactly to the whole leg — clear the range for the complete, submittable figures.");
+  if(rangeLostFuel.length) warn.push("⚠ FUEL NOT COUNTED ON A PARTIAL ROW — the date-range clip summed fuel out of the reports under a code this calculator's fuel table does not recognise, so it could NOT be included in consumption, CO2/CO2e, EU ETS, UK ETS or FuelEU for that row: "+rangeLostFuel.slice(0,6).join(" · ")+(rangeLostFuel.length>6? " · …and "+(rangeLostFuel.length-6)+" more":"")+". The row's other fuels are unaffected. Send the file to the developer — the fuel code needs adding to OVD_FUEL_MAP; until then clear the From/To range for that row's complete figures.");
   if(nRangeFallback) warn.push(nRangeFallback+" of those partial row(s) have NO per-report data behind them (entered by hand, or imported from an OVD file with no MDA event log), so there were no reports to sum and the cut was made in proportion to TIME instead. Treat those figures as indicative.");
 
   /* ---- FuelEU fuel allocation (essf-ws1-2-5 / extra-EEA worked examples) ----
