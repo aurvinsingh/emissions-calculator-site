@@ -535,6 +535,139 @@ function splitRowAcrossYears(row){
   return out;
 }
 
+/* ---- date-range CLIPPING (2026-08-27, Aurvin, owner instruction) -------------------------
+   Until now the shared From/To date filter counted any row whose span OVERLAPPED the window
+   IN FULL and merely badged the straddlers "edge" (rowIsEdge in ui.js) — so picking a week in
+   the middle of a voyage silently pulled in the WHOLE voyage. The owner's rule is now a real
+   CLIP: only the part of a leg or berth stay lying inside the window is shown and calculated,
+   and the reports whose own listed time falls inside the window are what form that part.
+
+   The owner's four decisions of 2026-08-27, each implemented literally below:
+
+     1. WHICH REPORTS — a report is IN when its OWN listed time (DATE_TIME_GMT = rep.t) falls
+        inside [from,to], and it is then counted WHOLE. This is the same rule the calendar-year
+        split (yearFracs) and the UK ETS 1 Jul 2026 cut (ukReportIn) already use, so all three
+        windows agree and no report can be counted in two windows at once.
+
+     2. PORTS ARE KEPT — a truncated Singapore→Rotterdam leg stays Singapore→Rotterdam and so
+        keeps its extra-EEA→EEA 50% EU ETS / FuelEU coverage. The regulatory character of a
+        voyage is a property of the voyage, not of the user's date filter. `rangePart` marks the
+        part so the UI can badge it PARTIAL; NOTHING in the coverage logic reads that flag.
+
+     3. TOTALS ARE RAW REPORT SUMS — the clipped part carries the ACTUAL summed consumption and
+        distance of its in-window reports. Not time-prorated, and not a scaled share of the row
+        total. The owner chose this explicitly over the report-weighted scaling that
+        vwPartWeight() uses for the Voyage-Wise split.
+        CONSEQUENCE, stated plainly because it is real and permanent: the arrival/departure
+        derivation deliberately moves fuel ACROSS the arrival and departure boundaries, so a
+        row's own total is NOT the sum of the reports sitting inside its span. A clipped part
+        plus the part left outside the window therefore do NOT add back to the untouched row
+        total. That leakage is confined to the at most two rows the window edges actually cut —
+        every row wholly inside the window is returned UNTOUCHED below, bit-identical to the
+        unfiltered run — and it is reported in `rangeClip` so the UI can show it rather than
+        hide it. The import-time conservation guard in tools/verify_workspace_rows.js is
+        unaffected: it asserts on the raw import with no filter active, and this function never
+        mutates the row it is given.
+
+     4. TIMES ARE CLIPPED TO THE REPORTS — tStart becomes the first in-window report's period
+        start and tEnd the last one's listed time, so the part's duration matches the fuel and
+        distance actually summed and its CII / EEOI intensities stay internally consistent.
+        `hours` is recomputed from that clipped span, exactly as the importer derives it.
+
+   Returns [] (nothing of the row is in the window), [row] UNCHANGED (wholly inside, or
+   undated), or [clippedCopy] — never more than one part, because a window has one inside.
+
+   Rows with NO report backing — hand-entered, or an OVD import with no MDA behind it — have
+   nothing to sum, so they fall back to a time-proportional clip flagged `rangeFallback:true`.
+   That is the same fallback splitRowAcrossYears() and vwPartWeight() already use for such
+   rows; the owner's "no proration" instruction governs how REPORT-BACKED rows are cut. */
+function _clipIsoMin(ms){ return new Date(ms).toISOString().slice(0,16); }
+/* the reports belonging to a row: listed time in (tStart, tEnd]. Exclusive at the start because
+   parseOVD stamps a row's tStart as the PREVIOUS report's time (see its stamp()), so the report
+   dated exactly at tStart belongs to the row before this one. Same convention as vwPartWeight. */
+function _rowReports(row, reports){
+  if(!Array.isArray(reports) || !reports.length || !row.tStart || !row.tEnd) return [];
+  const a=_splitMs(row.tStart), b=_splitMs(row.tEnd);
+  if(!isFinite(a) || !isFinite(b)) return [];
+  return reports.filter(r=>{ const t=r&&r.t? _splitMs(r.t):NaN; return isFinite(t) && t>a && t<=b; });
+}
+function clipRowToRange(row, reports, fromISO, toISO){
+  const from=_splitMs(fromISO), to=_splitMs(toISO);
+  if(!isFinite(from) || !isFinite(to)) return [row];
+  const t0=row.tStart? _splitMs(row.tStart):NaN, t1=row.tEnd? _splitMs(row.tEnd):NaN;
+  if(!isFinite(t0) && !isFinite(t1)) return [row];          // undated → never range-filtered
+  const st=isFinite(t0)?t0:t1, en=isFinite(t1)?t1:t0;
+  if(st>to || en<from) return [];                            // wholly outside the window
+  if(st>=from && en<=to) return [row];                       // wholly inside → UNTOUCHED, see note 3
+  /* ---- straddling: rebuild the inside part ---- */
+  const mine=_rowReports(row, reports);
+  const c=Object.assign({}, row);
+  c.fuels=(row.fuels||[]).map(f=>Object.assign({}, f, f.split? {split:Object.assign({}, f.split)}:{}));
+  c.rangePart=true;
+  if(!mine.length){
+    /* no report backing — time-proportional clip (documented fallback, see note above) */
+    const a=Math.max(st,from), b=Math.min(en,to);
+    const w=(en>st)? Math.max(0, Math.min(1,(b-a)/(en-st))) : 1;
+    c.fuels=c.fuels.map(f=>{
+      const o=Object.assign({}, f, { tonnes:(Number(f.tonnes)||0)*w });
+      if(f.split){ o.split={}; for(const m in f.split) o.split[m]=(Number(f.split[m])||0)*w; }
+      return o;
+    });
+    if(row.kind==="voyage") c.dist=(Number(row.dist)||0)*w;   // cargo untouched — a snapshot, not accrued
+    c.tStart=_clipIsoMin(a); c.tEnd=_clipIsoMin(b);
+    c.hours=Math.round(((b-a)/3.6e6)*10)/10;
+    c.rangeFallback=true;
+    c.rangeClip={ basis:"time", frac:w, repIn:0, repTot:0 };
+    delete c.ukInFrac;                 // a whole-row per-report ratio is not valid for a slice
+    return [c];
+  }
+  const inWin=mine.filter(r=>{ const t=_splitMs(r.t); return t>=from && t<=to; });
+  if(!inWin.length) return [];         // overlaps the window but has no report dated inside it
+  /* raw sums of the in-window reports (owner's decision 3) */
+  const fTot={}, mTot={ ME:{}, AE:{}, BLR:{} };
+  let dist=0;
+  for(const r of inWin){
+    dist += Number(r.dist)||0;
+    const fs=r.fuels||{};
+    for(const id in fs) fTot[id]=(fTot[id]||0)+(Number(fs[id])||0);
+    if(r.mach) for(const m of ["ME","AE","BLR"]){
+      const g=r.mach[m]||{};
+      for(const id in g) mTot[m][id]=(mTot[m][id]||0)+(Number(g[id])||0);
+    }
+  }
+  const rnd=v=>Math.round(v*1000)/1000;
+  /* keep the row's own fuel entries (they carry price, custom LCV/Cf and the machinery split
+     shape) and overwrite only the quantities. A fuel the row has but the window's reports do
+     not is zeroed, not dropped, so the row keeps its identity on screen. Fuels appearing ONLY
+     in the reports are appended — the derivation can move a fuel wholly across a boundary. */
+  const seen={};
+  c.fuels=c.fuels.map(f=>{
+    seen[f.fuelId]=1;
+    const o=Object.assign({}, f, { tonnes:rnd(fTot[f.fuelId]||0) });
+    if(f.split){
+      /* OTH is the unallocated remainder, exactly as addFuel() computes it at import: the
+         fuel total less what ME/AE/Boiler actually reported, never below zero. */
+      const me=rnd(mTot.ME[f.fuelId]||0), ae=rnd(mTot.AE[f.fuelId]||0), blr=rnd(mTot.BLR[f.fuelId]||0);
+      o.split={ ME:me, AE:ae, BLR:blr, OTH:rnd(Math.max(0, o.tonnes-(me+ae+blr))) };
+    }
+    return o;
+  });
+  for(const id in fTot) if(!seen[id] && fTot[id]>0) c.fuels.push({ fuelId:id, tonnes:rnd(fTot[id]), price:0 });
+  if(row.kind==="voyage") c.dist=Math.round(dist*10)/10;      // cargo untouched — a snapshot
+  /* decision 4: the part's window is its own reports' window */
+  const first=inWin[0], last=inWin[inWin.length-1];
+  const cs=_splitMs(first.ts||first.t), ce=_splitMs(last.t||last.te);
+  if(isFinite(cs)) c.tStart=_clipIsoMin(cs);
+  if(isFinite(ce)) c.tEnd=_clipIsoMin(ce);
+  { const h=(_splitMs(c.tEnd)-_splitMs(c.tStart))/3.6e6; c.hours=h>0? Math.round(h*10)/10 : 0; }
+  c.rangeClip={ basis:"reports", repIn:inWin.length, repTot:mine.length,
+                distFull:(row.kind==="voyage"? (Number(row.dist)||0) : 0),
+                tonnesFull:(row.fuels||[]).reduce((s,f)=>s+(Number(f.tonnes)||0),0),
+                tonnesPart:c.fuels.reduce((s,f)=>s+(Number(f.tonnes)||0),0) };
+  delete c.ukInFrac;                   // recomputed by the engine over the part's own window
+  return [c];
+}
+
 /* ---------- MAIN ---------- */
 function computeAll(state){
   annotateVoyageContinuity(state.rows);   // 2026-07-20: non-call stays don't end the voyage
@@ -583,11 +716,16 @@ function computeAll(state){
          half at that single instant (its tEnd/tStart sit exactly on the window's edge) and
          double-count it. A yearPart mismatch is a hard exclude, decided before any range math. */
       if(row.yearPart!=null && Number(row.yearPart)!==y) return false;
+      /* 2026-08-27: clipRowToRange() (applied to _aggRows below) has ALREADY decided inclusion
+         and cut the straddlers, so every row reaching here is inside the window — this overlap
+         test now only ever confirms it. Kept, not deleted: it is the safety net if a caller ever
+         feeds computeAll() rows that did not go through the clip. The yearPart check above is
+         still load-bearing (a year part is untouched by the clip and keeps its own year). */
       const a = row.tStart? _ms(row.tStart) : null;
       const b = row.tEnd?   _ms(row.tEnd)   : null;
       if(a==null && b==null) return true;                          // undated rows can't be range-filtered
       const st=(a!=null?a:b), en=(b!=null?b:a);
-      return st<=_ms(_df.toISO) && en>=_ms(_df.fromISO);           // any overlap = counted in full
+      return st<=_ms(_df.toISO) && en>=_ms(_df.fromISO);
     }
     if(row.yearPart) return Number(row.yearPart)===y;   // year-boundary split parts carry their year explicitly
     const a = row.tStart? String(row.tStart).slice(0,4) : null;
@@ -598,6 +736,10 @@ function computeAll(state){
 
   /* ---- aggregate per row ---- */
   let cii_g=0, totalDist=0, fuelCostAll=0, nOutOfYear=0, nUkPartial=0;
+  /* 2026-08-27: how many rows the date-range clip cut, and how many of those had no report
+     backing and so fell back to a time-proportional cut (clipRowToRange). Both are surfaced as
+     warnings below — a partial leg must never be silent. */
+  let nRangeClipped=0, nRangeFallback=0;
   let ets_t_co2=0, ets_t_co2e=0, uk_co2=0, uk_ch4=0, uk_n2o=0;
   /* 2026-07-26p (Aurvin, owner instruction): "Total CO2e" — a Fuel-metrics figure, NOT an EU
      ETS eligibility number. See the per-machine block below (near the EU ETS block) for the
@@ -615,7 +757,25 @@ function computeAll(state){
      ignoreYearFilter is set — that's Voyage-Wise calling in with its OWN pre-split, pre-
      bucketed rows one end-year at a time (vwGroups), which must stay a 1:1 index match with
      rowDetails; Voyage-Wise groups by voyage, not by calendar year, by explicit design. */
-  const _aggRows = state.ignoreYearFilter ? (state.rows||[]) : (state.rows||[]).flatMap(splitRowAcrossYears);
+  let _aggRows = state.ignoreYearFilter ? (state.rows||[]) : (state.rows||[]).flatMap(splitRowAcrossYears);
+  /* 2026-08-27 (Aurvin, owner instruction): with a date range active, CLIP each row to the
+     window — see clipRowToRange() above for the four rules and their consequences. Done AFTER
+     the year split on purpose: year-splitting first leaves the `yearPart` hard-exclude in
+     rowInYear() completely untouched, and a year part is itself a dated row that clips cleanly.
+     Skipped under ignoreYearFilter for the same reason the year split is — Voyage-Wise and
+     Single-Voyage pass their OWN pre-split rows and need a 1:1 index match with rowDetails. */
+  if(rangeOn && !state.ignoreYearFilter){
+    const kept=[];
+    for(const r of _aggRows){
+      const parts = clipRowToRange(r, state.mdaReports||[], _df.fromISO, _df.toISO);
+      /* a dropped row is an out-of-range row — count it where rowInYear() used to, so the
+         existing "row(s) fall OUTSIDE the selected From/To date range" warning still fires */
+      if(!parts.length){ nOutOfYear++; continue; }
+      if(parts[0]!==r){ nRangeClipped++; if(parts[0].rangeFallback) nRangeFallback++; }
+      for(const p of parts) kept.push(p);
+    }
+    _aggRows = kept;
+  }
   for(const row of _aggRows){
     if(!rowInYear(row)){ nOutOfYear++; continue; }
     const covEU = euCoverage(row);
@@ -633,6 +793,11 @@ function computeAll(state){
     const det = { kind:row.kind, label:row.label||"", covEU, covFEU, covUK, tStart:row.tStart||"", tEnd:row.tEnd||"", hours:Number(row.hours)||0,
                   dist:row.kind==="voyage"?(Number(row.dist)||0):0, cargo:row.kind==="voyage"?(Number(row.cargo)||0):0,
                   cargoSOSP: !!row.cargoSOSP, fuels:[], co2:0, etsCO2:0, etsCO2e:0, ukCO2e:0, totalCO2:0, totalCO2e:0, E:0,
+                  /* 2026-08-27: date-range clip provenance, carried so the tables can badge the
+                     row PARTIAL and explain the cut in its tooltip (clipRowToRange). Display
+                     only — no calculation reads these. */
+                  rangePart: !!row.rangePart, rangeFallback: !!row.rangeFallback,
+                  rangeClip: row.rangeClip||null,
                   /* SCC (2026-07-22c) — see SCC_WTW / sccTtWFactor above */
                   sccTtW:0, sccWtW:0, sccBio:0, sccNoFactor:false, tw:0,
                   sccNumerator:null, sccBallast:0, sccPort:0, sccGoesTo:null, eeoi:null };
@@ -798,6 +963,11 @@ function computeAll(state){
   if(nOutOfYear) warn.push(rangeOn
     ? nOutOfYear+" row(s) fall OUTSIDE the selected From/To date range and are EXCLUDED from ALL KPIs — they stay in the list (greyed) and return the moment you widen or clear the range."
     : nOutOfYear+" row(s) dated outside the "+y+" reporting year are EXCLUDED from ALL KPIs (multi-year import) — switch the reporting year in Settings to compute the other year. Rows are split at the year boundary at import, so nothing is double-counted.");
+  /* 2026-08-27 (Aurvin, owner instruction): the date range CLIPS a leg or stay it cuts through,
+     and the resulting partial row must never be silent — every figure it carries describes part
+     of a voyage, not the voyage. See clipRowToRange() for the rules. */
+  if(nRangeClipped) warn.push(nRangeClipped+" row(s) are CUT BY the selected From/To range and are counted as PARTIAL legs — badged PARTIAL in the tables. Each one carries only the consumption and distance of the reports whose own time falls inside the range, and its own start/end have been moved to those reports' times, so its CII and FuelEU intensities describe that part alone. Their ports are UNCHANGED, so EU ETS / UK ETS / FuelEU coverage still comes from the full voyage's port pair (a truncated extra-EEA→EEA voyage is still 50%). Because the arrival/departure derivation moves fuel across the arrival and departure boundaries, a partial leg plus the part outside the range do NOT add back exactly to the whole leg — clear the range for the complete, submittable figures.");
+  if(nRangeFallback) warn.push(nRangeFallback+" of those partial row(s) have NO per-report data behind them (entered by hand, or imported from an OVD file with no MDA event log), so there were no reports to sum and the cut was made in proportion to TIME instead. Treat those figures as indicative.");
 
   /* ---- FuelEU fuel allocation (essf-ws1-2-5 / extra-EEA worked examples) ----
      FuelEU prescribes no allocation method; MRV-reported fuels may be freely allocated

@@ -2046,9 +2046,28 @@ function rowHtml(row, ri){
   const outRange = dfOn && !rowInRange(row);
   const isEdge  = dfOn && !outRange && rowIsEdge(row);
   const greyed  = dfOn ? outRange : outYear;
+  /* 2026-08-27 (Aurvin, owner instruction): the straddle chip no longer says "counted in full"
+     — that was the OLD rule. The row is now CLIPPED to the window and the chip has to say so,
+     with the actual clipped span and how much of the row's own reports it kept, because every
+     figure on this row now describes part of a voyage. See clipRowToRange in js/engine.js. */
+  const clipPart = isEdge ? rowClipPart(row) : null;
+  const clipTip = (()=>{
+    if(!clipPart) return "";
+    const rc = clipPart.rangeClip||{};
+    const span = (clipPart.tStart||"").replace("T"," ")+" → "+(clipPart.tEnd||"").replace("T"," ")+" UTC";
+    if(rc.basis==="reports"){
+      const dl = (row.kind==="voyage" && rc.distFull>0) ? " Distance "+fmtF(Number(clipPart.dist)||0,1)+" of "+fmtF(rc.distFull,1)+" nm." : "";
+      return "PARTIAL LEG. The From/To range cuts through this row, so only the part inside the range is shown and calculated: "+span+"."
+        +" It carries the actual summed consumption and distance of the "+(rc.repIn||0)+" of this row's "+(rc.repTot||0)+" reports whose own time falls inside the range — no proration."+dl
+        +" The ports are UNCHANGED, so its EU ETS / UK ETS / FuelEU coverage still comes from the full voyage's port pair."
+        +" Because the arrival/departure derivation moves fuel across the arrival and departure boundaries, this part plus the part outside the range do NOT add back exactly to the whole row — clear the range for the complete figures.";
+    }
+    return "PARTIAL LEG ("+span+"). The From/To range cuts through this row. There is no per-report data behind it (entered by hand, or an OVD import with no MDA event log), so there were no reports to sum and the cut was made in proportion to TIME — "
+      +Math.round((Number(rc.frac)||0)*1000)/10+"% of the row. Treat these figures as indicative. Ports are unchanged, so coverage still comes from the full voyage's port pair.";
+  })();
   const dfChip = outRange
-    ? `<span class="zbadge zb-OMR" title="This row's period is outside the selected From/To date range. Excluded from ALL KPIs; widen or clear the range to include it.">🗓 outside From/To range</span>`
-    : (isEdge? `<span class="zbadge zb-EDGE" title="This row's period starts before From or ends after To. Per your rule it is counted IN FULL, so range totals may slightly exceed the consumption strictly inside the window.">🗓 straddles range edge — counted in full</span>`:"");
+    ? `<span class="zbadge zb-OMR" title="Nothing of this row's period is inside the selected From/To date range — or its period touches the range but it has no report dated inside it, so there is no reported activity to show. Excluded from ALL KPIs; widen or clear the range to include it.">🗓 outside From/To range</span>`
+    : (isEdge? `<span class="zbadge zb-EDGE" title="${esc(clipTip)}">🗓 cut by range — PARTIAL${clipPart&&clipPart.rangeFallback?" (by time)":""}</span>`:"");
   /* country on mouse-over (2026-07-16): ports show their country when hovering the row title */
   const cTip = row.kind==="port"
     ? (row.port&&row.port.c? portCountryName(row.port.c) : "")
@@ -2735,7 +2754,9 @@ function downloadBreakdownXlsx(){
                co2ColLbl,"EUA (row)","UKA tCO2e (row)","FuelEU CB tCO2eq (row, indicative)","FuelEU penalty EUR (row, indicative)",
                /* SCC block, 2026-07-22c */
                "SCC cargo mt (SOSP report)","SCC cargo source","SCC transport work t.nm",
-               "SCC ballast CO2e carried in t (row)","SCC port CO2e included t (row)","SCC EEOI numerator t (row)","SCC EEOI gCO2e/t.nm (row)","SCC port-stay attribution"];
+               "SCC ballast CO2e carried in t (row)","SCC port CO2e included t (row)","SCC EEOI numerator t (row)","SCC EEOI gCO2e/t.nm (row)","SCC port-stay attribution",
+               /* 2026-08-27 — see the note on this column's value below. 23 -> 24 columns. */
+               "From/To window"];
   /* 2026-07-22 (Aurvin): the download follows the table's tick selection — ticked rows only,
      or every row when nothing is ticked (see ROWSEL in this file). Display-level filter: the
      figures themselves are unchanged. */
@@ -2763,7 +2784,16 @@ function downloadBreakdownXlsx(){
                  (d.kind==="voyage"? d.cargo : ""), (d.kind==="voyage"? (d.cargoSOSP?"SOSP report":"max per leg (no departure report)") : ""),
                  (d.tw||""),
                  (d.sccBallast||""), (d.sccPort||""), (d.sccNumerator??""), (d.eeoi??""),
-                 (d.kind!=="voyage" && d.sccGoesTo? ("counted as "+d.sccGoesTo.role+(d.sccGoesTo.label?" of "+d.sccGoesTo.label:"")) : "")];
+                 (d.kind!=="voyage" && d.sccGoesTo? ("counted as "+d.sccGoesTo.role+(d.sccGoesTo.label?" of "+d.sccGoesTo.label:"")) : ""),
+                 /* 2026-08-27 (Aurvin, owner instruction — "fix the exports too"): a leg the
+                    From/To window CUT THROUGH carries only part of a voyage, and a spreadsheet
+                    that does not say so is the worst place for that to be invisible. COLUMN
+                    COUNT of the event block CHANGES 23 -> 24; the per-fuel blocks after it are
+                    unchanged and simply start one column later. */
+                 (!d.rangePart ? "whole"
+                   : (d.rangeFallback
+                       ? "PARTIAL - cut by From/To window, no report data behind this row so cut in proportion to TIME ("+(Math.round(((d.rangeClip&&d.rangeClip.frac)||0)*1000)/10)+"% of the row) - indicative"
+                       : "PARTIAL - cut by From/To window, carries the raw summed consumption and distance of "+((d.rangeClip&&d.rangeClip.repIn)||0)+" of this row's "+((d.rangeClip&&d.rangeClip.repTot)||0)+" reports; ports and therefore ETS/FuelEU % are those of the FULL voyage"))];
     const fuelVals=[];
     for(let k=0;k<maxFuels;k++){
       const fu=fs[k];
@@ -2779,7 +2809,7 @@ function downloadBreakdownXlsx(){
     }
     rows.push(eventVals.concat(fuelVals));
   }
-  downloadXlsx("voyage_berth_breakdown_"+S.year+".xlsx","Breakdown",rows);
+  downloadXlsx("voyage_berth_breakdown_"+S.year+dfFileSuffix()+".xlsx","Breakdown",rows);
 }
 /* ---- Excel: OVD-format report-level download (diagnostics) ---- */
 function downloadReportsXlsx(){
@@ -2788,7 +2818,16 @@ function downloadReportsXlsx(){
      every event when nothing is ticked. A filtered file is named "…_selected" so a partial
      export can never be mistaken for the full OVD submission set. */
   const sub = ROWSEL.tr.sel.size>0 && TR_LAST && TR_LAST.length===all.length;
-  const reps = sub ? rowselActive("tr", all.length).map(i=>all[i]) : all;
+  /* 2026-08-27 (Aurvin, owner instruction — exports follow the window too): until now this
+     export ignored the From/To window and always wrote EVERY retained report, while the
+     Report-Wise table above it showed only the window's reports (repInRange) — so the screen and
+     the file disagreed about the period. It now follows the same repInRange rule the table uses,
+     and the filename says PARTIAL with the window in it, so a windowed extract can never be
+     mistaken for the full-period OVD submission set. Unnarrowed (the whole reporting year) the
+     filter passes everything and the file is byte-identical to before. */
+    const win = dfNarrowed() ? all.filter(repInRange) : all;
+  const reps = sub ? rowselActive("tr", all.length).map(i=>all[i]).filter(r=>win.indexOf(r)>=0) : win;
+  if(!reps.length){ alert("No reports fall inside the selected From/To window — widen or reset the window."); return; }
   const codes=[...new Set(reps.flatMap(r=>Object.keys(r.fuels||{})))].sort();
   const robCodes=[...new Set(reps.flatMap(r=>Object.keys(r.rob||{})))].sort();
   const G=[["ME","ME_Consumption_"],["AE","AE_Consumption_"],["BLR","Boiler_Consumption_"],["OTH","Other_Consumption_"]];
@@ -2808,7 +2847,7 @@ function downloadReportsXlsx(){
       .concat(robCodes.map(c=>(r.rob||{})[c]||""))
       .concat([r.bunker||"", r.lat??"", r.lon??""]));
   }
-  downloadXlsx("mda_reports_OVD_format"+(sub?"_selected":"")+".xlsx","Reports",rows);
+  downloadXlsx("mda_reports_OVD_format"+(sub?"_selected":"")+dfFileSuffix()+".xlsx","Reports",rows);
 }
 
 /* ---- Report-level trace table (design handoff design_handoff_report_trace_table, 2026-07-17) ----
@@ -3966,6 +4005,22 @@ function repInRange(rep){
   return t>=_utcms(S.dateFilter.fromISO) && t<=_utcms(S.dateFilter.toISO);
 }
 function dateFilterActive(){ const d=S.dateFilter; return !!(d && d.active && d.fromISO && d.toISO); }
+/* 2026-08-27: true when the window is NARROWER than the whole of the selected reporting year.
+   Same test the date bar uses for its Reset button (`narrowed`, twice in this file) — pulled out
+   here because the Excel exports now need it too: a download taken under a narrowed window is a
+   PARTIAL-PERIOD file and must say so in its own name, so it can never be mistaken for a
+   full-period regulatory export. */
+function dfNarrowed(){
+  if(!dateFilterActive()) return false;
+  const y=Number(S.year)||2026, d=S.dateFilter;
+  return (d.fromISO||(y+"-01-01T00:00"))!==(y+"-01-01T00:00") || (d.toISO||(y+"-12-31T23:59"))!==(y+"-12-31T23:59");
+}
+/* the suffix every windowed export carries in its filename */
+function dfFileSuffix(){
+  if(!dfNarrowed()) return "";
+  const clean=s=>String(s||"").replace("T","_").replace(/:/g,"");
+  return "_PARTIAL_"+clean(S.dateFilter.fromISO)+"_to_"+clean(S.dateFilter.toISO);
+}
 /* row span as UTC ms; undated rows → null span (never filtered out) */
 function _rowSpan(row){
   const a = row.tStart? _utcms(row.tStart) : null;
@@ -3973,18 +4028,35 @@ function _rowSpan(row){
   if(a==null && b==null) return null;
   return { st:(a!=null?a:b), en:(b!=null?b:a) };
 }
-function rowInRange(row){
-  if(!dateFilterActive()) return true;
-  const sp=_rowSpan(row); if(!sp) return true;         // undated rows can't be range-filtered → keep
-  const from=_utcms(S.dateFilter.fromISO), to=_utcms(S.dateFilter.toISO);
-  return sp.st<=to && sp.en>=from;                     // any overlap = counted (in full)
+/* ---- 2026-08-27 (Aurvin, owner instruction): these three predicates are now answered by the
+   CLIP itself, not by a separate overlap test of their own. rowClipState() asks the very same
+   clipRowToRange() (js/engine.js) that computeAll() and inYearRows() use, so the Workspace
+   chip, the greying, the bar caption, the LEGS table and every KPI are guaranteed to be
+   describing the same decision about the same row. Deciding it twice, in two places, with two
+   pieces of date arithmetic, is exactly how the tabs used to drift apart.
+
+   The meanings shifted with the rule, so read them fresh:
+     "out"  — NOTHING of this row is in the window. Now also covers a row whose span overlaps
+              the window but which has no report DATED inside it: there is no reported activity
+              to show, so it is excluded rather than drawn as an empty leg.
+     "full" — wholly inside (or undated): untouched, figures bit-identical to no filter at all.
+     "part" — cut by a window edge: counted as a PARTIAL leg, see clipRowToRange. */
+function rowClipState(row){
+  if(!dateFilterActive()) return "full";
+  let p; try{ p = clipRowToRange(row, S.mdaReports||[], S.dateFilter.fromISO, S.dateFilter.toISO); }
+  catch(e){ return "full"; }
+  if(!p.length) return "out";
+  return p[0]===row ? "full" : "part";
 }
-/* true when a row overlaps the range but straddles a boundary (partly outside) → "edge" */
-function rowIsEdge(row){
-  if(!dateFilterActive()) return false;
-  const sp=_rowSpan(row); if(!sp) return false;
-  const from=_utcms(S.dateFilter.fromISO), to=_utcms(S.dateFilter.toISO);
-  return (sp.st<=to && sp.en>=from) && (sp.st<from || sp.en>to);
+function rowInRange(row){ return rowClipState(row)!=="out"; }
+/* true when the range CUTS THROUGH this row — it is counted as a partial leg, not in full */
+function rowIsEdge(row){ return rowClipState(row)==="part"; }
+/* the clipped copy of a row (or null when it is untouched / excluded) — for the chip tooltip */
+function rowClipPart(row){
+  if(!dateFilterActive()) return null;
+  let p; try{ p = clipRowToRange(row, S.mdaReports||[], S.dateFilter.fromISO, S.dateFilter.toISO); }
+  catch(e){ return null; }
+  return (p.length && p[0]!==row) ? p[0] : null;
 }
 /* count of edge rows currently in range — for the bar caption */
 function edgeRowCount(){ return dateFilterActive()? (S.rows||[]).filter(r=>rowInRange(r)&&rowIsEdge(r)).length : 0; }
@@ -3996,7 +4068,22 @@ function inYearRows(){
      function must stay 1:1 with R.rowDetails, and svLegR() builds rowDetails from exactly these
      rows in exactly this order. svActive() is false in normal use, so nothing below changes. */
   if(svActive()){ const sv = svRows(); if(sv) return sv; }
-  if(dateFilterActive()) return (S.rows||[]).filter(rowInRange);   // range wins when active
+  /* 2026-08-27 (Aurvin, owner instruction): with a range active this now mirrors computeAll()'s
+     row pipeline EXACTLY — year-split, drop the other year's parts, then CLIP to the window with
+     the SAME shared clipRowToRange() the engine calls (it lives in js/engine.js, which loads
+     first, precisely so both sides can use one implementation). That identity is what keeps
+     breakdownGrid's `src[i]` 1:1 with R.rowDetails.
+     It also closes a latent misalignment that predates the clip: the old
+     `.filter(rowInRange)` ignored `yearPart` and kept a row whose overlap was only at the window
+     edge, while the engine's rowInYear() dropped it — so on a multi-year import with a range on,
+     the LEGS table could read its ports off the wrong row from that point down. */
+  if(dateFilterActive()){
+    const yy = Number(S.year)||2026;
+    return (S.rows||[])
+      .flatMap(splitRowAcrossYears)
+      .filter(r=>!(r.yearPart!=null && Number(r.yearPart)!==yy))
+      .flatMap(r=>clipRowToRange(r, S.mdaReports||[], S.dateFilter.fromISO, S.dateFilter.toISO));
+  }
   const y = Number(S.year)||2026;
   return (S.rows||[]).filter(row=>{
     if(row.yearPart) return Number(row.yearPart)===y;
@@ -4805,7 +4892,24 @@ function breakdownGrid(R, tips){
        POC derivation touched (FROZEN, CLAUDE.md). */
     const plainTransit = isBerth && !!row && row.poc===false && !oplCargo;
     const transitCaption = plainTransit ? `<span title="This port stay was not identified as a port of call (POC) — it is scored as a transit/anchorage stay for EU ETS, UK ETS and FuelEU, not a port visit. Toggle POC on for this row in the Workspace if that's wrong." style="cursor:help;font-size:8px;font-weight:700;letter-spacing:0.04em;color:#94a3b8">Transit</span>` : "";
-    const cargoIcon = (cargoGlyph||oplBadge||transitCaption) ? `<div style="height:1.45em;display:flex;align-items:center;justify-content:flex-end;gap:4px">${cargoGlyph}${oplBadge}${transitCaption}</div>` : "";
+    /* 2026-08-27 (Aurvin, owner instruction): a leg or stay the From/To range CUT THROUGH is a
+       PARTIAL leg — every figure on its line describes part of a voyage, not the voyage — so it
+       must carry a visible badge here, not just a greyed chip over on the Workspace tab. The
+       flag rides on the engine's own rowDetail (d.rangePart), so this badge and the KPI figures
+       can never disagree about which rows were cut. See clipRowToRange in js/engine.js. */
+    const partialBadge = d.rangePart ? (()=>{
+      const rc = d.rangeClip||{};
+      const span = (d.tStart||"").replace("T"," ")+" → "+(d.tEnd||"").replace("T"," ")+" UTC";
+      const tip = rc.basis==="reports"
+        ? "PARTIAL LEG — the From/To range cuts through this row, so this line covers only "+span+". It carries the actual summed consumption"
+          +(d.kind==="voyage"?" and distance":"")+" of the "+(rc.repIn||0)+" of this row's "+(rc.repTot||0)+" reports dated inside the range — no proration. "
+          +"The ports are UNCHANGED, so the EU ETS / UK ETS / FuelEU % on this line still come from the full voyage's port pair. "
+          +"Because the arrival/departure derivation moves fuel across the arrival and departure boundaries, this part plus the part outside the range do NOT add back exactly to the whole leg. Clear the range for the complete, submittable figures."
+        : "PARTIAL LEG — the From/To range cuts through this row, so this line covers only "+span+". There is no per-report data behind it (hand-entered, or an OVD import with no MDA event log), so the cut was made in proportion to TIME ("
+          +(Math.round((Number(rc.frac)||0)*1000)/10)+"% of the row) rather than by summing reports. Treat these figures as indicative.";
+      return `<span title="${esc(tip)}" style="cursor:help;font-size:8px;font-weight:700;letter-spacing:0.04em;color:#92400e;background:#fef3c7;padding:1px 4px;border-radius:3px;line-height:1.3">PARTIAL${d.rangeFallback?" ⏱":""}</span>`;
+    })() : "";
+    const cargoIcon = (cargoGlyph||oplBadge||transitCaption||partialBadge) ? `<div style="height:1.45em;display:flex;align-items:center;justify-content:flex-end;gap:4px">${cargoGlyph}${oplBadge}${transitCaption}${partialBadge}</div>` : "";
     /* 2026-07-26t (Aurvin, owner instruction): "@BERTH" renamed to "PORT STAY" — the owner
        flagged that "@BERTH" could be misread as a literal physical berth (a specific type of
        quay/mooring), when the tag is really just marking "the ship was in this port" (which
@@ -7091,7 +7195,12 @@ function downloadVoyageXlsx(){
     }
     rows.push(eventVals.concat(fuelVals));
   }
-  downloadXlsx("voyage_wise_breakdown_"+S.year+".xlsx","Voyage-Wise",rows);
+  /* 2026-08-27: the filename carries the window, like the other two exports. NOTE, deliberately
+     NOT changed: Voyage-Wise aggregation itself is NOT clipped. This tab counts a voyage by its
+     END date and shows a voyage that started in the previous period IN FULL — an explicit owner
+     decision (see the iTable note on this tab) that clipping would contradict. Raised in the
+     HANDOFF_LOG.md entry for 2026-08-27 as a question for the owner rather than decided here. */
+  downloadXlsx("voyage_wise_breakdown_"+S.year+dfFileSuffix()+".xlsx","Voyage-Wise",rows);
 }
 function round2(v){ return (v==null||isNaN(v))? "" : Math.round(Number(v)*100)/100; }
 
@@ -9082,10 +9191,36 @@ function runSelfTests(){
         (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
                  dateFilter:{fromISO:"2030-01-01T00:00",toISO:"2030-12-31T23:59",active:true}});
                return r.summary.dist===0 && r.warnings.some(w=>/OUTSIDE the selected From\/To date range/.test(w)); })());
-    ckT("Date range edge leg counted IN FULL (leg1 starts before From but its 205 nm is kept → 285)",
+    /* 2026-08-27 (Aurvin, EXPLICIT owner instruction — this expectation was DELIBERATELY
+       REVERSED, it is not a regression). Until today a leg the range cut through was counted IN
+       FULL: this same case asserted 285 nm, the whole of leg1 (205) plus leg2 (80), even though
+       only two of leg1's twenty-and-a-half hours were inside the window. The owner's rule is now
+       a real CLIP — only the part inside the range is shown and calculated (clipRowToRange in
+       js/engine.js). This OVD fixture has NO MDA reports behind it, so it exercises the
+       documented no-report-backing fallback: leg1 is cut in proportion to time,
+       2 h of 20.5 h = 0.09756 × 205 nm = 20.0 nm, and leg2 (wholly inside) stays 80 nm. */
+    ckT("Date range CLIPS an edge leg (leg1 2 h of 20.5 h → 20.0 nm + leg2 80 nm = 100 nm)",
         (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
                  dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
-               return Math.abs(r.summary.dist-285)<0.01; })());
+               return Math.abs(r.summary.dist-100)<0.2; })());
+    ckT("Clipped edge leg is badged PARTIAL, warns, and keeps its ORIGINAL ports (DEHAM→NLRTM)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
+               const d=(r.rowDetails||[]).find(x=>x.rangePart);
+               return !!d && /Hamburg/.test(d.label||"") && /Rotterdam/.test(d.label||"")
+                      && r.warnings.some(w=>/counted as PARTIAL legs/.test(w))
+                      && r.warnings.some(w=>/proportion to TIME/.test(w)); })());
+    ckT("Clipped edge leg's own window shrinks to the part inside the range (26/05 02:00→04:00)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
+               const d=(r.rowDetails||[]).find(x=>x.rangePart);
+               return !!d && d.tStart==="2024-05-26T02:00" && d.tEnd==="2024-05-26T04:00"
+                      && Math.abs(d.hours-2)<0.05; })());
+    ckT("A leg WHOLLY inside the range is left untouched (leg2 keeps all 80 nm, no PARTIAL flag)",
+        (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
+                 dateFilter:{fromISO:"2024-05-26T02:00",toISO:"2024-05-28T00:00",active:true}});
+               const d=(r.rowDetails||[]).find(x=>x.kind==="voyage" && Math.abs(x.dist-80)<0.01);
+               return !!d && !d.rangePart; })());
     ckT("Date range drops a leg wholly before From (leg1 excluded, only leg2 80 nm remains)",
         (()=>{ const r=computeAll({year:2024, ship:{typeId:"bulk",capacity:45000}, rows:o.rows,
                  dateFilter:{fromISO:"2024-05-26T12:00",toISO:"2024-05-28T00:00",active:true}});
