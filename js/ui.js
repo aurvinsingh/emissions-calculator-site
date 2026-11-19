@@ -424,7 +424,7 @@ function portSearch(q, limit){
   }
   return starts.concat(contains).slice(0,limit);
 }
-const OVD_FUEL_MAP = { HFO:"HFO", LFO:"LFO", MGO:"MDO", MDO:"MDO", LPGP:"LPGP", LPGB:"LPGB", LNG:"LNG", M:"METH", E:"ETOH" };
+const OVD_FUEL_MAP = { HFO:"HFO", LFO:"LFO", MGO:"MDO", MDO:"MDO", LPGP:"LPGP", LPGB:"LPGB", PROPANE:"LPGP", BUTANE:"LPGB", LNG:"LNG", M:"METH", E:"ETOH" };
 /* ---- THE TWO FUEL CODE SPACES (helper added 2026-08-28, after the third bug caused by them) --
    A REPORT record (S.mdaReports) keys its `fuels` and its `mach.ME/AE/BLR` sub-objects by the
    code the FILE uses — "MGO", "HFO", "M" — straight out of mdaFuel() in mdaToOVD().
@@ -850,8 +850,19 @@ function mdaFuel(name){
   if(/MGO$/.test(u)||["MGO","GO","HSD","GASOIL","DMA","DMX","DMZ"].indexOf(u)>=0) return "MGO";
   if(/MDO$/.test(u)||["MDO","DO","DMB","DIESEL"].indexOf(u)>=0) return "MDO";
   if(u==="LNG") return "LNG";
-  if(u==="LPG"||u==="LPGP") return "LPGP";
-  if(u==="LPGB") return "LPGB";
+  /* 2026-11-19 (Aurvin, owner instruction): some MDA exports spell the LPG consumption
+     columns out in full — "PROPANE" / "BUTANE" — rather than using the LPGP/LPGB codes.
+     Before this, mdaFuel() returned null for those tokens, so the fuel kept its own raw
+     text as its code (ui.js ~958), which OVD_FUEL_MAP also does not recognise, so the
+     workspace row ended up with fuelId "PROPANE"/"BUTANE" — not in FUEL_BY_ID (engine.js),
+     so resolveFuel() silently `continue`d past it (js/engine.js ~848): the fuel still
+     showed correctly in the Fuel-consumption display tile (which reads the raw code
+     directly) but was DROPPED from CII / EU ETS / UK ETS / FuelEU entirely, with no
+     warning. Same failure class as the MGO defect documented at engine.js ~627-641, just
+     one step earlier (text → code, before code → engine id). See HANDOFF_LOG.md
+     2026-11-19 for the full trace. */
+  if(u==="LPG"||u==="LPGP"||u==="PROPANE") return "LPGP";
+  if(u==="LPGB"||u==="BUTANE") return "LPGB";
   if(["METHANOL","MEOH","M"].indexOf(u)>=0) return "M";
   if(["ETHANOL","ETOH","E"].indexOf(u)>=0) return "E";
   return null;
